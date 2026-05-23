@@ -1,0 +1,30 @@
+.DS_Store
+
+# Dependencies
+node_modules/
+.venv*/
+venv/
+
+# Build output
+dist/
+
+# IDE and local config
+.idea/
+.vscode/
+.env
+.env.*
+
+# Local model bundles and runtime data
+models/
+storage/
+runs/
+runtime/
+assets/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
