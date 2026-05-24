@@ -9,6 +9,8 @@
     "dev:web": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc && vite build",
     "start": "node server/index.js",
+    "setup": "node scripts/setup.mjs",
+    "install:all": "node scripts/setup.mjs",
     "install:system": "node scripts/install-models.mjs --system-only",
     "install:models": "node scripts/install-models.mjs",
     "asr": "node scripts/asr-tool.mjs",

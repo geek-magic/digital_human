@@ -59,13 +59,13 @@ npm run test:ui
 
 分享给其他用户时，模型目录应放置 `digital-human-adapter.json`，声明 `protocolId` 和 `protocolVersion`。如果只检测到目录但没有协议清单，页面会标记为协议未验证；如果协议版本不一致，页面会标记为协议不匹配。
 
-首次部署或拉取代码后，先安装 Node 依赖，再下载固定模型包：
+首次部署或拉取代码后，一条命令完成 Node 依赖、系统工具检查、浏览器依赖、`yt-dlp`、固定模型包和 MuseTalk 权重安装：
 
 ```bash
-npm install
-npm run install:system
-npm run install:models
+npm run setup
 ```
+
+如果已经安装过 Node 依赖，只想重新补齐系统工具和模型，可以执行 `npm run setup -- --skip-npm`。高级场景仍可分开执行 `npm run install:system` 和 `npm run install:models`。
 
 `install:system` 会先检查并尽量自动安装运行所需的系统工具：
 
