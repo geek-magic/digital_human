@@ -1,6 +1,7 @@
 import {
   CheckCircle2,
   AlertTriangle,
+  ChevronDown,
   Cpu,
   Download,
   ExternalLink,
@@ -118,7 +119,7 @@ type Asset = {
 };
 
 type VideoSettings = {
-  engine: "musetalk" | "latentsync" | "preview";
+  engine: "musetalk" | "preview";
   cropMode: "mediapipe" | "default";
   parsingMode: "jaw" | "raw";
   upperBoundaryRatio: number;
@@ -226,10 +227,23 @@ type Project = {
   updatedAt: string;
 };
 
+type SourceExtractionStep = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  outputText?: string;
+  outputJson?: Record<string, string | number | boolean | null> | null;
+  url?: string;
+  mediaUri?: string;
+  mediaType?: string;
+  message?: string;
+  updatedAt?: string;
+};
+
 type SourceExtractResponse = {
   extractionId?: string;
   id?: string;
-  inputText: string;
+  inputText?: string;
   extractedText?: string;
   transcriptText?: string;
   title?: string;
@@ -238,6 +252,8 @@ type SourceExtractResponse = {
   detectedType?: "text" | "video_asr" | "link_metadata" | "link";
   kind?: "text" | "video_asr" | "link_metadata" | "link";
   status?: string;
+  error?: string;
+  steps?: SourceExtractionStep[];
   notes?: string[];
   sourceAnalysis?: Project["sourceAnalysis"];
 };
@@ -665,7 +681,7 @@ function TaskCenter(props: {
   refresh: () => Promise<void>;
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
-  const [draftInput, setDraftInput] = useState("");
+  const [draftInputText, setDraftInputText] = useState("");
   const checkedSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const allChecked = props.state.projects.length > 0 && props.state.projects.every((project) => checkedSet.has(project.id));
 
@@ -697,11 +713,16 @@ function TaskCenter(props: {
     <div className="task-layout">
       <section className="task-main">
         <SourceExtractionTool
-          selectedProject={props.selectedProject}
           action={props.action}
-          onUseAsDraft={setDraftInput}
+          onAppendToComposer={(text) => setDraftInputText((current) => current.trim() ? `${current.trim()}\n\n${text}` : text)}
         />
-        <TaskComposer state={props.state} action={props.action} onCreated={props.setSelectedProjectId} draftInput={draftInput} onDraftConsumed={() => setDraftInput("")} />
+        <TaskComposer
+          state={props.state}
+          action={props.action}
+          onCreated={props.setSelectedProjectId}
+          inputText={draftInputText}
+          setInputText={setDraftInputText}
+        />
         <div className="section-head task-list-head">
           <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
           <span className="count-pill">{props.state.projects.length}</span>
@@ -751,103 +772,229 @@ function TaskCenter(props: {
 
 function extractionStepsFor(status: "idle" | "running" | "done" | "failed") {
   const labels = [
-    ["input", "输入链接/文本"],
-    ["detect", "识别类型"],
+    ["link", "提取链接"],
+    ["type", "识别类型"],
     ["extract", "提取/下载"],
-    ["asr", "ASR"],
+    ["asr", "ASR 转写"],
     ["result", "解析结果"]
   ] as const;
-  if (status === "idle") return labels.map(([id, label], index) => ({ id, label, status: index === 0 ? "done" as const : "pending" as const }));
+  if (status === "idle") return labels.map(([id, label]) => ({ id, label, status: "pending" as const }));
   if (status === "done") return labels.map(([id, label]) => ({ id, label, status: "done" as const }));
   if (status === "failed") return labels.map(([id, label], index) => ({ id, label, status: index < 2 ? "done" as const : index === 2 ? "failed" as const : "pending" as const }));
   return labels.map(([id, label], index) => ({ id, label, status: index < 2 ? "done" as const : index === 2 ? "running" as const : "pending" as const }));
 }
 
 function SourceExtractionTool({
-  selectedProject,
   action,
-  onUseAsDraft
+  onAppendToComposer
 }: {
-  selectedProject?: Project;
   action: AppAction;
-  onUseAsDraft: (text: string) => void;
+  onAppendToComposer: (text: string) => void;
 }) {
   const [sourceText, setSourceText] = useState("");
   const [result, setResult] = useState<SourceExtractResponse | null>(null);
-  const [mode, setMode] = useState<"append" | "replace">("append");
   const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
+  const [expanded, setExpanded] = useState(false);
   const extractedText = result?.extractedText || result?.inputText || "";
   const extractionId = result?.extractionId || result?.id || "";
+  const steps = result?.steps?.length
+    ? result.steps.map((step) => ({ id: step.key, label: step.label, status: step.status }))
+    : extractionStepsFor(status);
+
+  async function waitForExtraction(id: string) {
+    let latest: SourceExtractResponse | null = null;
+    for (let attempt = 0; attempt < 1800; attempt += 1) {
+      const response = await request<SourceExtractResponse>(`/api/source-extractions/${id}`);
+      latest = response;
+      setResult(response);
+      const nextStatus = response.status === "failed" ? "failed" : response.status === "done" ? "done" : "running";
+      setStatus(nextStatus);
+      if (response.status === "done") return response;
+      if (response.status === "failed") throw new Error(response.error || response.notes?.[0] || "链接解析失败。");
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error("链接解析仍在运行，请稍后查看结果或重试。");
+  }
 
   async function extract() {
     const source = sourceText.trim();
     if (!source) return;
+    setExpanded(true);
     setStatus("running");
     setResult(null);
-    const response = await action("解析链接", () => request<SourceExtractResponse>("/api/source-extractions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceText: source })
-    }));
-    if (response?.extractedText || response?.inputText) {
-      setResult(response);
-      setStatus("done");
-    } else {
+    const response = await action("解析链接", async () => {
+      const started = await request<SourceExtractResponse>("/api/source-extractions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceText: source })
+      });
+      setResult(started);
+      const id = started.extractionId || started.id || "";
+      if (!id) throw new Error("后端未返回解析任务 ID。");
+      return waitForExtraction(id);
+    });
+    if (!response?.extractedText && !response?.inputText && response?.status !== "done") {
       setStatus("failed");
     }
   }
 
-  async function applyToProject() {
-    if (!selectedProject || !extractionId) return;
-    await action("推送解析结果", () => request(`/api/projects/${selectedProject.id}/input/apply-source`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ extractionId, mode })
-    }));
+  async function applyToComposer() {
+    if (!extractedText.trim()) return;
+    await action("一键添加", async () => {
+      onAppendToComposer(extractedText.trim());
+      return { ok: true };
+    });
   }
 
   return (
-    <section className="source-tool">
+    <section className={cx("source-tool", !expanded && "collapsed")}>
       <div className="section-head">
         <div><p className="eyebrow">链接解析</p><h2>独立解析工具</h2></div>
-        <StatusBadge status={status === "done" ? "done" : status === "failed" ? "failed" : status === "running" ? "running" : "pending"} />
-      </div>
-      <div className="extract-control">
-        <input
-          aria-label="链接解析输入"
-          value={sourceText}
-          onChange={(event) => setSourceText(event.target.value)}
-          placeholder="粘贴抖音分享文本、视频链接或普通文本"
-        />
-        <button type="button" className="secondary-button" disabled={status === "running" || !sourceText.trim()} onClick={extract}>
-          {status === "running" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}提取
-        </button>
-      </div>
-      <ExtractProgress steps={extractionStepsFor(status)} />
-      {result && (
-        <div className="source-result">
-          <div>
-            <strong>{result.title || result.detectedType || result.kind || "解析结果"}</strong>
-            <small>{result.sourceUrl || result.notes?.[0] || "可推送到原始输入"}</small>
-          </div>
-          <p>{extractedText}</p>
-          <div className="source-apply-row">
-            <select aria-label="推送策略" value={mode} onChange={(event) => setMode(event.target.value as "append" | "replace")}>
-              <option value="append">追加到当前输入</option>
-              <option value="replace">覆盖当前输入</option>
-            </select>
-            <button className="primary-button" disabled={!selectedProject || !extractionId} onClick={applyToProject}><Send size={16} />推送到当前任务</button>
-            <button className="ghost-button" disabled={!extractedText} onClick={() => onUseAsDraft(extractedText)}>填入新任务输入</button>
-          </div>
+        <div className="source-head-actions">
+          <StatusBadge status={status === "done" ? "done" : status === "failed" ? "failed" : status === "running" ? "running" : "pending"} />
+          <button
+            type="button"
+            className="ghost-button source-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            <ChevronDown className={cx(expanded && "rotate-180")} size={16} />
+            {expanded ? "折叠" : "展开"}
+          </button>
         </div>
+      </div>
+      {expanded && (
+        <>
+          <div className="extract-control">
+            <textarea
+              aria-label="链接解析输入"
+              value={sourceText}
+              onChange={(event) => setSourceText(event.target.value)}
+              placeholder="粘贴抖音分享文本、视频链接或普通文本"
+            />
+            <button type="button" className="secondary-button" disabled={status === "running" || !sourceText.trim()} onClick={extract}>
+              {status === "running" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}提取
+            </button>
+          </div>
+          <ExtractProgress steps={steps} />
+          <SourceExtractionTimeline
+            result={result}
+            fallbackSteps={extractionStepsFor(status)}
+            extractedText={extractedText}
+            canApply={Boolean(extractedText && result?.status === "done")}
+            onApply={applyToComposer}
+          />
+        </>
+      )}
+      {!expanded && (
+        <button
+          type="button"
+          className="source-collapsed-summary"
+          onClick={() => setExpanded(true)}
+          aria-label="展开链接解析"
+        >
+          <span>{result?.extractedText ? "已有解析结果，可展开查看。" : "粘贴抖音、小红书或网页链接，提取文本后添加到当前任务。"}</span>
+          <ChevronDown size={16} />
+        </button>
       )}
     </section>
   );
 }
 
-function TaskComposer({ state, action, onCreated, draftInput, onDraftConsumed }: { state: State; action: AppAction; onCreated: (id: string) => void; draftInput: string; onDraftConsumed: () => void }) {
+function SourceExtractionTimeline({
+  result,
+  fallbackSteps,
+  extractedText,
+  canApply,
+  onApply
+}: {
+  result: SourceExtractResponse | null;
+  fallbackSteps: Array<{ id: string; label: string; status: "pending" | "running" | "done" | "failed" }>;
+  extractedText: string;
+  canApply: boolean;
+  onApply: () => void;
+}) {
+  const resultSteps = result?.steps?.length
+    ? result.steps
+    : fallbackSteps.map((step) => ({ key: step.id, label: step.label, status: step.status }));
+  return (
+    <div className="source-step-list" aria-label="链接解析产物">
+      {resultSteps.map((step, index) => (
+        <SourceStepCard
+          key={step.key || index}
+          step={step}
+          isFinal={step.key === "result"}
+          finalText={extractedText}
+          canApply={canApply}
+          onApply={onApply}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SourceStepCard({
+  step,
+  isFinal,
+  finalText,
+  canApply,
+  onApply
+}: {
+  step: SourceExtractionStep;
+  isFinal: boolean;
+  finalText: string;
+  canApply: boolean;
+  onApply: () => void;
+}) {
+  const text = isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
+  const hasMedia = Boolean(step.mediaUri);
+  return (
+    <article className={cx("source-step-card", step.status)}>
+      <div className="source-step-head">
+        <span className="source-step-index">{step.status === "running" ? <Loader2 className="spin" size={14} /> : step.status === "failed" ? <XCircle size={14} /> : step.status === "done" ? <CheckCircle2 size={14} /> : "•"}</span>
+        <div>
+          <strong>{step.label}</strong>
+          <small>{step.message || statusText(step.status)}</small>
+        </div>
+      </div>
+      {step.url && <a className="source-url" href={step.url} target="_blank" rel="noreferrer"><ExternalLink size={13} />{step.url}</a>}
+      {hasMedia && (
+        step.mediaType === "video"
+          ? <video className="source-media" controls src={step.mediaUri} />
+          : <audio className="source-audio" controls src={step.mediaUri} />
+      )}
+      {text && <pre className="source-output">{text}</pre>}
+      {step.outputJson && Object.keys(step.outputJson).length > 0 && (
+        <div className="source-kv">
+          {Object.entries(step.outputJson).map(([key, value]) => (
+            value === "" || value === null || value === undefined ? null : <span key={key}><b>{key}</b>{String(value)}</span>
+          ))}
+        </div>
+      )}
+      {isFinal && (
+        <div className="source-final-actions">
+          <button className="primary-button" disabled={!canApply} onClick={onApply}><Send size={16} />一键添加</button>
+          {!canApply && <small>{finalText ? "可添加到下方原始输入。" : "最终文本生成后可添加到下方原始输入。"}</small>}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function TaskComposer({
+  state,
+  action,
+  onCreated,
+  inputText,
+  setInputText
+}: {
+  state: State;
+  action: AppAction;
+  onCreated: (id: string) => void;
+  inputText: string;
+  setInputText: (value: string) => void;
+}) {
   const [title, setTitle] = useState("");
-  const [inputText, setInputText] = useState("");
   const [requirements, setRequirements] = useState("");
   const [mode, setMode] = useState<WorkMode>("manual");
   const [scriptModelId, setScriptModelId] = useState("");
@@ -856,12 +1003,6 @@ function TaskComposer({ state, action, onCreated, draftInput, onDraftConsumed }:
   useEffect(() => {
     setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
   }, [state.settings?.defaultTextModelId, state.models]);
-
-  useEffect(() => {
-    if (!draftInput) return;
-    setInputText((current) => current ? `${current.trim()}\n\n${draftInput}` : draftInput);
-    onDraftConsumed();
-  }, [draftInput, onDraftConsumed]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -1013,7 +1154,7 @@ function TypedModelSelect({ state, type, models, value, onChange }: { state: Sta
   );
 }
 
-function ExtractProgress({ steps }: { steps: Array<{ id: string; label: string; status: "pending" | "running" | "done" | "failed" }> }) {
+function ExtractProgress({ steps }: { steps: Array<{ id: string; label: string; status: "pending" | "running" | "done" | "failed" | "skipped" }> }) {
   return (
     <div className="extract-progress" aria-label="提取进度">
       {steps.map((step) => (
@@ -1021,7 +1162,7 @@ function ExtractProgress({ steps }: { steps: Array<{ id: string; label: string; 
           {step.status === "running" && <Loader2 className="spin" size={13} />}
           {step.status === "done" && <CheckCircle2 size={13} />}
           {step.status === "failed" && <XCircle size={13} />}
-          {step.status === "pending" && <span className="pending-dot" />}
+          {(step.status === "pending" || step.status === "skipped") && <span className="pending-dot" />}
           {step.label}
         </span>
       ))}
@@ -1495,7 +1636,7 @@ function AvatarSample({ asset }: { asset?: Asset }) {
 function VideoSettingsEditor({ videoSettings, setVideoSettings }: { videoSettings: VideoSettings; setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>> }) {
   return (
     <div className="param-grid">
-      <label><span>渲染引擎</span><select value={videoSettings.engine} title={videoSettingTips.engine} onChange={(event) => setVideoSettings((current) => ({ ...current, engine: event.target.value as VideoSettings["engine"] }))}><option value="musetalk">MuseTalk</option><option value="latentsync">LatentSync</option><option value="preview">预览</option></select><small className="param-help">{videoSettingTips.engine}</small></label>
+      <label><span>渲染引擎</span><select value={videoSettings.engine} title={videoSettingTips.engine} onChange={(event) => setVideoSettings((current) => ({ ...current, engine: event.target.value as VideoSettings["engine"] }))}><option value="musetalk">MuseTalk</option><option value="preview">预览</option></select><small className="param-help">{videoSettingTips.engine}</small></label>
       <label><span>裁剪方式</span><select value={videoSettings.cropMode} title={videoSettingTips.cropMode} onChange={(event) => setVideoSettings((current) => ({ ...current, cropMode: event.target.value as VideoSettings["cropMode"] }))}><option value="mediapipe">MediaPipe</option><option value="default">默认</option></select><small className="param-help">{videoSettingTips.cropMode}</small></label>
       <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">jaw</option><option value="raw">raw</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
       <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
@@ -2369,9 +2510,6 @@ function AvatarTypeTestPanel({ models, defaultModelId, assets, action }: { model
     setModelId((current) => current || defaultModelId || models[0]?.id || "");
     setAvatarAssetId((current) => current || assets[0]?.id || "");
   }, [defaultModelId, models, assets]);
-  const selectedModel = models.find((model) => model.id === modelId);
-  const isLatentSync = (selectedModel?.catalogId || selectedModel?.id || "").toLowerCase().includes("latent");
-
   function updateSetting<K extends keyof VideoSettings>(key: K, value: VideoSettings[K]) {
     setSettings((current) => ({ ...current, [key]: value }));
   }
@@ -2404,15 +2542,11 @@ function AvatarTypeTestPanel({ models, defaultModelId, assets, action }: { model
         <AudioRecorder label="录制驱动音频" onRecorded={setAudio} />
       </div>
       <div className="param-grid model-test-params">
-        {!isLatentSync && (
-          <>
-            <label><span>裁剪模式</span><select value={settings.cropMode} onChange={(event) => updateSetting("cropMode", event.target.value as VideoSettings["cropMode"])}><option value="mediapipe">MediaPipe</option><option value="default">默认框</option></select></label>
-            <label><span>解析模式</span><select value={settings.parsingMode} onChange={(event) => updateSetting("parsingMode", event.target.value as VideoSettings["parsingMode"])}><option value="jaw">jaw</option><option value="raw">raw</option></select></label>
-          </>
-        )}
+        <label><span>裁剪模式</span><select value={settings.cropMode} onChange={(event) => updateSetting("cropMode", event.target.value as VideoSettings["cropMode"])}><option value="mediapipe">MediaPipe</option><option value="default">默认框</option></select></label>
+        <label><span>解析模式</span><select value={settings.parsingMode} onChange={(event) => updateSetting("parsingMode", event.target.value as VideoSettings["parsingMode"])}><option value="jaw">jaw</option><option value="raw">raw</option></select></label>
         <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={settings.upperBoundaryRatio} onChange={(event) => updateSetting("upperBoundaryRatio", Number(event.target.value))} /></label>
         <label><span>脸部扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={settings.facePad} onChange={(event) => updateSetting("facePad", Number(event.target.value))} /></label>
-        {!isLatentSync && <label><span>下巴扩展</span><input type="number" min="0" max="40" step="1" value={settings.extraMargin} onChange={(event) => updateSetting("extraMargin", Number(event.target.value))} /></label>}
+        <label><span>下巴扩展</span><input type="number" min="0" max="40" step="1" value={settings.extraMargin} onChange={(event) => updateSetting("extraMargin", Number(event.target.value))} /></label>
       </div>
       <button className="primary-button" disabled={testing || !modelId || (!avatarAssetId && !avatarFile) || !audio}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成测试视频"}</button>
       {videoUri && <OutputItem title="测试视频" status="done"><video className="test-video" controls src={videoUri} /></OutputItem>}

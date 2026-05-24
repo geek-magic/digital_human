@@ -21,9 +21,8 @@ const MODEL_HOME = process.env.MODEL_HOME || join(rootDir, "models");
 const LLM_TOOL_PATH = process.env.DH_LLM_TOOL_PATH || join(rootDir, "scripts", "llm-tool.mjs");
 const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "asr-tool.mjs");
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
-const LATENTSYNC_ADAPTER_PATH = join(rootDir, "scripts", "latentsync-adapter.mjs");
-const LATENTSYNC_INSTALLER_PATH = join(rootDir, "scripts", "install-latentsync.mjs");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
+const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -93,7 +92,7 @@ const modelCatalog = [
     bundleRole: "标准口播文案模型",
     license: "Apache 2.0",
     description: "用于链接理解、选题提炼、口播稿、标题和标签生成。",
-    installGuide: "标准安装包会内置该模型。独立部署时放到 MODEL_HOME/llm/qwen3.5-27b-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
+    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen3.5-27b-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
   },
   {
     id: "qwen3-asr-1-7b",
@@ -106,7 +105,7 @@ const modelCatalog = [
     bundleRole: "来源转写模型",
     license: "Apache 2.0",
     description: "用于短视频链接音频转写和字幕基线。",
-    installGuide: "标准安装包会内置该模型。独立部署时放到 MODEL_HOME/asr/qwen3-asr-1.7b，或通过 DH_ASR_MODEL_PATH 指定权重目录。"
+    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/asr/qwen3-asr-1.7b，或通过 DH_ASR_MODEL_PATH 指定权重目录。"
   },
   {
     id: "qwen3-tts-1-7b-base",
@@ -119,20 +118,7 @@ const modelCatalog = [
     bundleRole: "口播与克隆音色模型",
     license: "Apache 2.0",
     description: "用于中文口播 TTS 和音色克隆。",
-    installGuide: "标准安装包会内置该模型。独立部署时放到 MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base，或通过 DH_TTS_MODEL_PATH 指定权重目录。"
-  },
-  {
-    id: "latentsync-1-6",
-    name: "ByteDance LatentSync 1.6",
-    type: "avatar",
-    runtime: "内置 LatentSync Adapter",
-    defaultPath: "avatar/latentsync",
-    protocolId: "avatarRenderV1",
-    recommended: true,
-    bundleRole: "数字人口型同步模型",
-    license: "代码 Apache-2.0，权重 openrail++，分发需保留原始协议",
-    description: "用于高质量中文口型同步和视频合成，默认走 512x512 推理链路。",
-    installGuide: "标准安装包会内置 LatentSync 代码、权重、Whisper tiny、协议清单和许可证。独立部署时放到 MODEL_HOME/avatar/latentsync，显存建议 18GB VRAM 以上。"
+    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base，或通过 DH_TTS_MODEL_PATH 指定权重目录。"
   },
   {
     id: "musetalk-v15",
@@ -145,7 +131,7 @@ const modelCatalog = [
     bundleRole: "数字人口型同步模型",
     license: "Apache 2.0",
     description: "用于本地数字人口型同步，支持当前任务里的 MuseTalk 调参链路。",
-    installGuide: "标准安装包会内置 MuseTalk 代码、权重和运行环境。独立部署时放到 MODEL_HOME/avatar/MuseTalk。"
+    installGuide: "执行 npm run install:models 会下载 MuseTalk 代码、权重和运行环境。独立部署时放到 MODEL_HOME/avatar/MuseTalk。"
   },
   {
     id: "ffmpeg",
@@ -730,7 +716,7 @@ function clampNumber(value, min, max, fallback, integer = false) {
 }
 
 function normalizeVideoSettings(settings = {}) {
-  const engine = ["musetalk", "latentsync", "preview"].includes(settings.engine)
+  const engine = ["musetalk", "preview"].includes(settings.engine)
     ? settings.engine
     : defaultVideoSettings.engine;
   return {
@@ -815,9 +801,7 @@ function detectModel(model) {
   const candidates = modelCandidatePaths(model);
   const installedCandidate = candidates.find((item) => existsSync(item.path));
   if (!installedCandidate) {
-    const missingMessage = model.catalogId === "latentsync-1-6"
-      ? "未检测到 LatentSync 模型包。请安装到 MODEL_HOME/avatar/latentsync，并包含推理代码、stage2_512 配置、latentsync_unet.pt、whisper/tiny.pt 和协议清单。"
-      : `未检测到固定模型。标准安装包应内置到 ${model.pathRef}，也可通过对应 DH_*_MODEL_PATH 指定权重目录。`;
+    const missingMessage = `未检测到固定模型。标准安装包应内置到 ${model.pathRef}，也可通过对应 DH_*_MODEL_PATH 指定权重目录。`;
     return {
       status: "missing",
       resolvedPath: candidates[0]?.path || "",
@@ -827,16 +811,6 @@ function detectModel(model) {
     };
   }
   const resolvedPath = installedCandidate.path;
-  const latentSyncCheck = model.catalogId === "latentsync-1-6" ? validateLatentSyncInstall(resolvedPath) : null;
-  if (latentSyncCheck && !latentSyncCheck.ok) {
-    return {
-      status: "incomplete",
-      resolvedPath,
-      protocolStatus: "待补齐",
-      protocolMessage: `LatentSync 模型包不完整，缺少 ${latentSyncCheck.missing.join("、")}。`,
-      message: "已检测到 LatentSync 目录，但代码、权重或 Whisper 依赖不完整。"
-    };
-  }
   const museTalkCheck = model.catalogId === "musetalk-v15" ? validateMuseTalkInstall(resolvedPath) : null;
   if (museTalkCheck && !museTalkCheck.ok) {
     return {
@@ -849,7 +823,7 @@ function detectModel(model) {
   }
   const manifest = readAdapterManifest(resolvedPath);
   if (!manifest) {
-    if (model.catalogId && model.catalogId !== "latentsync-1-6") {
+    if (model.catalogId) {
       return {
         status: "installed",
         resolvedPath,
@@ -882,9 +856,7 @@ function detectModel(model) {
     resolvedPath,
     protocolStatus: "已验证",
     protocolMessage: `${adapterProtocol.label} 已验证。`,
-    message: model.catalogId === "latentsync-1-6"
-      ? latentsyncRuntimeMessage(resolvedPath)
-      : "已检测到模型目录，且 Adapter 协议一致。"
+    message: "已检测到模型目录，且 Adapter 协议一致。"
   };
 }
 
@@ -904,20 +876,6 @@ function readAdapterManifest(resolvedPath) {
   return null;
 }
 
-function validateLatentSyncInstall(resolvedPath) {
-  const requiredFiles = [
-    "scripts/inference.py",
-    "configs/unet/stage2_512.yaml",
-    "checkpoints/latentsync_unet.pt",
-    "checkpoints/whisper/tiny.pt"
-  ];
-  const missing = requiredFiles.filter((file) => !existsSync(join(resolvedPath, file)));
-  return {
-    ok: missing.length === 0,
-    missing
-  };
-}
-
 function validateMuseTalkInstall(resolvedPath) {
   const requiredFiles = [
     "scripts/inference.py",
@@ -932,43 +890,6 @@ function validateMuseTalkInstall(resolvedPath) {
     ok: missing.length === 0,
     missing
   };
-}
-
-function latentsyncPythonBin(resolvedPath) {
-  const localPython = process.platform === "win32"
-    ? join(resolvedPath, ".venv", "Scripts", "python.exe")
-    : join(resolvedPath, ".venv", "bin", "python");
-  return process.env.LATENTSYNC_PYTHON || (existsSync(localPython) ? localPython : (process.platform === "win32" ? "python" : "python3"));
-}
-
-function latentsyncRuntimeMessage(resolvedPath) {
-  const warnings = [];
-  if (process.platform === "darwin") {
-    warnings.push("当前是 macOS，官方 LatentSync 推理依赖 CUDA，真实口型同步需要 Windows/Linux + NVIDIA GPU。");
-  }
-  try {
-    const output = execFileSync(latentsyncPythonBin(resolvedPath), [
-      "-c",
-      "import omegaconf, torch; print('cuda=' + str(torch.cuda.is_available()).lower())"
-    ], {
-      cwd: resolvedPath,
-      env: {
-        ...process.env,
-        PYTHONPATH: [resolvedPath, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
-      },
-      encoding: "utf-8",
-      timeout: 1000 * 10,
-      stdio: ["ignore", "pipe", "pipe"]
-    }).trim();
-    if (!output.includes("cuda=true")) {
-      warnings.push("当前 Python 环境未检测到 CUDA，任务会自动使用预览视频兜底。");
-    }
-  } catch {
-    warnings.push("当前 Python 环境缺少 LatentSync 推理依赖，任务会自动使用预览视频兜底。");
-  }
-  return warnings.length
-    ? `模型包和协议已验证；${warnings.join(" ")}`
-    : "模型包、协议和本机 CUDA 推理环境已验证。";
 }
 
 function maskSecret(value) {
@@ -1448,6 +1369,8 @@ function mediaTitleFromUrl(url) {
 
 const browserUserAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const mobileBrowserUserAgent =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 function extractDouyinVideoId(...values) {
   for (const value of values) {
@@ -1463,27 +1386,175 @@ function douyinTitle(aweme = {}, fallback = "抖音视频") {
   return (line || String(aweme.aweme_id || fallback)).replace(/\s+/g, " ").slice(0, 120);
 }
 
-function fallbackDouyinMetadata(videoId, shareText = "") {
-  const author = shareText.match(/看看【(.+?)的作品】/)?.[1] || "";
-  const explicitUrls = extractExplicitUrls(shareText);
-  let desc = shareText;
-  for (const url of explicitUrls) desc = desc.replace(url, " ");
-  desc = desc
-    .replace(/^\s*[\d.]+\s*/, "")
-    .replace(/复制打开抖音，?看看【.+?的作品】/, "")
-    .replace(/\b\d{1,2}\/\d{1,2}\b.*$/g, "")
-    .replace(/[A-Za-z0-9@.]+:\/?\s*:?[\dapm\s]*$/gi, "")
+function decodeHtmlText(text = "") {
+  return String(text || "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function decodeJsEscapedText(text = "") {
+  return String(text || "")
+    .replace(/\\u002F/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003D/gi, "=")
+    .replace(/\\u003F/gi, "?")
+    .replace(/\\u003A/gi, ":");
+}
+
+function shareNoiseToken(token = "") {
+  const value = token.trim();
+  if (!value) return true;
+  if (/[\u4e00-\u9fff]/.test(value)) return false;
+  return /^[#@:/.\-\w]+$/.test(value) && (
+    /\d/.test(value) ||
+    value.includes(":/") ||
+    value.includes("@") ||
+    /^[A-Za-z]{1,4}$/.test(value) ||
+    /^[A-Za-z0-9_.-]{4,}$/.test(value)
+  );
+}
+
+function inferDouyinCaptionFromShareText(shareText = "") {
+  const urls = extractExplicitUrls(shareText);
+  let text = String(shareText || "");
+  for (const url of urls) text = text.replace(url, " ");
+  text = text
+    .replace(/复制打开抖音，?看看【.+?的作品】/g, " ")
+    .replace(/看看【.+?的作品】/g, " ")
+    .replace(/复制此链接，?打开Dou音搜索，?直接观看视频！?/gi, " ")
+    .replace(/复制此链接，?打开抖音搜索，?直接观看视频！?/g, " ")
+    .replace(/打开抖音搜索，?直接观看视频！?/g, " ")
+    .replace(/打开Dou音搜索，?直接观看视频！?/gi, " ")
+    .replace(/来抖音，?记录美好生活！?/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  const tokens = text.split(/\s+/);
+  while (tokens.length && shareNoiseToken(tokens[0])) {
+    if (/^[A-Za-z]{1,4}$/.test(tokens[0]) && /[\u4e00-\u9fff]/.test(tokens[1] || "")) break;
+    tokens.shift();
+  }
+  while (tokens.length && shareNoiseToken(tokens[tokens.length - 1])) tokens.pop();
+  return tokens.join(" ")
+    .replace(/^[：:，,。.\s-]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanDouyinDescription(text = "") {
+  const decoded = decodeHtmlText(text);
+  return decoded
+    .replace(/\s+-\s+.+?于\d{8}发布在抖音.*$/s, "")
+    .replace(/\s+-\s*抖音\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function douyinAuthorFromDescription(text = "") {
+  return decodeHtmlText(text).match(/\s+-\s+(.+?)于\d{8}发布在抖音/)?.[1]?.trim() || "";
+}
+
+function parseHtmlAttributes(tag = "") {
+  const attrs = {};
+  for (const match of tag.matchAll(/([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g)) {
+    attrs[match[1].toLowerCase()] = decodeHtmlText(match[2] || match[3] || match[4] || "");
+  }
+  return attrs;
+}
+
+function parseMetaContent(html = "", key, value) {
+  const expectedKey = key.toLowerCase();
+  const expectedValue = value.toLowerCase();
+  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = parseHtmlAttributes(match[0]);
+    if (String(attrs[expectedKey] || "").toLowerCase() === expectedValue) return attrs.content || "";
+  }
+  return "";
+}
+
+function parseHtmlTitle(html = "") {
+  const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return cleanDouyinPageTitle(decodeHtmlText(match?.[1] || ""));
+}
+
+function extractDouyinPlayableUrlsFromHtml(html = "") {
+  const decoded = decodeJsEscapedText(decodeHtmlText(html));
+  const urls = new Set();
+  for (const match of decoded.matchAll(/https?:\/\/[^"'<>\\\s]+/gi)) {
+    const url = match[0].replace(/[),.;]+$/g, "");
+    if (/\/aweme\/v1\/play|douyinvod|mime_type=video_mp4|video_id=/i.test(url)) urls.add(url);
+  }
+  for (const match of decoded.matchAll(/"play_addr"\s*:\s*\{[\s\S]{0,1400}?"url_list"\s*:\s*\[([\s\S]*?)\]/gi)) {
+    for (const urlMatch of match[1].matchAll(/"([^"]+)"/g)) {
+      const url = decodeJsEscapedText(urlMatch[1]);
+      if (/^https?:\/\//i.test(url)) urls.add(url);
+    }
+  }
+  return Array.from(urls).map((url, index) => ({
+    url,
+    label: "mobile_share_play_addr",
+    score: 8_500_000_000 - index,
+    size: 0
+  }));
+}
+
+async function resolveDouyinShareMetadata(url, shareText = "", options = {}) {
+  const response = await fetch(url, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": mobileBrowserUserAgent,
+      "Accept-Language": "zh-CN,zh;q=0.9",
+      Accept: "text/html,application/xhtml+xml,*/*"
+    },
+    signal: AbortSignal.timeout(options.probeTimeout || 45000)
+  });
+  if (!response.ok) throw new Error(`抖音分享页提取失败：HTTP ${response.status}`);
+  const html = await response.text();
+  const title = parseHtmlTitle(html);
+  const description = parseMetaContent(html, "name", "description") || parseMetaContent(html, "property", "og:description");
+  const canonical = parseHtmlAttributes(html.match(/<link\b[^>]*rel=["']canonical["'][^>]*>/i)?.[0] || "").href || response.url;
+  const caption = cleanDouyinDescription(description) || cleanDouyinPageTitle(title) || inferDouyinCaptionFromShareText(shareText);
+  return {
+    finalUrl: canonical || response.url,
+    videoId: extractDouyinVideoId(canonical, response.url, html, shareText),
+    title,
+    description: decodeHtmlText(description),
+    caption,
+    author: douyinAuthorFromDescription(description),
+    videoCandidates: extractDouyinPlayableUrlsFromHtml(html)
+  };
+}
+
+function fallbackDouyinMetadata(videoId, shareText = "", hints = {}) {
+  const author = shareText.match(/看看【(.+?)的作品】/)?.[1] || "";
+  const desc = cleanDouyinDescription(hints.description || "")
+    || hints.caption
+    || inferDouyinCaptionFromShareText(shareText)
+    || cleanDouyinPageTitle(hints.title || "")
+    || videoId
+    || "抖音视频";
   return {
     aweme_detail: {
       aweme_id: videoId,
-      desc: desc || videoId || "抖音视频",
+      desc,
       duration: 0,
-      author: { nickname: author },
+      author: { nickname: hints.author || author },
       video: {}
     }
   };
+}
+
+function cleanDouyinPageTitle(text = "") {
+  return String(text || "")
+    .replace(/\s*-\s*抖音\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function douyinVideoCandidates(metadata = {}) {
@@ -1598,10 +1669,10 @@ function cookieHeader(cookies = []) {
   return cookies.filter((item) => item.name).map((item) => `${item.name}=${item.value}`).join("; ");
 }
 
-async function downloadBuffer(url, { referer = "", cookie = "", timeout = 90000 } = {}) {
+async function downloadBuffer(url, { referer = "", cookie = "", timeout = 90000, userAgent = browserUserAgent } = {}) {
   const response = await fetch(url, {
     headers: {
-      "User-Agent": browserUserAgent,
+      "User-Agent": userAgent,
       Accept: "*/*",
       ...(referer ? { Referer: referer } : {}),
       ...(cookie ? { Cookie: cookie } : {})
@@ -1657,6 +1728,12 @@ async function transcribeWithLocalAsr(audioPath, options = {}) {
 }
 
 async function resolveDouyinDetail(link, shareText, options = {}) {
+  let shareMetadata = null;
+  try {
+    shareMetadata = await resolveDouyinShareMetadata(link.url, shareText, options);
+  } catch {
+    shareMetadata = null;
+  }
   const { chromium } = await import("playwright");
   const launchOptions = [
     { channel: "chrome", headless: true },
@@ -1676,10 +1753,11 @@ async function resolveDouyinDetail(link, shareText, options = {}) {
   try {
     const context = await browser.newContext({ userAgent: browserUserAgent, locale: "zh-CN" });
     const page = await context.newPage();
-    await page.goto(link.url, { waitUntil: "domcontentloaded", timeout: options.probeTimeout || 60000 });
+    await page.goto(shareMetadata?.finalUrl || link.url, { waitUntil: "domcontentloaded", timeout: options.probeTimeout || 60000 });
     await page.waitForTimeout(options.browserWaitMs || 4500);
-    const finalUrl = page.url();
-    let videoId = extractDouyinVideoId(finalUrl);
+    const finalUrl = shareMetadata?.finalUrl || page.url();
+    const pageTitle = cleanDouyinPageTitle(await page.title().catch(() => "")) || shareMetadata?.caption || shareMetadata?.title || "";
+    let videoId = extractDouyinVideoId(finalUrl, shareMetadata?.videoId);
     if (!videoId) {
       const content = await page.content().catch(() => "");
       videoId = extractDouyinVideoId(content, shareText);
@@ -1688,30 +1766,42 @@ async function resolveDouyinDetail(link, shareText, options = {}) {
     const api = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${videoId}`;
     const result = await page.evaluate(async ({ apiUrl, timeoutMs }) => {
       return Promise.race([
-        (async () => {
-          const response = await fetch(apiUrl, {
-            credentials: "include",
-            headers: { accept: "application/json, text/plain, */*" }
-          });
-          return { status: response.status, url: response.url, text: await response.text(), timeout: false };
-        })(),
+        fetch(apiUrl, {
+          credentials: "include",
+          headers: { accept: "application/json, text/plain, */*" }
+        })
+          .then(async (response) => ({ status: response.status, url: response.url, text: await response.text(), timeout: false }))
+          .catch((error) => ({ status: 0, url: apiUrl, text: "", timeout: false, error: error?.message || "fetch failed" })),
         new Promise((resolve) => setTimeout(() => resolve({ status: 0, url: apiUrl, text: "", timeout: true }), timeoutMs))
       ]);
     }, { apiUrl: api, timeoutMs: options.apiTimeout || 20000 });
     const cookies = await context.cookies();
     if (result.timeout || result.status !== 200 || !result.text) {
       return {
-        metadata: fallbackDouyinMetadata(videoId, shareText),
+        metadata: fallbackDouyinMetadata(videoId, shareText, shareMetadata || { title: pageTitle }),
         videoId,
         finalUrl,
+        pageTitle,
+        shareMetadata,
         apiUrl: api,
         cookies,
         detailFallback: result.timeout ? "timeout" : `HTTP ${result.status || "empty"}`
       };
     }
     const metadata = JSON.parse(result.text || "{}");
-    if (!metadata.aweme_detail) throw new Error("抖音详情接口未返回 aweme_detail。");
-    return { metadata, videoId, finalUrl, apiUrl: api, cookies };
+    if (!metadata.aweme_detail) {
+      return {
+        metadata: fallbackDouyinMetadata(videoId, shareText, shareMetadata || { title: pageTitle }),
+        videoId,
+        finalUrl,
+        pageTitle,
+        shareMetadata,
+        apiUrl: api,
+        cookies,
+        detailFallback: "no_aweme_detail"
+      };
+    }
+    return { metadata, videoId, finalUrl, pageTitle, shareMetadata, apiUrl: api, cookies };
   } finally {
     const browserProcess = typeof browser.process === "function" ? browser.process() : null;
     await Promise.race([
@@ -1728,8 +1818,8 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
   try {
     const detail = await resolveDouyinDetail(link, shareText, options);
     const aweme = detail.metadata.aweme_detail || {};
-    const title = douyinTitle(aweme, detail.videoId);
-    const author = aweme.author?.nickname || "";
+    const title = cleanDouyinPageTitle(douyinTitle(aweme, detail.shareMetadata?.caption || detail.pageTitle || detail.videoId) || detail.shareMetadata?.caption || detail.pageTitle);
+    const author = aweme.author?.nickname || detail.shareMetadata?.author || "";
     writeFileSync(join(outDir, "metadata.json"), JSON.stringify(detail.metadata, null, 2));
 
     let transcriptText = "";
@@ -1750,14 +1840,20 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
       }
     }
 
-    const videoCandidates = transcriptText ? [] : douyinVideoCandidates(detail.metadata);
+    const videoCandidates = [
+      ...(detail.shareMetadata?.videoCandidates || []),
+      ...douyinVideoCandidates(detail.metadata)
+    ];
     let videoPath = "";
     let audioPath = "";
+    let mediaDuration = aweme.duration ? Math.round(Number(aweme.duration) / 1000) : 0;
+    let downloadMessage = "";
     for (const candidate of videoCandidates) {
       try {
         const buffer = await downloadBuffer(candidate.url, {
           referer: detail.finalUrl,
           cookie: cookieHeader(detail.cookies),
+          userAgent: candidate.label === "mobile_share_play_addr" ? mobileBrowserUserAgent : browserUserAgent,
           timeout: options.downloadTimeout || 180000
         });
         if (buffer.length < 50 * 1024) continue;
@@ -1780,9 +1876,10 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
           "1",
           audioPath
         ], { timeout: options.downloadTimeout || 180000, maxBuffer: 1024 * 1024 * 8 });
+        mediaDuration = await probeMediaDuration(videoPath) || await probeMediaDuration(audioPath) || mediaDuration;
         break;
-      } catch {
-        // Try the next playable candidate.
+      } catch (error) {
+        downloadMessage = error instanceof Error ? error.message : "视频候选地址下载失败。";
       }
     }
 
@@ -1791,7 +1888,7 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
       status: audioPath ? "downloaded" : transcriptText ? "ready" : "needs_attention",
       title,
       author,
-      duration: aweme.duration ? Math.round(Number(aweme.duration) / 1000) : 0,
+      duration: mediaDuration,
       webpageUrl: detail.finalUrl,
       videoPath,
       videoUri: videoPath ? publicPath(videoPath) : "",
@@ -1803,9 +1900,11 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
         ? "已从抖音字幕提取文本。"
         : audioPath
           ? "已下载抖音视频并提取音频，正在启动本地 ASR 转写。"
+          : videoCandidates.length
+            ? `已找到 ${videoCandidates.length} 个视频候选地址，但下载或抽音频失败：${downloadMessage || "未知错误"}。`
           : detail.detailFallback
-            ? `抖音详情接口${detail.detailFallback === "timeout" ? "超时" : "未返回可用数据"}，已先使用分享标题。`
-          : "已解析抖音详情，但未下载到可转写音频，已先使用分享标题。"
+            ? `抖音详情接口${detail.detailFallback === "timeout" ? "超时" : "未返回可用数据"}，已使用分享页标题/描述作为文本。`
+          : "已解析抖音详情，但没有找到可下载的视频地址。"
     };
   } catch (error) {
     return {
@@ -1918,7 +2017,7 @@ async function transcribeSourceAudio(link, options = {}) {
   } catch (error) {
     return {
       linkId: link.id,
-      text: link.title ? `来源视频标题：${link.title}` : "",
+      text: link.title || "",
       status: "local_asr_failed",
       message: error instanceof Error ? error.message : "本地 ASR 转写失败。"
     };
@@ -1944,7 +2043,7 @@ async function analyzeSource(project, options = {}) {
       .filter((link) => link.title)
       .map((link) => ({
         linkId: link.id,
-        text: `来源视频标题：${link.title}`,
+        text: link.title,
         status: "metadata"
       })),
     notes: links.length
@@ -1981,7 +2080,7 @@ function buildExtractedSourceText(source = "", sourceAnalysis = {}) {
     .join("\n\n");
   const titleText = (sourceAnalysis.links || [])
     .filter((link) => link.title)
-    .map((link) => `来源视频标题：${link.title}`)
+    .map((link) => link.title)
     .join("\n");
   if (hasLinks) return (transcriptText || titleText).trim();
   return directText || source.trim();
@@ -2008,7 +2107,7 @@ function sourceExtractionNotes(source = "", sourceAnalysis = {}) {
   if (!links.length) {
     notes.push("已识别为文本内容，直接填入原始输入。");
   } else if (!hasTranscribed) {
-    notes.push("本次没有拿到可用 ASR 文本，已先使用可提取的视频标题。");
+    notes.push("本次没有拿到可用 ASR 文本，已先使用可提取的视频标题/描述。");
   }
   return Array.from(new Set(notes));
 }
@@ -2396,8 +2495,6 @@ async function createExternalAvatarVideo(input, outPath) {
     attempts.push({ command: process.env.AVATAR_RENDER_COMMAND, args: [payloadPath, outPath], engine: "configured-avatar-adapter" });
   } else if (engine === "musetalk" && existsSync(MUSETALK_ADAPTER_PATH)) {
     attempts.push({ command: process.execPath, args: [MUSETALK_ADAPTER_PATH, payloadPath, outPath], engine: "musetalk-v15" });
-  } else if (engine === "latentsync" && existsSync(LATENTSYNC_ADAPTER_PATH)) {
-    attempts.push({ command: process.execPath, args: [LATENTSYNC_ADAPTER_PATH, payloadPath, outPath], engine: "latentsync-1.6" });
   }
   if (!attempts.length) {
     return { ok: false, engine, error: `未找到 ${engine} 本地 Adapter，已回退预览视频。` };
@@ -2980,16 +3077,16 @@ app.post("/api/models/:id/install", (req, res, next) => {
     const db = readDb();
     const model = db.models.find((item) => item.id === req.params.id);
     if (!model) return res.status(404).json({ error: "Model not found" });
-    if (model.catalogId !== "latentsync-1-6") {
-      return res.status(400).json({ error: "当前只支持自动安装 LatentSync 模型包。" });
+    if (!model.catalogId || model.catalogId === "ffmpeg") {
+      return res.status(400).json({ error: "当前模型不支持自动安装。" });
     }
     model.status = "installing";
-    model.healthMessage = "正在下载 LatentSync 官方仓库和 1.6 权重，完成后请重新检测环境。";
+    model.healthMessage = "正在安装固定模型包，完成后请重新检测环境。";
     model.lastCheckedAt = now();
     writeDb(db);
-    execFile(process.execPath, [LATENTSYNC_INSTALLER_PATH], {
+    execFile(process.execPath, [MODEL_INSTALLER_PATH], {
       cwd: rootDir,
-      timeout: 1000 * 60 * 90,
+      timeout: 1000 * 60 * 120,
       maxBuffer: 1024 * 1024 * 16
     }, (error) => {
       const nextDb = readDb();
@@ -2999,8 +3096,8 @@ app.post("/api/models/:id/install", (req, res, next) => {
       nextModel.status = error ? "install_failed" : detection.status;
       nextModel.resolvedPath = detection.resolvedPath;
       nextModel.protocolStatus = error ? "安装失败" : detection.protocolStatus;
-      nextModel.protocolMessage = error ? "LatentSync 下载或安装失败，请检查网络后重试。" : detection.protocolMessage;
-      nextModel.healthMessage = error ? "LatentSync 下载或安装失败，请检查网络后重试。" : detection.message;
+      nextModel.protocolMessage = error ? "模型下载或安装失败，请检查网络后重试。" : detection.protocolMessage;
+      nextModel.healthMessage = error ? "模型下载或安装失败，请检查网络后重试。" : detection.message;
       nextModel.lastCheckedAt = now();
       writeDb(nextDb);
     });
@@ -3294,7 +3391,6 @@ app.post("/api/model-tests/tts", upload.single("referenceAudio"), async (req, re
 
 function avatarEngineFromModelId(modelId = "") {
   const normalized = String(modelId || "").toLowerCase();
-  if (normalized.includes("latent")) return "latentsync";
   if (normalized.includes("musetalk")) return "musetalk";
   return defaultVideoSettings.engine;
 }
@@ -3379,74 +3475,350 @@ app.post("/api/model-tests/avatar", upload.fields([
   }
 });
 
-async function buildSourceExtraction(source) {
-  const tempProject = normalizeProject({
-    id: `extract-${randomUUID()}`,
-    title: "临时来源提取",
-    sourceType: "unified",
-    inputText: source,
-    sourceText: source,
-    requirements: "",
-    manualScript: false,
-    reviewEnabled: true,
-    mode: "manual",
-    platforms: [],
-    avatarAssetId: "",
-    voiceId: "",
-    videoSettings: defaultVideoSettings,
-    status: "created",
-    currentStep: "input",
-    currentStage: "input",
-    artifacts: {},
-    sourceAnalysis: { links: [], transcripts: [], notes: [] },
-    stageState: {},
-    reviewSteps: [],
-    createdAt: now(),
-    updatedAt: now()
-  });
+const extractionStepDefinitions = [
+  ["link", "提取链接"],
+  ["type", "识别类型"],
+  ["extract", "提取/下载"],
+  ["asr", "ASR 转写"],
+  ["result", "解析结果"]
+];
 
-  const sourceAnalysis = extractLinks(source).length
-    ? await analyzeSource(tempProject, { probeTimeout: 45000, downloadTimeout: 180000 })
-    : { links: [], transcripts: [], notes: [] };
-  const extractedText = buildExtractedSourceText(source, sourceAnalysis);
-  const notes = sourceExtractionNotes(source, sourceAnalysis);
-  if ((sourceAnalysis.links || []).length && !extractedText) {
-    const err = new Error(notes[notes.length - 1] || "已识别链接，但没有提取到可用文本。请确认链接可访问，或启动本地 ASR 后重试。");
-    err.status = 422;
-    err.payload = { sourceAnalysis: { ...sourceAnalysis, notes }, notes };
-    throw err;
-  }
-  const firstLink = sourceAnalysis.links?.[0] || {};
+function sourceExtractionSteps() {
+  return extractionStepDefinitions.map(([key, label]) => ({
+    key,
+    label,
+    status: "pending",
+    outputText: "",
+    outputJson: null,
+    url: "",
+    mediaUri: "",
+    mediaType: "",
+    message: "",
+    updatedAt: ""
+  }));
+}
+
+function sourceTypeLabel(type = "") {
+  return ({
+    douyin: "抖音",
+    tiktok: "TikTok",
+    xiaohongshu: "小红书",
+    bilibili: "B站",
+    youtube: "YouTube",
+    direct_media: "媒体直链",
+    web: "普通网页",
+    text: "纯文本"
+  })[type] || type || "未知";
+}
+
+function createSourceExtraction(source) {
+  const createdAt = now();
   return {
     id: `extraction-${randomUUID()}`,
     sourceText: source,
-    detectedType: sourceExtractionKind(sourceAnalysis),
-    sourceUrl: firstLink.url || "",
-    title: firstLink.title || "",
-    extractedText,
-    transcriptText: (sourceAnalysis.transcripts || []).map((item) => item.text).filter(Boolean).join("\n\n"),
-    mediaUri: firstLink.videoUri || firstLink.audioUri || "",
-    status: "done",
-    sourceAnalysis: { ...sourceAnalysis, notes },
-    notes,
-    createdAt: now()
+    detectedType: "",
+    sourceUrl: "",
+    title: "",
+    extractedText: "",
+    transcriptText: "",
+    mediaUri: "",
+    status: "running",
+    steps: sourceExtractionSteps(),
+    sourceAnalysis: { links: [], transcripts: [], notes: [] },
+    notes: [],
+    createdAt,
+    updatedAt: createdAt
   };
 }
 
-app.post("/api/source-extractions", async (req, res, next) => {
+function updateSourceExtraction(id, updater) {
+  const db = readDb();
+  db.sourceExtractions ||= [];
+  const extraction = db.sourceExtractions.find((item) => item.id === id || item.extractionId === id);
+  if (!extraction) return null;
+  updater(extraction, db);
+  extraction.updatedAt = now();
+  writeDb(db);
+  return extraction;
+}
+
+function setExtractionStep(id, key, patch) {
+  return updateSourceExtraction(id, (extraction) => {
+    const step = (extraction.steps || []).find((item) => item.key === key);
+    if (!step) return;
+    Object.assign(step, patch, { updatedAt: now() });
+  });
+}
+
+function setExtractionFailed(id, key, error, patch = {}) {
+  const message = error instanceof Error ? error.message : String(error || "解析失败");
+  updateSourceExtraction(id, (extraction) => {
+    extraction.status = "failed";
+    extraction.error = message;
+    const step = (extraction.steps || []).find((item) => item.key === key);
+    if (step) Object.assign(step, { status: "failed", message, outputText: message, updatedAt: now() }, patch);
+    extraction.notes = Array.from(new Set([...(extraction.notes || []), message]));
+  });
+}
+
+async function extractWebText(link, options = {}) {
+  const response = await fetch(link.url, {
+    headers: { "User-Agent": browserUserAgent, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
+    signal: AbortSignal.timeout(options.probeTimeout || 45000)
+  });
+  if (!response.ok) throw new Error(`网页提取失败：HTTP ${response.status}`);
+  const html = await response.text();
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 8000);
+}
+
+async function runSourceExtraction(id) {
+  const record = updateSourceExtraction(id, (extraction) => {
+    extraction.status = "running";
+  });
+  if (!record) return;
+  const source = record.sourceText || "";
+  const sourceAnalysis = { links: [], transcripts: [], notes: [] };
   try {
-    const source = String(req.body.sourceText || req.body.source || req.body.link || req.body.inputText || "").trim();
-    if (!source) return res.status(400).json({ error: "请先输入要提取的链接或文本。" });
-    const extraction = await buildSourceExtraction(source);
-    const db = readDb();
-    db.sourceExtractions ||= [];
-    db.sourceExtractions.unshift(extraction);
-    writeDb(db);
-    res.json({ extractionId: extraction.id, ...extraction });
-  } catch (err) {
-    if (err.payload) return res.status(err.status || 500).json({ error: err.message, ...err.payload });
-    next(err);
+    setExtractionStep(id, "link", { status: "running", message: "正在从分享文本中提取真实链接。" });
+    const links = extractLinks(source);
+    if (!links.length) {
+      const text = stripLinks(source) || source.trim();
+      setExtractionStep(id, "link", { status: "skipped", outputText: "未识别到 URL，按纯文本处理。", message: "未识别到 URL。" });
+      setExtractionStep(id, "type", { status: "done", outputText: "纯文本", outputJson: { type: "text" }, message: "输入内容不是链接。" });
+      setExtractionStep(id, "extract", { status: "done", outputText: text, message: "已直接提取文本内容。" });
+      setExtractionStep(id, "asr", { status: "skipped", outputText: "当前来源不是视频，跳过 ASR。", message: "已跳过。" });
+      setExtractionStep(id, "result", { status: "done", outputText: text, message: "最终文本已生成。" });
+      updateSourceExtraction(id, (extraction) => {
+        extraction.status = "done";
+        extraction.detectedType = "text";
+        extraction.extractedText = text;
+        extraction.sourceAnalysis = { links: [], transcripts: [], notes: ["已识别为文本内容，直接作为最终文本。"] };
+        extraction.notes = extraction.sourceAnalysis.notes;
+      });
+      return;
+    }
+
+    const link = links[0];
+    setExtractionStep(id, "link", {
+      status: "done",
+      outputText: link.url,
+      url: link.url,
+      message: links.length > 1 ? `已提取首个链接，共识别 ${links.length} 个。` : "已提取链接。"
+    });
+
+    setExtractionStep(id, "type", { status: "running", message: "正在识别链接来源。" });
+    setExtractionStep(id, "type", {
+      status: "done",
+      outputText: sourceTypeLabel(link.platform),
+      outputJson: { platform: link.platform, url: link.url },
+      message: `识别为${sourceTypeLabel(link.platform)}。`
+    });
+
+    setExtractionStep(id, "extract", { status: "running", message: "正在提取内容或下载媒体。" });
+    let extractedLink = link;
+    let extractedText = "";
+    const options = { probeTimeout: 45000, downloadTimeout: 180000, apiTimeout: 12000, browserWaitMs: 4500, asrTimeout: 1200000 };
+    if (link.platform === "douyin") {
+      extractedLink = await extractDouyinLink(link, id, source, options);
+      sourceAnalysis.links.push(extractedLink);
+      const mediaUri = extractedLink.videoUri || extractedLink.audioUri || "";
+      setExtractionStep(id, "extract", {
+        status: ["download_failed"].includes(extractedLink.status) ? "failed" : "done",
+        outputText: [
+          extractedLink.title ? `标题：${extractedLink.title}` : "",
+          extractedLink.author ? `作者：${extractedLink.author}` : "",
+          extractedLink.message || ""
+        ].filter(Boolean).join("\n"),
+        outputJson: {
+          title: extractedLink.title || "",
+          author: extractedLink.author || "",
+          status: extractedLink.status || "",
+          duration: extractedLink.duration || 0,
+          webpageUrl: extractedLink.webpageUrl || ""
+        },
+        url: extractedLink.webpageUrl || link.url,
+        mediaUri,
+        mediaType: extractedLink.videoUri ? "video" : extractedLink.audioUri ? "audio" : "",
+        message: extractedLink.message || "提取完成。"
+      });
+    } else if (isDirectMediaUrl(link.url)) {
+      extractedLink = await downloadLinkAudio({ ...link, status: "ready", title: mediaTitleFromUrl(link.url), webpageUrl: link.url }, id, options);
+      sourceAnalysis.links.push(extractedLink);
+      setExtractionStep(id, "extract", {
+        status: extractedLink.audioPath ? "done" : "failed",
+        outputText: extractedLink.audioPath ? `已提取媒体音频：${extractedLink.title || mediaTitleFromUrl(link.url)}` : extractedLink.message || "媒体下载失败。",
+        outputJson: { title: extractedLink.title || "", status: extractedLink.status || "" },
+        url: link.url,
+        mediaUri: extractedLink.audioUri || link.url,
+        mediaType: "audio",
+        message: extractedLink.audioPath ? "媒体音频已提取。" : extractedLink.message || "媒体下载失败。"
+      });
+    } else {
+      try {
+        extractedText = await extractWebText(link, options);
+        extractedLink = { ...link, status: "ready", title: mediaTitleFromUrl(link.url), webpageUrl: link.url };
+        sourceAnalysis.links.push(extractedLink);
+        setExtractionStep(id, "extract", {
+          status: "done",
+          outputText: extractedText,
+          outputJson: { title: extractedLink.title, status: extractedLink.status },
+          url: link.url,
+          message: "已提取网页文本。"
+        });
+      } catch (error) {
+        extractedLink = await downloadLinkAudio(await probeLinkWithYtdlp(link, options), id, options);
+        sourceAnalysis.links.push(extractedLink);
+        setExtractionStep(id, "extract", {
+          status: extractedLink.audioPath ? "done" : "failed",
+          outputText: extractedLink.title ? `标题：${extractedLink.title}` : extractedLink.message || "未提取到可用内容。",
+          outputJson: { title: extractedLink.title || "", status: extractedLink.status || "" },
+          url: extractedLink.webpageUrl || link.url,
+          mediaUri: extractedLink.audioUri || "",
+          mediaType: extractedLink.audioUri ? "audio" : "",
+          message: extractedLink.message || (extractedLink.audioPath ? "音频已提取。" : "提取失败。")
+        });
+      }
+    }
+
+    const isVideoSource = ["douyin", "tiktok", "bilibili", "youtube", "direct_media"].includes(link.platform) || Boolean(extractedLink.audioPath || extractedLink.videoUri);
+    if (isVideoSource) {
+      setExtractionStep(id, "asr", {
+        status: "running",
+        outputText: extractedLink.audioPath
+          ? `已获得音频文件，正在转写。${extractedLink.duration ? `视频时长约 ${Math.round(extractedLink.duration)} 秒，长视频会耗时较久。` : ""}`
+          : "",
+        mediaUri: extractedLink.audioUri || "",
+        mediaType: extractedLink.audioUri ? "audio" : "",
+        outputJson: extractedLink.duration ? { duration: Math.round(extractedLink.duration) } : null,
+        message: extractedLink.transcriptText ? "已找到平台字幕，整理为转写结果。" : "正在临时启动 ASR 转写音频。"
+      });
+      if (extractedLink.transcriptText) {
+        sourceAnalysis.transcripts.push({
+          linkId: extractedLink.id,
+          text: extractedLink.transcriptText,
+          status: extractedLink.transcriptStatus || "subtitle"
+        });
+        setExtractionStep(id, "asr", {
+          status: "done",
+          outputText: extractedLink.transcriptText,
+          outputJson: { source: extractedLink.transcriptStatus || "subtitle" },
+          message: "已使用平台字幕作为转写结果。"
+        });
+      } else if (extractedLink.audioPath) {
+        try {
+          const result = await transcribeWithLocalAsr(extractedLink.audioPath, options);
+          const text = result.text || "";
+          if (!text.trim()) throw new Error("ASR 未返回有效文本。");
+          sourceAnalysis.transcripts.push({
+            linkId: extractedLink.id,
+            text,
+            status: "transcribed",
+            metrics: result.metrics || {}
+          });
+          setExtractionStep(id, "asr", {
+            status: "done",
+            outputText: text,
+            outputJson: result.metrics || {},
+            message: "ASR 转写完成。"
+          });
+        } catch (error) {
+          setExtractionStep(id, "asr", {
+            status: "failed",
+            outputText: error instanceof Error ? error.message : "ASR 转写失败。",
+            message: error instanceof Error ? error.message : "ASR 转写失败。"
+          });
+          sourceAnalysis.notes.push(`ASR：${error instanceof Error ? error.message : "转写失败。"}`);
+        }
+      } else {
+        setExtractionStep(id, "asr", {
+          status: "failed",
+          outputText: "未获得可转写的音频文件。",
+          message: "平台未返回可下载音频或视频。"
+        });
+        sourceAnalysis.notes.push("ASR：未获得可转写的音频文件。");
+      }
+    } else {
+      setExtractionStep(id, "asr", {
+        status: "skipped",
+        outputText: "当前来源不是视频，跳过 ASR。",
+        message: "已跳过。"
+      });
+    }
+
+    const notes = sourceExtractionNotes(source, sourceAnalysis);
+    const transcriptText = (sourceAnalysis.transcripts || []).map((item) => item.text).filter(Boolean).join("\n\n");
+    const finalText = (transcriptText || extractedText || buildExtractedSourceText(source, sourceAnalysis)).trim();
+    if (!finalText) throw new Error(notes[notes.length - 1] || "没有提取到可用文本。");
+    setExtractionStep(id, "result", {
+      status: "done",
+      outputText: finalText,
+      outputJson: { source: transcriptText ? "asr_or_subtitle" : extractedText ? "text_extract" : "metadata" },
+      message: "最终文本已生成。"
+    });
+    updateSourceExtraction(id, (extraction) => {
+      const firstLink = sourceAnalysis.links?.[0] || {};
+      extraction.status = "done";
+      extraction.detectedType = sourceExtractionKind(sourceAnalysis);
+      extraction.sourceUrl = firstLink.url || link.url;
+      extraction.title = firstLink.title || "";
+      extraction.extractedText = finalText;
+      extraction.transcriptText = transcriptText;
+      extraction.mediaUri = firstLink.videoUri || firstLink.audioUri || "";
+      extraction.sourceAnalysis = { ...sourceAnalysis, notes };
+      extraction.notes = notes;
+    });
+  } catch (error) {
+    setExtractionFailed(id, "result", error);
   }
+}
+
+async function buildSourceExtraction(source) {
+  const extraction = createSourceExtraction(source);
+  const db = readDb();
+  db.sourceExtractions ||= [];
+  db.sourceExtractions.unshift(extraction);
+  writeDb(db);
+  await runSourceExtraction(extraction.id);
+  const finalDb = readDb();
+  const finalExtraction = finalDb.sourceExtractions.find((item) => item.id === extraction.id);
+  if (!finalExtraction || finalExtraction.status === "failed") {
+    const err = new Error(finalExtraction?.error || "来源解析失败。");
+    err.status = 422;
+    err.payload = finalExtraction || {};
+    throw err;
+  }
+  return finalExtraction;
+}
+
+app.post("/api/source-extractions", (req, res) => {
+  const source = String(req.body.sourceText || req.body.source || req.body.link || req.body.inputText || "").trim();
+  if (!source) return res.status(400).json({ error: "请先输入要提取的链接或文本。" });
+  const extraction = createSourceExtraction(source);
+  const db = readDb();
+  db.sourceExtractions ||= [];
+  db.sourceExtractions.unshift(extraction);
+  writeDb(db);
+  setImmediate(() => {
+    runSourceExtraction(extraction.id).catch((error) => setExtractionFailed(extraction.id, "result", error));
+  });
+  res.json({ extractionId: extraction.id, ...extraction });
+});
+
+app.get("/api/source-extractions/:id", (req, res) => {
+  const db = readDb();
+  const extraction = (db.sourceExtractions || []).find((item) => item.id === req.params.id || item.extractionId === req.params.id);
+  if (!extraction) return res.status(404).json({ error: "Source extraction not found" });
+  res.json({ extractionId: extraction.id, ...extraction });
 });
 
 app.post("/api/source/extract", async (req, res, next) => {
@@ -3459,6 +3831,7 @@ app.post("/api/source/extract", async (req, res, next) => {
       extractedText: extraction.extractedText,
       kind: extraction.detectedType,
       sourceAnalysis: extraction.sourceAnalysis,
+      steps: extraction.steps,
       notes: extraction.notes
     });
   } catch (err) {
@@ -4020,7 +4393,7 @@ async function renderProject(projectId, options = {}) {
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: "正在生成字幕文件。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human-preview.mp4");
-    const avatarRenderPath = join(outDir, "digital-human-latentsync.mp4");
+    const avatarRenderPath = join(outDir, "digital-human-musetalk.mp4");
     const srtPath = join(outDir, "captions.srt");
     const captionSegments = buildCaptionSegments(project.artifacts.script.script, duration);
     writeFileSync(srtPath, buildSrt(project.artifacts.script.script, duration));

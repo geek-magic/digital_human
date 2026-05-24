@@ -43,10 +43,10 @@ npm run test:ui
 
 固定组合：
 
-- LLM：`Qwen3-14B 4bit`
-- ASR：`Qwen3-ASR 1.7B`
-- TTS：`Qwen3-TTS 1.7B Base`
-- Avatar：`ByteDance LatentSync 1.6`
+- LLM：`mlx-community/Qwen3.5-27B-4bit`，安装到 `MODEL_HOME/llm/qwen3.5-27b-4bit-mlx`
+- ASR：`Qwen/Qwen3-ASR-1.7B`，安装到 `MODEL_HOME/asr/qwen3-asr-1.7b`
+- TTS：`Qwen/Qwen3-TTS-12Hz-1.7B-Base`，安装到 `MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base`
+- Avatar：`TMElyralab/MuseTalk v1.5`，安装到 `MODEL_HOME/avatar/MuseTalk`
 - Media：`FFmpeg`
 
 开发机可以复用已有 Model Plaza 模型目录；其他用户首次安装时应直接拿到同一套模型包。软链接只负责定位模型权重，不能改变运行协议。系统固定使用 Adapter 协议约束输入输出：
@@ -59,35 +59,59 @@ npm run test:ui
 
 分享给其他用户时，模型目录应放置 `digital-human-adapter.json`，声明 `protocolId` 和 `protocolVersion`。如果只检测到目录但没有协议清单，页面会标记为协议未验证；如果协议版本不一致，页面会标记为协议不匹配。
 
-LatentSync 模型包建议目录：
+首次部署或拉取代码后，先安装 Node 依赖，再下载固定模型包：
+
+```bash
+npm install
+npm run install:models
+```
+
+统一安装脚本会下载并补齐：
+
+- `MODEL_HOME/llm/qwen3.5-27b-4bit-mlx`
+- `MODEL_HOME/asr/qwen3-asr-1.7b`
+- `MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base`
+- `MODEL_HOME/avatar/MuseTalk`
+
+脚本通过关键文件判断模型是否已经下载完成；关键文件都存在时，再执行 `npm run install:models` 会跳过对应模型下载，只刷新协议清单。
+
+判定清单：
 
 ```text
-MODEL_HOME/avatar/latentsync/
+MODEL_HOME/llm/qwen3.5-27b-4bit-mlx/
+├── config.json
+├── tokenizer.json
+└── model.safetensors.index.json
+
+MODEL_HOME/asr/qwen3-asr-1.7b/
+├── config.json
+├── preprocessor_config.json
+└── model.safetensors.index.json
+
+MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base/
+├── config.json
+├── model.safetensors
+└── speech_tokenizer/model.safetensors
+```
+
+MuseTalk 模型包目录：
+
+```text
+MODEL_HOME/avatar/MuseTalk/
 ├── scripts/inference.py
-├── configs/unet/stage2_512.yaml
-├── checkpoints/latentsync_unet.pt
-├── checkpoints/whisper/tiny.pt
+├── models/musetalkV15/unet.pth
+├── models/musetalkV15/musetalk.json
+├── models/sd-vae/config.json
+├── models/sd-vae/diffusion_pytorch_model.bin
+├── models/whisper/config.json
+├── models/whisper/pytorch_model.bin
+├── models/whisper/preprocessor_config.json
+├── models/face-parse-bisent/79999_iter.pth
+├── models/face-parse-bisent/resnet18-5c106cde.pth
 └── digital-human-adapter.json
 ```
 
-协议清单必须声明：
-
-```json
-{
-  "protocolId": "digital-human.avatar.render",
-  "protocolVersion": "1.0",
-  "engine": "ByteDance LatentSync 1.6",
-  "license": ["Apache-2.0", "openrail++"]
-}
-```
-
-LatentSync 代码协议为 Apache-2.0，权重协议为 openrail++。商业化打包时要随模型包保留两份协议、来源链接和校验文件。LatentSync 1.6 推理显存建议 18GB VRAM 以上；低配机器会自动退回预览视频链路，不阻塞任务生成。
-
-如果环境检测发现 LatentSync 缺失，可以在页面点击“安装/补齐”。也可以命令行执行：
-
-```bash
-node scripts/install-latentsync.mjs
-```
+脚本也会写入 `digital-human-adapter.json` 协议清单；商业化打包时要随模型包保留来源链接、许可证和校验文件。
 
 ## 链接来源处理
 
@@ -100,8 +124,6 @@ node scripts/install-latentsync.mjs
 - `MODEL_PLAZA_TTS_ENABLED=1`：优先调用本机 Model Plaza TTS。
 - `MODEL_PLAZA_TTS_MODEL=qwen3-tts-1.7b-base`：指定 TTS 模型 ID。
 - `MODEL_PLAZA_API=http://127.0.0.1:8765`：指定 Model Plaza API 地址。
-- `LATENTSYNC_HOME=/path/to/LatentSync`：指定 LatentSync 模型包或官方仓库目录，默认读取 `MODEL_HOME/avatar/latentsync`。
-- `LATENTSYNC_PYTHON=/path/to/python`：指定 LatentSync Python 环境。
-- `LATENTSYNC_INFERENCE_STEPS=20`：指定 LatentSync 推理步数，质量优先可提高到 30-50。
-- `LATENTSYNC_GUIDANCE_SCALE=1.5`：指定口型引导强度，过高可能带来画面抖动。
-- `AVATAR_RENDER_COMMAND=/path/to/render-adapter`：覆盖默认 LatentSync Adapter。命令会接收两个参数：输入 JSON 路径、输出 MP4 路径。
+- `MUSETALK_HOME=/path/to/MuseTalk`：指定 MuseTalk 模型包或官方仓库目录，默认读取 `MODEL_HOME/avatar/MuseTalk`。
+- `MUSETALK_PYTHON=/path/to/python`：指定 MuseTalk Python 环境。
+- `AVATAR_RENDER_COMMAND=/path/to/render-adapter`：覆盖默认 MuseTalk Adapter。命令会接收两个参数：输入 JSON 路径、输出 MP4 路径。

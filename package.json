@@ -9,6 +9,7 @@
     "dev:web": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc && vite build",
     "start": "NODE_ENV=production node server/index.js",
+    "install:models": "node scripts/install-models.mjs",
     "asr": "node scripts/asr-tool.mjs",
     "llm": "node scripts/llm-tool.mjs",
     "tts": "node scripts/tts-tool.mjs",
