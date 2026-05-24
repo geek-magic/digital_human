@@ -23,6 +23,9 @@ const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
+const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
+  ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
+  : join(rootDir, "runtime", "tools", "bin", "yt-dlp"));
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -764,6 +767,15 @@ function publicPath(path) {
   return `/storage/${relative(storageDir, path).split("/").join("/")}`;
 }
 
+function commandExists(command) {
+  try {
+    execFileSync(process.platform === "win32" ? "where" : "which", [command], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolvePathRef(pathRef) {
   if (!pathRef) return "";
   if (pathRef === "PATH:ffmpeg") return "ffmpeg";
@@ -789,7 +801,7 @@ function detectModel(model) {
     label: "自定义 Adapter 协议"
   };
   if (model.pathRef === "PATH:ffmpeg") {
-    const installed = existsSync("/opt/homebrew/bin/ffmpeg") || existsSync("/usr/bin/ffmpeg");
+    const installed = commandExists("ffmpeg") && commandExists("ffprobe");
     return {
       status: installed ? "installed" : "missing",
       resolvedPath: installed ? "ffmpeg" : "",
@@ -1917,7 +1929,8 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
 
 async function probeLinkWithYtdlp(link, options = {}) {
   try {
-    const { stdout } = await execFileAsync("yt-dlp", ["--dump-single-json", "--skip-download", "--no-playlist", link.url], {
+    const command = existsSync(YT_DLP_BIN) ? YT_DLP_BIN : "yt-dlp";
+    const { stdout } = await execFileAsync(command, ["--dump-single-json", "--skip-download", "--no-playlist", link.url], {
       timeout: options.probeTimeout || 120000,
       maxBuffer: 1024 * 1024 * 8
     });
@@ -1969,7 +1982,8 @@ async function downloadLinkAudio(link, projectId, options = {}) {
         audioPath
       ], { timeout: options.downloadTimeout || 300000, maxBuffer: 1024 * 1024 * 8 });
     } else {
-      await execFileAsync("yt-dlp", [
+      const command = existsSync(YT_DLP_BIN) ? YT_DLP_BIN : "yt-dlp";
+      await execFileAsync(command, [
         "--no-playlist",
         "--extract-audio",
         "--audio-format",
@@ -2408,7 +2422,7 @@ function buildSrt(script, duration) {
 }
 
 async function createSilentAudio(outPath, duration) {
-  if (!existsSync("/opt/homebrew/bin/ffmpeg") && !existsSync("/usr/bin/ffmpeg")) {
+  if (!commandExists("ffmpeg")) {
     writeFileSync(outPath, "Audio placeholder: configure TTS adapter to generate real speech.\n");
     return false;
   }
@@ -2653,7 +2667,7 @@ function overlayFilterGraph(captionOverlays) {
 }
 
 async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subtitlesPath = "", captionOverlays = []) {
-  const hasFfmpeg = existsSync("/opt/homebrew/bin/ffmpeg") || existsSync("/usr/bin/ffmpeg");
+  const hasFfmpeg = commandExists("ffmpeg");
   if (!hasFfmpeg) {
     writeFileSync(outPath, "Video placeholder: install FFmpeg and configure avatar adapter.\n");
     return false;

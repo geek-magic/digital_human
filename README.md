@@ -63,8 +63,21 @@ npm run test:ui
 
 ```bash
 npm install
+npm run install:system
 npm run install:models
 ```
+
+`install:system` 会先检查并尽量自动安装运行所需的系统工具：
+
+- macOS：优先使用 Homebrew 安装 `git`、`python`、`ffmpeg/ffprobe`、`curl`、`zip`。
+- Windows：优先使用 winget 安装 Git、Python、FFmpeg、curl、zip。
+- Linux：会检查缺失项并给出 `apt-get` 安装命令；不同发行版需要按提示处理。
+
+FFmpeg 不是 Mac 专用工具，Windows、Linux、macOS 都支持。项目的视频下载、抽音频、预览视频和字幕处理都依赖 `ffmpeg/ffprobe`。
+
+安装脚本还会执行 Playwright Chromium 安装，用于抖音等网页解析；如果机器已安装 Chrome，系统会优先使用 Chrome，否则使用 Playwright Chromium。`yt-dlp` 会安装到项目内 `runtime/tools` 虚拟环境，后端会优先调用该本地版本；缺失时抖音专用解析仍可用，但 B站、YouTube 等通用视频探测会降级。
+
+MuseTalk 官方 `requirements.txt` 包含 Web Demo 和部分可选依赖，其中 `tensorflow==2.12.0` 在不少新 macOS/Python 环境不可安装。项目安装脚本会安装经过裁剪的推理依赖集，覆盖当前数字人合成链路需要的 PyTorch、diffusers、transformers、opencv、mediapipe、moviepy 等包，不再盲装官方完整 requirements。
 
 统一安装脚本会下载并补齐：
 

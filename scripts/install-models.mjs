@@ -3,13 +3,19 @@ import { cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 const modelHome = process.env.MODEL_HOME || join(rootDir, "models");
 const runtimeHome = process.env.DH_RUNTIME_HOME || join(rootDir, "runtime");
+const toolsRuntime = join(runtimeHome, "tools");
 const python = process.env.DH_INSTALL_PYTHON || (process.platform === "win32" ? "python" : "python3");
 const hfEndpoint = process.env.HF_ENDPOINT || "";
+const args = new Set(process.argv.slice(2));
+const systemOnly = args.has("--system-only");
+const skipSystem = args.has("--skip-system");
+const skipBrowsers = args.has("--skip-browsers");
 
 const models = {
   llm: {
@@ -82,6 +88,29 @@ const museTalk = {
   }
 };
 
+const museTalkRuntimePackages = [
+  "huggingface_hub[cli]",
+  "gdown",
+  "requests",
+  "torch",
+  "torchvision",
+  "torchaudio",
+  "diffusers==0.30.2",
+  "accelerate==0.28.0",
+  "numpy==1.26.4",
+  "opencv-python==4.9.0.80",
+  "soundfile==0.12.1",
+  "transformers==4.39.2",
+  "huggingface_hub==0.30.2",
+  "librosa==0.11.0",
+  "einops==0.8.1",
+  "imageio[ffmpeg]",
+  "omegaconf",
+  "ffmpeg-python",
+  "moviepy",
+  "mediapipe"
+];
+
 function run(command, args, options = {}) {
   execFileSync(command, args, {
     stdio: "inherit",
@@ -94,6 +123,15 @@ function run(command, args, options = {}) {
   });
 }
 
+function tryRun(command, args, options = {}) {
+  try {
+    run(command, args, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function commandExists(command) {
   try {
     execFileSync(process.platform === "win32" ? "where" : "which", [command], { stdio: "ignore" });
@@ -103,27 +141,107 @@ function commandExists(command) {
   }
 }
 
+function commandAny(names) {
+  return names.find((name) => commandExists(name)) || "";
+}
+
+function installWithHomebrew(packages) {
+  if (!commandExists("brew")) return false;
+  const missing = packages.filter((pkg) => !commandExists(pkg.command));
+  for (const item of missing) run("brew", ["install", item.brew]);
+  return true;
+}
+
+function installWithWinget(packages) {
+  if (!commandExists("winget")) return false;
+  const missing = packages.filter((pkg) => !commandAny(pkg.commands));
+  for (const item of missing) run("winget", ["install", "--id", item.winget, "-e", "--accept-package-agreements", "--accept-source-agreements"]);
+  return true;
+}
+
+function ensureSystemDependencies() {
+  const required = [
+    {
+      label: "Git",
+      commands: ["git"],
+      brew: "git",
+      winget: "Git.Git",
+      install: "macOS: brew install git | Windows: winget install --id Git.Git -e | Linux: sudo apt-get install git"
+    },
+    {
+      label: "Python 3",
+      commands: [process.platform === "win32" ? "python" : "python3"],
+      brew: "python",
+      winget: "Python.Python.3.12",
+      install: "macOS: brew install python | Windows: winget install --id Python.Python.3.12 -e | Linux: sudo apt-get install python3 python3-venv"
+    },
+    {
+      label: "FFmpeg/FFprobe",
+      commands: ["ffmpeg", "ffprobe"],
+      brew: "ffmpeg",
+      winget: "Gyan.FFmpeg",
+      install: "macOS: brew install ffmpeg | Windows: winget install --id Gyan.FFmpeg -e | Linux: sudo apt-get install ffmpeg"
+    },
+    {
+      label: "curl",
+      commands: ["curl"],
+      brew: "curl",
+      winget: "cURL.cURL",
+      install: "macOS: brew install curl | Windows: winget install --id cURL.cURL -e | Linux: sudo apt-get install curl"
+    },
+    {
+      label: "zip",
+      commands: ["zip"],
+      brew: "zip",
+      winget: "GnuWin32.Zip",
+      install: "macOS: brew install zip | Windows: winget install --id GnuWin32.Zip -e | Linux: sudo apt-get install zip"
+    }
+  ];
+  const ready = (item) => item.commands.every((command) => commandExists(command));
+  let missing = required.filter((item) => !ready(item));
+  if (!missing.length) {
+    console.log("系统工具检查通过。");
+  } else if (process.platform === "darwin" && installWithHomebrew(missing.map((item) => ({ command: item.commands[0], brew: item.brew })))) {
+    missing = required.filter((item) => !ready(item));
+  } else if (process.platform === "win32" && installWithWinget(missing.map((item) => ({ commands: item.commands, winget: item.winget })))) {
+    missing = required.filter((item) => !ready(item));
+  }
+  if (missing.length) {
+    const details = missing.map((item) => `- ${item.label}: ${item.install}`).join("\n");
+    throw new Error(`缺少系统工具，无法保证完整运行：\n${details}`);
+  }
+
+  if (!commandExists("yt-dlp")) installPackages(toolsRuntime, ["yt-dlp"]);
+}
+
+function ensurePlaywrightBrowser() {
+  if (skipBrowsers) return;
+  run(process.platform === "win32" ? "npx.cmd" : "npx", ["playwright", "install", "chromium"]);
+}
+
 function pythonInVenv(venv) {
   return process.platform === "win32" ? join(venv, "Scripts", "python.exe") : join(venv, "bin", "python");
 }
 
-function ensureVenv(venv) {
+function ensureVenv(venv, basePython = python) {
   const bin = pythonInVenv(venv);
-  if (!existsSync(bin)) run(python, ["-m", "venv", venv]);
+  if (!existsSync(bin)) run(basePython, ["-m", "venv", venv]);
   run(bin, ["-m", "pip", "install", "-U", "pip", "setuptools", "wheel"]);
   return bin;
 }
 
-function runtimeMarker(venv) {
-  return join(venv, ".digital-human-runtime-ready");
+function runtimeMarker(venv, packages = []) {
+  const signature = createHash("sha1").update(packages.join("\n")).digest("hex").slice(0, 12);
+  return join(venv, `.digital-human-runtime-ready-${signature}`);
 }
 
-function installPackages(venv, packages) {
+function installPackages(venv, packages, options = {}) {
   const existingBin = pythonInVenv(venv);
-  if (existsSync(existingBin) && existsSync(runtimeMarker(venv))) return existingBin;
-  const bin = ensureVenv(venv);
+  const marker = runtimeMarker(venv, packages);
+  if (existsSync(existingBin) && existsSync(marker)) return existingBin;
+  const bin = ensureVenv(venv, options.python || python);
   run(bin, ["-m", "pip", "install", "-U", ...packages]);
-  writeFileSync(runtimeMarker(venv), `${new Date().toISOString()}\n`);
+  writeFileSync(marker, `${new Date().toISOString()}\n`);
   return bin;
 }
 
@@ -164,16 +282,9 @@ function ensureMuseTalkRepo() {
 }
 
 function installMuseTalkRuntime() {
-  const packages = ["huggingface_hub[cli]", "gdown", "mediapipe"];
-  const req = join(museTalk.target, "requirements.txt");
   const venv = join(museTalk.target, ".venv");
-  const existingBin = pythonInVenv(venv);
-  if (existsSync(existingBin) && existsSync(runtimeMarker(venv))) return existingBin;
-  const bin = ensureVenv(venv);
-  run(bin, ["-m", "pip", "install", "-U", ...packages]);
-  if (existsSync(req)) run(bin, ["-m", "pip", "install", "-r", req]);
-  writeFileSync(runtimeMarker(venv), `${new Date().toISOString()}\n`);
-  return bin;
+  const installPython = process.env.MUSETALK_PYTHON || python;
+  return installPackages(venv, museTalkRuntimePackages, { python: installPython });
 }
 
 function curlDownload(url, outputPath) {
@@ -230,7 +341,12 @@ function fileReady(path, minBytes) {
 }
 
 function main() {
-  if (!commandExists("git")) throw new Error("缺少 git，请先安装 git 后重试。");
+  if (!skipSystem) ensureSystemDependencies();
+  ensurePlaywrightBrowser();
+  if (systemOnly) {
+    console.log("系统工具和浏览器依赖已检查完成。");
+    return;
+  }
   installCoreModel(models.llm);
   installCoreModel(models.asr);
   installCoreModel(models.tts);
