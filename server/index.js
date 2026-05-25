@@ -2157,7 +2157,7 @@ function deriveTopic(input) {
   const sourceText = input.sourceAnalysis?.transcripts?.map((item) => item.text).join("。") || "";
   const directText = stripLinks(input.inputText || input.sourceText || "");
   const combined = [directText, sourceText].filter(Boolean).join("。");
-  if (/数字人|自动化|视频|口播|模型|ASR|TTS/i.test(combined)) {
+  if (/数字人|口播|ASR|TTS/i.test(combined)) {
     return "数字人视频自动化生成";
   }
   return compactChinese(combined || "短视频内容生产", 22);
@@ -2293,6 +2293,47 @@ function scriptTextFromModelText(text = "") {
   return script;
 }
 
+function stripTopicTags(text = "") {
+  return String(text)
+    .replace(/\s*#[^\s#，。！？；、]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function publishCopiesFromScript(script = "", fallbackInput = {}, baseTitle = "") {
+  const topic = compactChinese(baseTitle || deriveTopic(fallbackInput), 24) || "短视频口播";
+  const cleanScript = stripTopicTags(script);
+  const tags = ["AI工具", "短视频", "口播文案"];
+  return {
+    douyin: {
+      title: compactChinese(topic, 28),
+      body: `${cleanScript}\n\n#${tags.join(" #")}`,
+      checklist: ["上传视频", "粘贴标题", "粘贴正文和话题", "检查封面后人工发布"]
+    },
+    xiaohongshu: {
+      title: compactChinese(`${topic}｜实用教程`, 28),
+      body: `${cleanScript}\n\n#${tags.join(" #")}`,
+      checklist: ["上传视频", "粘贴标题和正文", "选择话题", "检查封面后人工发布"]
+    },
+    wechat: {
+      title: compactChinese(`${topic}：视频口播稿`, 32),
+      body: cleanScript,
+      checklist: ["上传视频素材", "写入标题和正文", "检查摘要和封面", "人工确认发布"]
+    }
+  };
+}
+
+function publishCopyForProject(project, platform = "douyin") {
+  const script = project.artifacts?.script?.script || "";
+  const scriptTitle = project.artifacts?.script?.title || "";
+  const baseTitle = /数字人视频自动化生成|短视频内容生产/.test(scriptTitle) ? project.title : scriptTitle || project.title;
+  const generated = publishCopiesFromScript(script, project, baseTitle);
+  const custom = project.artifacts?.script?.platformCopies?.[platform] || project.artifacts?.script?.platformCopies?.douyin;
+  const firstLine = stripTopicTags(script).slice(0, 24);
+  if (custom?.title && custom?.body && (!firstLine || custom.body.includes(firstLine))) return custom;
+  return generated[platform] || generated.douyin;
+}
+
 function scriptArtifactFromModelText(text = "", fallbackInput = {}) {
   const cleaned = stripModelJsonFence(text);
   const direct = parseJsonCandidate(cleaned);
@@ -2312,8 +2353,12 @@ function normalizeScriptArtifact(value, fallbackInput) {
   const fallback = buildScript(fallbackInput);
   const rawScript = String(value.script || "").trim();
   const script = scriptTextFromModelText(rawScript) || (rawScript && !/thinking process|<think>|final review|character count|critique|analyze the request/i.test(rawScript) ? rawScript : "") || fallback.script;
+  const title = String(value.title || fallback.title);
+  const platformCopies = value.platformCopies && Object.keys(value.platformCopies).length
+    ? value.platformCopies
+    : publishCopiesFromScript(script, fallbackInput, title);
   return {
-    title: String(value.title || fallback.title),
+    title,
     outline: Array.isArray(value.outline) && value.outline.length ? value.outline.map(String) : fallback.outline,
     script,
     tags: Array.isArray(value.tags) ? value.tags.map(String).filter(Boolean) : fallback.tags,
@@ -2324,11 +2369,7 @@ function normalizeScriptArtifact(value, fallbackInput) {
         : fallback.visualSummary.bullets,
       cta: String(value.visualSummary?.cta || fallback.visualSummary.cta)
     },
-    platformCopies: {
-      douyin: value.platformCopies?.douyin || fallback.platformCopies.douyin,
-      xiaohongshu: value.platformCopies?.xiaohongshu || fallback.platformCopies.xiaohongshu,
-      wechat: value.platformCopies?.wechat || fallback.platformCopies.wechat
-    },
+    platformCopies,
     modelInfo: value.modelInfo || null,
     modelParseWarning: value.modelParseWarning || ""
   };
@@ -4657,7 +4698,6 @@ app.post("/api/projects/:id/publish-package", async (req, res, next) => {
     const packId = `package-${randomUUID()}`;
     const outDir = join(packageDir, packId);
     mkdirSync(outDir, { recursive: true });
-    const copy = project.artifacts.script.platformCopies;
     const manifest = {
       projectId: project.id,
       title: project.title,
@@ -4678,7 +4718,7 @@ app.post("/api/projects/:id/publish-package", async (req, res, next) => {
     writeFileSync(join(outDir, "script.txt"), project.artifacts.script.script);
     writeFileSync(join(outDir, "metadata.json"), JSON.stringify(manifest, null, 2));
     for (const platform of project.platforms) {
-      const payload = copy[platform] || copy.douyin;
+      const payload = publishCopyForProject(project, platform);
       writeFileSync(
         join(outDir, `${platform}-publish-copy.txt`),
         [
@@ -4852,10 +4892,7 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
   project.selectedVideoVersionId = videoVersion.id;
   project.artifacts.video = videoArtifactFromVersion(videoVersion);
   if (videoVersion.artifact?.subtitles) project.artifacts.subtitles = videoVersion.artifact.subtitles;
-  const copy = project.artifacts.script?.platformCopies?.[platform] || project.artifacts.script?.platformCopies?.douyin || {
-    title: project.title,
-    body: project.artifacts.script?.script || ""
-  };
+  const copy = publishCopyForProject(project, platform);
   const publishPayload = {
     id: `publish-draft-${randomUUID()}`,
     projectId: project.id,
@@ -4890,10 +4927,7 @@ app.post("/api/projects/:id/publish-records", (req, res) => {
   project.selectedVideoVersionId = videoVersion.id;
   project.artifacts.video = videoArtifactFromVersion(videoVersion);
   if (videoVersion.artifact?.subtitles) project.artifacts.subtitles = videoVersion.artifact.subtitles;
-  const copy = project.artifacts.script?.platformCopies?.[platform] || project.artifacts.script?.platformCopies?.douyin || {
-    title: project.title,
-    body: project.artifacts.script?.script || ""
-  };
+  const copy = publishCopyForProject(project, platform);
   const record = {
     id: `publish-${randomUUID()}`,
     projectId: project.id,

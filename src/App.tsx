@@ -332,6 +332,8 @@ type PublishRecord = {
   status: string;
   publishUrl: string;
   videoUri: string;
+  videoPath?: string;
+  videoVersionLabel?: string;
   title: string;
   body: string;
   createdAt: string;
@@ -1195,6 +1197,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [selectedScriptVersionId, setSelectedScriptVersionId] = useState("");
   const [selectedAudioVersionId, setSelectedAudioVersionId] = useState("");
   const [selectedVideoVersionId, setSelectedVideoVersionId] = useState("");
+  const [publishDraft, setPublishDraft] = useState<PublishRecord | null>(null);
   const lastAutoStageRef = useRef<StageKey>(currentStage);
   const currentVersionId = (project?.videoVersions || project?.versions || []).find((version) => version.isCurrent)?.id || "";
 
@@ -1211,6 +1214,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setSelectedScriptVersionId(project?.selectedScriptVersionId || project?.scriptVersions?.[0]?.id || "");
     setSelectedAudioVersionId(project?.selectedAudioVersionId || project?.audioVersions?.[0]?.id || "");
     setSelectedVideoVersionId(project?.selectedVideoVersionId || (project?.videoVersions || project?.versions || [])[0]?.id || "");
+    setPublishDraft(null);
   }, [project?.id]);
 
   useEffect(() => {
@@ -1298,6 +1302,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       body: JSON.stringify({ videoVersionId: selectedVideoVersionId })
     }));
     if (payload) {
+      setPublishDraft(payload);
       await navigator.clipboard.writeText(`标题：${payload.title}\n\n正文：\n${payload.body}\n\n视频：${window.location.origin}${payload.videoUri}`);
       window.open(payload.publishUrl, "_blank");
     }
@@ -1376,6 +1381,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         generateVideo={generateVideo}
         selectedVideoVersionId={selectedVideoVersionId}
         setSelectedVideoVersionId={setSelectedVideoVersionId}
+        publishDraft={publishDraft}
         preparePublish={preparePublish}
         recordPublished={recordPublished}
         onGoNext={goNextStage}
@@ -1443,6 +1449,7 @@ function StageWorkspace({
   generateVideo,
   selectedVideoVersionId,
   setSelectedVideoVersionId,
+  publishDraft,
   preparePublish,
   recordPublished,
   onGoNext
@@ -1478,6 +1485,7 @@ function StageWorkspace({
   generateVideo: () => Promise<unknown>;
   selectedVideoVersionId: string;
   setSelectedVideoVersionId: (value: string) => void;
+  publishDraft: PublishRecord | null;
   preparePublish: (platform: Platform) => Promise<void>;
   recordPublished: (platform: Platform) => Promise<void>;
   onGoNext: () => void;
@@ -1494,6 +1502,7 @@ function StageWorkspace({
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
   const nextStage = stageOrder[stageOrder.indexOf(activeStage) + 1];
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
+  const copyPublishField = (value: string) => navigator.clipboard?.writeText(value).catch(() => undefined);
 
   return (
     <section className="step-panel">
@@ -1633,7 +1642,16 @@ function StageWorkspace({
             {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="primary-link" disabled={!selectedVideoVersion} onClick={() => preparePublish(platform)}><ExternalLink size={16} />{platformLabels[platform]}</button>)}
             {selectedVideoVersion && <a className="secondary-button" href={selectedVideoVersion.artifact.video.uri} download><Download size={16} />下载视频</a>}
           </div>
-          <small>点击平台只会复制发布素材并打开对应创作者后台；系统不会在未确认真实发布前写入发布记录。</small>
+          <small>点击平台会生成该平台发布草稿、复制完整发布素材并打开创作者后台；平台表单仍需用户确认后粘贴或上传。</small>
+          {publishDraft && (
+            <OutputItem title={`${publishDraft.platformLabel}发布草稿`} status={publishDraft.status} meta={publishDraft.videoVersionLabel || "当前视频版本"}>
+              <div className="publish-draft-grid">
+                <label><span>标题</span><input readOnly value={publishDraft.title} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.title)}>复制</button></label>
+                <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
+                <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
+              </div>
+            </OutputItem>
+          )}
           <div className="publish-buttons">
             {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="ghost-button" disabled={!selectedVideoVersion} onClick={() => recordPublished(platform)}>记录{platformLabels[platform]}结果</button>)}
           </div>

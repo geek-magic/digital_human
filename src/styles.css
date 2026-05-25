@@ -1033,6 +1033,24 @@ small { color: var(--muted); font-size: 12px; }
 .output-content .table-link {
   justify-self: start;
 }
+.publish-draft-grid {
+  display: grid;
+  gap: 10px;
+}
+.publish-draft-grid label {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.publish-draft-grid textarea {
+  min-height: 96px;
+}
+.publish-draft-grid input,
+.publish-draft-grid textarea {
+  color: var(--text);
+  background: #fff;
+}
 .job-log { display: grid; gap: 8px; }
 .job-row {
   display: grid;
