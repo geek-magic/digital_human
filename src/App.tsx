@@ -1484,7 +1484,7 @@ function StageWorkspace({
 }) {
   const stage = project.stageState?.[activeStage];
   const queueStage = latestQueue?.progress?.stage || project.progress?.stage;
-  const showQueue = latestQueue && (isActiveQueue(latestQueue) || queueStage === activeStage);
+  const showQueue = latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage;
   const publishRecords = state.publishRecords.filter((record) => record.projectId === project.id).slice(0, 6);
   const scriptVersions = project.scriptVersions || [];
   const audioVersions = project.audioVersions || [];
@@ -1751,9 +1751,8 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
 }
 
 function QueuePanel({ queueItem, project, action }: { queueItem?: QueueItem; project: Project; action: AppAction }) {
-  if (!queueItem && !project.lastError) return null;
+  if (!queueItem || !isActiveQueue(queueItem)) return null;
   const active = isActiveQueue(queueItem);
-  const failed = queueItem?.status === "failed" || project.status === "failed";
   const percent = queueItem?.progress?.percent ?? project.progress?.percent ?? 0;
   const label = queueItem?.progress?.label || project.progress?.label || project.lastError || "暂无队列状态。";
   return (
@@ -1769,13 +1768,11 @@ function QueuePanel({ queueItem, project, action }: { queueItem?: QueueItem; pro
       </div>
       <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
       <small>{label}</small>
-      {(failed || active) && (
+      {active && (
         <div className="queue-actions">
-          {failed && queueItem && <button className="ghost-button" onClick={() => action("重试任务", () => request(`/api/queue/${queueItem.id}/retry`, { method: "POST" }))}><RotateCcw size={15} />重试</button>}
           {active && queueItem?.status === "queued" && <button className="ghost-button danger" onClick={() => action("取消任务", () => request(`/api/queue/${queueItem.id}/cancel`, { method: "POST" }))}><XCircle size={15} />取消</button>}
         </div>
       )}
-      {(queueItem?.lastError || project.lastError) && <p className="error-note"><AlertTriangle size={14} />{queueItem?.lastError || project.lastError}</p>}
     </section>
   );
 }

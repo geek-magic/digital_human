@@ -4924,6 +4924,7 @@ app.post("/api/queue/:id/retry", (req, res) => {
   };
   project.status = "queued";
   project.activeQueueId = item.id;
+  project.lastError = "";
   setProjectProgress(project, {
     ...item.progress,
     status: item.status,
