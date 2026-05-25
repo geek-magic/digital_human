@@ -2247,6 +2247,7 @@ function parseJsonCandidate(candidate = "") {
 }
 
 function scriptTextFromModelText(text = "") {
+  const badMetaPattern = /thinking process|final review|character count|critique|constraints|analyze the request|^\s*(?:draft|final output)\s*[:：]/im;
   const cleaned = stripModelJsonFence(text)
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/^口播文案\s*[:：]\s*/i, "")
@@ -2263,10 +2264,12 @@ function scriptTextFromModelText(text = "") {
     return cjkCount >= 20 && cjkCount / Math.max(line.length, 1) > 0.45;
   });
   const completeLines = spokenLines.filter((line) => line.length >= 40 && /[。！？!?]$/.test(line));
-  const selected = (completeLines.at(-1) || spokenLines.sort((a, b) => b.length - a.length)[0] || cleaned);
-  return selected
+  const selected = completeLines.at(-1) || spokenLines.sort((a, b) => b.length - a.length)[0] || "";
+  const script = selected
     .replace(/^[“”"']+|[“”"']+$/g, "")
     .trim();
+  if (!script || badMetaPattern.test(script)) return "";
+  return script;
 }
 
 function scriptArtifactFromModelText(text = "", fallbackInput = {}) {
@@ -2286,10 +2289,12 @@ function scriptArtifactFromModelText(text = "", fallbackInput = {}) {
 
 function normalizeScriptArtifact(value, fallbackInput) {
   const fallback = buildScript(fallbackInput);
+  const rawScript = String(value.script || "").trim();
+  const script = scriptTextFromModelText(rawScript) || (rawScript && !/thinking process|<think>|final review|character count|critique|analyze the request/i.test(rawScript) ? rawScript : "") || fallback.script;
   return {
     title: String(value.title || fallback.title),
     outline: Array.isArray(value.outline) && value.outline.length ? value.outline.map(String) : fallback.outline,
-    script: String(value.script || fallback.script),
+    script,
     tags: Array.isArray(value.tags) ? value.tags.map(String).filter(Boolean) : fallback.tags,
     visualSummary: {
       hook: String(value.visualSummary?.hook || fallback.visualSummary.hook),
@@ -2310,6 +2315,7 @@ function normalizeScriptArtifact(value, fallbackInput) {
 
 async function callLocalLlm(messages, options = {}) {
   if (!existsSync(LLM_TOOL_PATH)) throw new Error("缺少本地 LLM CLI 工具。");
+  const timeoutMs = Number(options.llmTimeout || 240000);
   const { stdout } = await execFileAsync(process.execPath, [
     LLM_TOOL_PATH,
     "chat",
@@ -2318,11 +2324,11 @@ async function callLocalLlm(messages, options = {}) {
     "--temperature",
     String(options.temperature ?? 0.55),
     "--max-tokens",
-    String(options.maxTokens || 1800),
+    String(options.maxTokens || 700),
     "--timeout",
-    String(options.llmTimeout || 1200000)
+    String(timeoutMs)
   ], {
-    timeout: options.llmTimeout || 1200000,
+    timeout: timeoutMs + 5000,
     maxBuffer: 1024 * 1024 * 16,
     env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
   });
