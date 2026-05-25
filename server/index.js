@@ -1002,6 +1002,25 @@ function pushJob(db, projectId, step, status, message, artifact = null) {
   return job;
 }
 
+function markProjectDeleted(db, projectId) {
+  const project = ensureProject(db, projectId);
+  project.deletedAt = now();
+  project.status = "deleted";
+  project.updatedAt = now();
+  for (const item of db.queueItems || []) {
+    if (item.projectId !== project.id || !["queued", "running"].includes(item.status)) continue;
+    item.status = "cancelled";
+    item.updatedAt = now();
+    item.progress = {
+      ...(item.progress || {}),
+      label: "任务已删除，队列已取消。",
+      updatedAt: now()
+    };
+  }
+  pushJob(db, project.id, "delete_project", "completed", "任务已删除。");
+  return project;
+}
+
 function setStage(project, stage, status, message = "") {
   project.stageState ||= {};
   const timestamp = now();
@@ -4127,13 +4146,30 @@ app.post("/api/projects", (req, res) => {
   res.json(project);
 });
 
+app.post("/api/projects/bulk-delete", (req, res) => {
+  const ids = Array.isArray(req.body.ids)
+    ? Array.from(new Set(req.body.ids.map((id) => String(id || "").trim()).filter(Boolean)))
+    : [];
+  if (!ids.length) return res.status(400).json({ error: "请选择要删除的任务。" });
+  const db = readDb();
+  const deleted = [];
+  const missing = [];
+  for (const id of ids) {
+    try {
+      const project = markProjectDeleted(db, id);
+      deleted.push(project.id);
+    } catch (error) {
+      missing.push(id);
+    }
+  }
+  writeDb(db);
+  console.log(`[bulk-delete] requested=${ids.length} deleted=${deleted.length} missing=${missing.length}`);
+  res.json({ ok: true, requested: ids.length, deleted, missing });
+});
+
 app.delete("/api/projects/:id", (req, res) => {
   const db = readDb();
-  const project = ensureProject(db, req.params.id);
-  project.deletedAt = now();
-  project.status = "deleted";
-  project.updatedAt = now();
-  pushJob(db, project.id, "delete_project", "completed", "任务已删除。");
+  markProjectDeleted(db, req.params.id);
   writeDb(db);
   res.json({ ok: true });
 });

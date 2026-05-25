@@ -749,8 +749,11 @@ function TaskCenter(props: {
     if (!window.confirm(`删除选中的 ${checkedIds.length} 个任务？`)) return;
     const ids = [...checkedIds];
     await props.action("批量删除任务", async () => {
-      await Promise.all(ids.map((id) => request(`/api/projects/${id}`, { method: "DELETE" })));
-      return { ok: true };
+      return request("/api/projects/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids })
+      });
     });
     if (ids.includes(props.selectedProjectId)) props.setSelectedProjectId("");
     setCheckedIds([]);
