@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -92,9 +92,9 @@ const museTalkRuntimePackages = [
   "huggingface_hub[cli]",
   "gdown",
   "requests",
-  "torch",
-  "torchvision",
-  "torchaudio",
+  "torch==2.0.1",
+  "torchvision==0.15.2",
+  "torchaudio==2.0.2",
   "diffusers==0.30.2",
   "accelerate==0.28.0",
   "numpy==1.26.4",
@@ -281,6 +281,17 @@ function ensureMuseTalkRepo() {
   rmSync(tmp, { recursive: true, force: true });
 }
 
+function patchMuseTalkCompatibility() {
+  const resnetPath = join(museTalk.target, "musetalk", "utils", "face_parsing", "resnet.py");
+  if (!existsSync(resnetPath)) return;
+  const source = readFileSync(resnetPath, "utf-8");
+  const patched = source.replace(
+    "state_dict = torch.load(model_path) #modelzoo.load_url(resnet18_url)",
+    "state_dict = torch.load(model_path, weights_only=False) #modelzoo.load_url(resnet18_url)"
+  );
+  if (patched !== source) writeFileSync(resnetPath, patched);
+}
+
 function installMuseTalkRuntime() {
   const venv = join(museTalk.target, ".venv");
   const installPython = process.env.MUSETALK_PYTHON || python;
@@ -351,6 +362,7 @@ function main() {
   installCoreModel(models.asr);
   installCoreModel(models.tts);
   ensureMuseTalkRepo();
+  patchMuseTalkCompatibility();
   const museTalkPython = installMuseTalkRuntime();
   downloadMuseTalkWeights(museTalkPython);
   console.log(`模型已安装到：${modelHome}`);

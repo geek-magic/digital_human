@@ -708,6 +708,9 @@ function normalizeProject(project) {
   project.currentStep ||= project.currentStage || "input";
   project.currentStage = project.currentStep;
   project.status ||= "created";
+  if (project.status !== "failed" && project.stageState?.video?.status === "done") {
+    project.lastError = "";
+  }
   project.createdAt ||= now();
   project.updatedAt ||= project.createdAt;
   return project;
@@ -4711,6 +4714,7 @@ async function renderProject(projectId, options = {}) {
       format: "srt"
     };
     project.status = "video_ready";
+    project.lastError = "";
     setStage(project, "video", "done", "视频已生成。");
     if (project.mode === "auto") {
       project.currentStep = "publish";
