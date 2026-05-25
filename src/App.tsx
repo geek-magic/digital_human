@@ -119,7 +119,7 @@ type Asset = {
 };
 
 type VideoSettings = {
-  engine: "musetalk" | "preview";
+  engine: "musetalk";
   cropMode: "mediapipe" | "default";
   parsingMode: "jaw" | "raw";
   upperBoundaryRatio: number;
@@ -397,8 +397,8 @@ const stageCopy: Record<StageKey, { title: string; description: string }> = {
   input: { title: "输入", description: "确认原始文本和生成要求。" },
   script: { title: "生成口播文案", description: "基于输入生成或保存口播文案版本。" },
   voice: { title: "生成口播音频", description: "选择文案版本和音色，生成可试听音频版本。" },
-  video: { title: "视频合成", description: "选择音频版本和数字人素材，生成可预览视频版本。" },
-  publish: { title: "发布", description: "选择视频版本和渠道，生成发布记录。" }
+  video: { title: "视频合成", description: "选择音频版本和数字人素材，生成可用的视频版本。" },
+  publish: { title: "发布", description: "选择视频版本和渠道，打开平台发布入口并复制素材。" }
 };
 const stageActionMap: Partial<Record<StageKey, FlowAction>> = {
   script: { label: "生成口播文案", path: "generate-script" },
@@ -430,7 +430,7 @@ const defaultVideoSettings: VideoSettings = {
   rightCheekWidth: 90
 };
 const videoSettingTips: Record<keyof VideoSettings, string> = {
-  engine: "MuseTalk 用于当前本地口型生成；Preview 只做快速占位预览。",
+  engine: "MuseTalk 用于当前本地口型生成；失败时会直接标记失败，不生成无效占位视频。",
   cropMode: "MediaPipe 会按人脸关键点裁下半脸，通常比默认框更稳。",
   parsingMode: "jaw 会融合下巴和脸颊，raw 改动范围更小但贴片感可能更强。",
   upperBoundaryRatio: "数值越大，替换区域越靠下；嘴带动太多脸时调高到 0.53-0.56。",
@@ -477,6 +477,15 @@ function stageDone(status = "") {
 
 function stageRunning(status = "") {
   return status === "queued" || status === "running" || status.includes("running");
+}
+
+function canEnterStage(project: Project, stage: StageKey) {
+  if (stage === "input") return true;
+  if (stage === "script") return Boolean(project.inputText?.trim());
+  if (stage === "voice") return Boolean(project.scriptVersions?.length || project.artifacts.script);
+  if (stage === "video") return Boolean(project.audioVersions?.length || project.artifacts.audio);
+  if (stage === "publish") return Boolean((project.videoVersions || project.versions || []).length || project.artifacts.video);
+  return false;
 }
 
 function isActiveQueue(item?: QueueItem) {
@@ -533,6 +542,9 @@ function statusText(status = "") {
     configured: "已配置",
     passed: "通过",
     warning: "需关注",
+    ready_for_manual_publish: "待手动确认",
+    publish_payload_ready: "发布素材已准备",
+    published: "已发布",
     failed: "失败",
     blocked: "已阻止",
     cancelled: "已取消",
@@ -1058,7 +1070,7 @@ function TaskComposer({
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-              <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">默认预览</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+              <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
             </>
           )}
         </div>
@@ -1280,15 +1292,30 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     });
 
   async function preparePublish(platform: Platform) {
-    const record = await action("准备发布", () => request<PublishRecord>(`/api/projects/${currentProject.id}/publish/${platform}`, {
+    const payload = await action("打开发布入口", () => request<PublishRecord>(`/api/projects/${currentProject.id}/publish/${platform}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ videoVersionId: selectedVideoVersionId })
     }));
-    if (record) {
-      await navigator.clipboard.writeText(`标题：${record.title}\n\n正文：\n${record.body}\n\n视频：${window.location.origin}${record.videoUri}`);
-      window.open(record.publishUrl, "_blank");
+    if (payload) {
+      await navigator.clipboard.writeText(`标题：${payload.title}\n\n正文：\n${payload.body}\n\n视频：${window.location.origin}${payload.videoUri}`);
+      window.open(payload.publishUrl, "_blank");
     }
+  }
+
+  async function recordPublished(platform: Platform) {
+    const workUrl = window.prompt(`粘贴${platformLabels[platform]}已发布作品地址。没有地址就先不要记录。`, "");
+    if (!workUrl?.trim()) return;
+    await action("记录发布结果", () => request(`/api/projects/${currentProject.id}/publish-records`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channels: [platform],
+        videoVersionId: selectedVideoVersionId,
+        status: "published",
+        workUrl: workUrl.trim()
+      })
+    }));
   }
 
   const activeQueue = state.queueItems.find((item) => item.projectId === project.id && isActiveQueue(item));
@@ -1296,6 +1323,10 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const taskBusy = Boolean(activeQueue);
   const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
   const selectedAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
+  const goNextStage = () => {
+    const nextStage = stageOrder[stageOrder.indexOf(activeStage) + 1];
+    if (nextStage && canEnterStage(project, nextStage)) setActiveStage(nextStage);
+  };
 
   return (
     <aside className="task-detail">
@@ -1346,6 +1377,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         selectedVideoVersionId={selectedVideoVersionId}
         setSelectedVideoVersionId={setSelectedVideoVersionId}
         preparePublish={preparePublish}
+        recordPublished={recordPublished}
+        onGoNext={goNextStage}
       />
     </aside>
   );
@@ -1362,19 +1395,11 @@ function StepNavigator({
   activeStage: StageKey;
   onSelect: (stage: StageKey) => void;
 }) {
-  const unlocked = (stage: StageKey) => {
-    if (stage === "input") return true;
-    if (stage === "script") return Boolean(project.inputText?.trim());
-    if (stage === "voice") return Boolean(project.scriptVersions?.length || project.artifacts.script);
-    if (stage === "video") return Boolean(project.audioVersions?.length || project.artifacts.audio);
-    if (stage === "publish") return Boolean((project.videoVersions || project.versions || []).length || project.artifacts.video);
-    return false;
-  };
   return (
     <nav className="step-nav" aria-label="任务步骤">
       {stageOrder.map((stage, index) => {
         const state = project.stageState?.[stage];
-        const disabled = !unlocked(stage);
+        const disabled = !canEnterStage(project, stage);
         return (
           <button key={stage} disabled={disabled} className={cx("step-tab", activeStage === stage && "active", currentStage === stage && "current", disabled && "locked")} onClick={() => onSelect(stage)}>
             <span className="step-index">{index + 1}</span>
@@ -1418,7 +1443,9 @@ function StageWorkspace({
   generateVideo,
   selectedVideoVersionId,
   setSelectedVideoVersionId,
-  preparePublish
+  preparePublish,
+  recordPublished,
+  onGoNext
 }: {
   project: Project;
   state: State;
@@ -1452,6 +1479,8 @@ function StageWorkspace({
   selectedVideoVersionId: string;
   setSelectedVideoVersionId: (value: string) => void;
   preparePublish: (platform: Platform) => Promise<void>;
+  recordPublished: (platform: Platform) => Promise<void>;
+  onGoNext: () => void;
 }) {
   const stage = project.stageState?.[activeStage];
   const queueStage = latestQueue?.progress?.stage || project.progress?.stage;
@@ -1463,6 +1492,8 @@ function StageWorkspace({
   const selectedScriptVersion = scriptVersions.find((version) => version.id === selectedScriptVersionId) || scriptVersions[0];
   const selectedAudioVersion = audioVersions.find((version) => version.id === selectedAudioVersionId) || audioVersions[0];
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
+  const nextStage = stageOrder[stageOrder.indexOf(activeStage) + 1];
+  const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
 
   return (
     <section className="step-panel">
@@ -1472,7 +1503,14 @@ function StageWorkspace({
           <h3>{stage?.label || stageCopy[activeStage].title}</h3>
           <small>{stageCopy[activeStage].description}</small>
         </div>
-        <StatusBadge status={stage?.status || "pending"} />
+        <div className="step-head-actions">
+          {project.mode === "manual" && nextStage && (
+            <button className="secondary-button" disabled={taskBusy || !canGoNext} onClick={onGoNext}>
+              下一步：{stageCopy[nextStage].title}
+            </button>
+          )}
+          <StatusBadge status={stage?.status || "pending"} />
+        </div>
       </div>
       {showQueue && <QueuePanel queueItem={latestQueue} project={project} action={action} />}
 
@@ -1560,7 +1598,7 @@ function StageWorkspace({
             {selectedAudioVersion ? <audio controls src={selectedAudioVersion.audioUri} /> : <p>请先生成口播音频版本。</p>}
           </OutputItem>
           <div className="field-row">
-            <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">默认预览</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+            <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
             <button className="secondary-button align-end" onClick={saveVideoSetup}><Settings2 size={16} />保存设置</button>
           </div>
           <AvatarSample asset={selectedAsset} />
@@ -1573,7 +1611,7 @@ function StageWorkspace({
             {selectedVideoVersion ? <video src={selectedVideoVersion.artifact.video.uri} controls /> : <EmptyState text="视频生成后会显示在这里。" />}
           </div>
           <div className="step-actions">
-            <ActionButton label="生成视频" busy={busy} disabled={taskBusy || !selectedAudioVersion} onClick={generateVideo} />
+            <ActionButton label="生成视频" busy={busy} disabled={taskBusy || !selectedAudioVersion || !selectedAsset} onClick={generateVideo} />
           </div>
           <VideoVersionPanel project={project} versions={videoVersions} selectedId={selectedVideoVersionId} onSelect={setSelectedVideoVersionId} busy={busy} action={action} />
         </div>
@@ -1595,13 +1633,17 @@ function StageWorkspace({
             {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="primary-link" disabled={!selectedVideoVersion} onClick={() => preparePublish(platform)}><ExternalLink size={16} />{platformLabels[platform]}</button>)}
             {selectedVideoVersion && <a className="secondary-button" href={selectedVideoVersion.artifact.video.uri} download><Download size={16} />下载视频</a>}
           </div>
+          <small>点击平台只会复制发布素材并打开对应创作者后台；系统不会在未确认真实发布前写入发布记录。</small>
+          <div className="publish-buttons">
+            {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="ghost-button" disabled={!selectedVideoVersion} onClick={() => recordPublished(platform)}>记录{platformLabels[platform]}结果</button>)}
+          </div>
           <div className="output-list">
             {publishRecords.length ? publishRecords.map((record) => (
               <OutputItem key={record.id} title={record.platformLabel} status={record.status} meta={formatDate(record.createdAt)}>
                 <p>{record.title}</p>
                 <small>{record.workUrl || "未记录作品地址"}</small>
               </OutputItem>
-            )) : <EmptyState text="还没有发布记录。选择平台后会生成发布文案和入口。" />}
+            )) : <EmptyState text="还没有发布记录。发布完成后到发布历史里记录作品地址。" />}
           </div>
         </div>
       )}
@@ -1620,9 +1662,9 @@ function VoiceSample({ asset }: { asset?: Asset }) {
 }
 
 function AvatarSample({ asset }: { asset?: Asset }) {
-  if (!asset) return <EmptyState text="未选择数字人素材，生成时会使用默认预览素材。" />;
+  if (!asset) return <EmptyState text="请选择数字人素材后再生成视频。" />;
   return (
-    <article className="media-sample">
+    <article className="media-sample avatar-sample">
       <video controls muted preload="metadata" src={asset.uri} />
       <div>
         <strong>{asset.name}</strong>
@@ -1636,7 +1678,7 @@ function AvatarSample({ asset }: { asset?: Asset }) {
 function VideoSettingsEditor({ videoSettings, setVideoSettings }: { videoSettings: VideoSettings; setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>> }) {
   return (
     <div className="param-grid">
-      <label><span>渲染引擎</span><select value={videoSettings.engine} title={videoSettingTips.engine} onChange={(event) => setVideoSettings((current) => ({ ...current, engine: event.target.value as VideoSettings["engine"] }))}><option value="musetalk">MuseTalk</option><option value="preview">预览</option></select><small className="param-help">{videoSettingTips.engine}</small></label>
+      <label><span>渲染引擎</span><select value={videoSettings.engine} title={videoSettingTips.engine} onChange={(event) => setVideoSettings((current) => ({ ...current, engine: event.target.value as VideoSettings["engine"] }))}><option value="musetalk">MuseTalk</option></select><small className="param-help">{videoSettingTips.engine}</small></label>
       <label><span>裁剪方式</span><select value={videoSettings.cropMode} title={videoSettingTips.cropMode} onChange={(event) => setVideoSettings((current) => ({ ...current, cropMode: event.target.value as VideoSettings["cropMode"] }))}><option value="mediapipe">MediaPipe</option><option value="default">默认</option></select><small className="param-help">{videoSettingTips.cropMode}</small></label>
       <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">jaw</option><option value="raw">raw</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
       <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
@@ -1743,7 +1785,7 @@ function AssetQualityPanel({ asset }: { asset?: Asset }) {
     return (
       <section className="quality-panel">
         <div className="section-head"><div><p className="eyebrow">素材质检</p><h3>数字人素材</h3></div><StatusBadge status="pending" /></div>
-        <small>当前任务未选择数字人素材，会使用预览画面或后端兜底素材。</small>
+        <small>当前任务未选择数字人素材，请先在视频合成步骤选择可用素材。</small>
       </section>
     );
   }
@@ -2711,12 +2753,12 @@ function PublishHistory({ records, projects, action }: { records: PublishRecord[
         rows={records.map((record) => [
           projects.find((item) => item.id === record.projectId)?.title || record.projectTitle,
           record.platformLabel,
-          record.status,
+          statusText(record.status),
           record.publishedAt ? formatDate(record.publishedAt) : formatDate(record.createdAt),
           <span className="table-actions"><a className="table-link" href={record.workUrl || record.publishUrl} target="_blank" rel="noreferrer">打开</a><button className="text-button" onClick={() => markPublished(record)}>记录地址</button><button className="text-button danger-text" onClick={() => deleteRecord(record)}>删除</button></span>
         ])}
       />
-      {records.length === 0 && <EmptyState text="还没有发布记录。任务详情里点击平台发布后会生成记录。" />}
+      {records.length === 0 && <EmptyState text="还没有发布记录。只有确认已发布并记录作品地址后才会出现在这里。" />}
     </section>
   );
 }

@@ -721,7 +721,7 @@ function clampNumber(value, min, max, fallback, integer = false) {
 }
 
 function normalizeVideoSettings(settings = {}) {
-  const engine = ["musetalk", "preview"].includes(settings.engine)
+  const engine = ["musetalk"].includes(settings.engine)
     ? settings.engine
     : defaultVideoSettings.engine;
   return {
@@ -2582,9 +2582,6 @@ async function createExternalAvatarVideo(input, outPath) {
   const payloadPath = join(dirname(outPath), "avatar-render-input.json");
   writeFileSync(payloadPath, JSON.stringify(input, null, 2));
   const engine = input.videoSettings?.engine || defaultVideoSettings.engine;
-  if (engine === "preview") {
-    return { ok: false, skipped: true, engine, error: "当前选择 Preview 引擎，未调用口型模型。" };
-  }
   const attempts = [];
   if (process.env.AVATAR_RENDER_COMMAND) {
     attempts.push({ command: process.env.AVATAR_RENDER_COMMAND, args: [payloadPath, outPath], engine: "configured-avatar-adapter" });
@@ -2592,7 +2589,7 @@ async function createExternalAvatarVideo(input, outPath) {
     attempts.push({ command: process.execPath, args: [MUSETALK_ADAPTER_PATH, payloadPath, outPath], engine: "musetalk-v15" });
   }
   if (!attempts.length) {
-    return { ok: false, engine, error: `未找到 ${engine} 本地 Adapter，已回退预览视频。` };
+    return { ok: false, engine, error: `未找到 ${engine} 本地 Adapter。` };
   }
   let lastError = "";
   for (const attempt of attempts) {
@@ -2894,7 +2891,9 @@ app.get("/api/state", (_req, res) => {
     voices: (db.voices || []).filter((voice) => !voice.deletedAt),
     queueItems: (db.queueItems || []).map((item) => publicQueueItem(item, db)),
     resource: resourceSnapshot(db),
-    publishRecords: (db.publishRecords || []).filter((record) => !record.deletedAt).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+    publishRecords: (db.publishRecords || [])
+      .filter((record) => !record.deletedAt && record.status === "published")
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     apiProviders: (db.apiProviders || []).map(publicProvider),
     modelCatalog: modelCatalog.filter((item) => item.type !== "media").map((item) => ({
       ...item,
@@ -4475,6 +4474,11 @@ async function renderProject(projectId, options = {}) {
     mkdirSync(outDir, { recursive: true });
     const duration = project.artifacts.audio?.duration || 45;
     const avatar = db.avatarAssets.find((item) => item.id === project.avatarAssetId);
+    if (!avatar?.path) {
+      const err = new Error("请先选择可用的数字人素材。");
+      err.status = 400;
+      throw err;
+    }
     project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...(options.videoSettings || {}) });
     project.status = "running";
     setStage(project, "video", "running", "正在生成数字人视频。");
@@ -4488,7 +4492,7 @@ async function renderProject(projectId, options = {}) {
     pushJob(db, project.id, "render_video", "running", "开始生成数字人视频。", { videoSettings: project.videoSettings });
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: "正在生成字幕文件。", stage: "video", stageStatus: "running" });
-    const videoPath = join(outDir, "digital-human-preview.mp4");
+    const videoPath = join(outDir, "digital-human.mp4");
     const avatarRenderPath = join(outDir, "digital-human-musetalk.mp4");
     const srtPath = join(outDir, "captions.srt");
     const captionSegments = buildCaptionSegments(project.artifacts.script.script, duration);
@@ -4512,29 +4516,42 @@ async function renderProject(projectId, options = {}) {
       error: error instanceof Error ? error.message : "口型 Adapter 调用失败。"
     }));
     const externalRendered = Boolean(avatarRender.ok);
+    if (!externalRendered) {
+      const message = `数字人口型生成失败：${avatarRender.error || "口型 Adapter 未生成视频。"}`;
+      project.status = "failed";
+      project.lastError = message;
+      setStage(project, "video", "failed", message);
+      setProjectProgress(project, {
+        percent: options.queueId ? 82 : 0,
+        label: message,
+        stage: "video",
+        status: "failed",
+        queueId: options.queueId || ""
+      });
+      project.updatedAt = now();
+      pushJob(db, project.id, "render_video", "failed", message, { videoSettings: project.videoSettings, error: avatarRender.error || "" });
+      writeDb(db);
+      updateQueueProgress(options.queueId, { percent: 82, label: message, stage: "video", stageStatus: "failed" });
+      throw new Error(message);
+    }
     updateQueueProgress(options.queueId, { percent: 86, label: "正在封装视频、音频和字幕。", stage: "video" });
-    let rendered = false;
-    if (externalRendered) {
-      rendered = await createPreviewVideo(videoPath, avatarRenderPath, project.artifacts.audio?.path || "", duration, srtPath, []).catch(() => false);
-      if (!rendered && existsSync(avatarRenderPath)) {
-        copyFileSync(avatarRenderPath, videoPath);
-        rendered = true;
-      }
-    } else {
-      rendered = await createPreviewVideo(videoPath, avatar?.path, project.artifacts.audio?.path || "", duration, srtPath, []);
+    let rendered = await createPreviewVideo(videoPath, avatarRenderPath, project.artifacts.audio?.path || "", duration, srtPath, []).catch(() => false);
+    if (!rendered && existsSync(avatarRenderPath)) {
+      copyFileSync(avatarRenderPath, videoPath);
+      rendered = true;
     }
     const subtitlesEmbedded = rendered ? await embedSubtitlesInMp4(videoPath, srtPath) : false;
     project.artifacts.video = {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
-      adapter: externalRendered ? `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter` : rendered ? "preview-ffmpeg-video" : "placeholder-text",
+      adapter: `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
       subtitlesEmbedded,
       visibleCaptions: rendered,
       qualityReport: {
-        status: externalRendered ? `rendered_by_${avatarRender.engine || project.videoSettings.engine}` : "avatar_adapter_fallback",
+        status: `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
-          externalRendered ? `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。` : `口型 Adapter 未生成结果，已回退预览视频：${avatarRender.error || "原因未知"}`,
+          `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
           subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频轨。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
@@ -4795,13 +4812,13 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
     title: project.title,
     body: project.artifacts.script?.script || ""
   };
-  const record = {
-    id: `publish-${randomUUID()}`,
+  const publishPayload = {
+    id: `publish-draft-${randomUUID()}`,
     projectId: project.id,
     projectTitle: project.title,
     platform,
     platformLabel: platformLabels[platform],
-    status: "ready_for_manual_publish",
+    status: "publish_payload_ready",
     publishUrl: platformLinks[platform],
     videoVersionId: videoVersion.id,
     videoVersionLabel: videoVersion.label,
@@ -4813,11 +4830,10 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
     publishedAt: "",
     workUrl: ""
   };
-  db.publishRecords.unshift(record);
-  setStage(project, "publish", "ready", `${platformLabels[platform]} 发布信息已准备。`);
-  pushJob(db, project.id, "prepare_publish", "completed", `${platformLabels[platform]} 发布信息已准备。`, record);
+  setStage(project, "publish", "ready", `${platformLabels[platform]} 发布素材已复制，可前往平台发布。`);
+  pushJob(db, project.id, "prepare_publish", "completed", `${platformLabels[platform]} 发布素材已准备，未写入发布记录。`, publishPayload);
   writeDb(db);
-  res.json(record);
+  res.json(publishPayload);
 });
 
 app.post("/api/projects/:id/publish-records", (req, res) => {
@@ -4850,9 +4866,10 @@ app.post("/api/projects/:id/publish-records", (req, res) => {
     title: copy.title,
     body: copy.body,
     createdAt: now(),
-    publishedAt: "",
-    workUrl: ""
+    publishedAt: req.body.status === "published" ? now() : "",
+    workUrl: String(req.body.workUrl || "")
   };
+  if (req.body.status === "published") record.status = "published";
   db.publishRecords.unshift(record);
   setStage(project, "publish", "ready", "发布记录已准备。");
   pushJob(db, project.id, "prepare_publish", "completed", "发布记录已准备。", record);
