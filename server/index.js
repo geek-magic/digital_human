@@ -448,7 +448,8 @@ function scriptArtifactFromVersion(project, version) {
     tags: Array.isArray(version.tags) ? version.tags : fallback.tags,
     visualSummary: version.visualSummary || fallback.visualSummary,
     platformCopies: version.platformCopies || fallback.platformCopies,
-    modelInfo: version.modelInfo || null
+    modelInfo: version.modelInfo || null,
+    modelParseWarning: version.modelParseWarning || ""
   };
 }
 
@@ -495,6 +496,7 @@ function normalizeScriptVersion(project, version, index) {
     visualSummary: version.visualSummary || version.artifact?.visualSummary || null,
     platformCopies: version.platformCopies || version.artifact?.platformCopies || buildScript(project).platformCopies,
     modelInfo: version.modelInfo || version.artifact?.modelInfo || null,
+    modelParseWarning: version.modelParseWarning || version.artifact?.modelParseWarning || "",
     createdAt: version.createdAt || project.updatedAt || project.createdAt || now(),
     status: version.status || "done",
     isCurrent: Boolean(version.isCurrent)
@@ -2164,7 +2166,8 @@ function scriptGenerationMessages(input) {
     {
       role: "system",
       content: [
-        "你是短视频数字人口播策划。只输出 JSON，不要输出 Markdown。",
+        "你是短视频数字人口播策划。只输出一个严格 JSON 对象，不要输出 Markdown，不要输出解释文字。",
+        "输出必须以 { 开头，以 } 结尾。字符串必须使用英文双引号，不能使用单引号，不能有尾逗号。",
         "JSON 字段必须包含：title:string, outline:string[], script:string, tags:string[], visualSummary:{hook:string, bullets:string[], cta:string}, platformCopies:{douyin:{title:string,body:string,checklist:string[]}, xiaohongshu:{title:string,body:string,checklist:string[]}, wechat:{title:string,body:string,checklist:string[]}}。",
         "口播文案要自然、可直接朗读，中文为主，避免空话。"
       ].join("\n")
@@ -2176,15 +2179,102 @@ function scriptGenerationMessages(input) {
   ];
 }
 
-function jsonFromModelText(text = "") {
-  const cleaned = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("文本模型未返回 JSON。");
-    return JSON.parse(match[0]);
+function stripModelJsonFence(text = "") {
+  return text
+    .trim()
+    .replace(/^```(?:json|JSON)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function findBalancedJsonObjects(text = "") {
+  const candidates = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
   }
+  return candidates.sort((a, b) => b.length - a.length);
+}
+
+function loosenJsonText(text = "") {
+  return text
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
+function parseJsonCandidate(candidate = "") {
+  const attempts = [
+    candidate,
+    loosenJsonText(candidate)
+  ];
+  for (const item of attempts) {
+    try {
+      return JSON.parse(item);
+    } catch {
+      // Try the next normalized candidate.
+    }
+  }
+  return null;
+}
+
+function scriptArtifactFromLooseText(text = "", fallbackInput = {}, parseError = "") {
+  const cleaned = stripModelJsonFence(text)
+    .replace(/^JSON\s*[:：]?/i, "")
+    .trim();
+  const fallback = buildScript(fallbackInput);
+  const script = cleaned && cleaned.length <= 4000 ? cleaned : fallback.script;
+  return {
+    ...fallback,
+    script,
+    title: fallback.title,
+    modelParseWarning: parseError || "文本模型没有返回可解析 JSON，已把模型文本作为口播文案草稿。"
+  };
+}
+
+function jsonFromModelText(text = "", fallbackInput = {}) {
+  const cleaned = stripModelJsonFence(text);
+  const direct = parseJsonCandidate(cleaned);
+  if (direct) return direct;
+
+  for (const candidate of findBalancedJsonObjects(cleaned)) {
+    const parsed = parseJsonCandidate(candidate);
+    if (parsed) return parsed;
+  }
+
+  const error = cleaned.includes("{")
+    ? "文本模型返回了 JSON 片段，但格式不合法，已转为可编辑草稿。"
+    : "文本模型未返回 JSON，已转为可编辑草稿。";
+  return scriptArtifactFromLooseText(cleaned, fallbackInput, error);
 }
 
 function normalizeScriptArtifact(value, fallbackInput) {
@@ -2206,7 +2296,8 @@ function normalizeScriptArtifact(value, fallbackInput) {
       xiaohongshu: value.platformCopies?.xiaohongshu || fallback.platformCopies.xiaohongshu,
       wechat: value.platformCopies?.wechat || fallback.platformCopies.wechat
     },
-    modelInfo: value.modelInfo || null
+    modelInfo: value.modelInfo || null,
+    modelParseWarning: value.modelParseWarning || ""
   };
 }
 
@@ -2348,7 +2439,7 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
     result = await callLocalLlm(messages, payload);
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
-  const parsed = jsonFromModelText(result.text || "");
+  const parsed = jsonFromModelText(result.text || "", input);
   return normalizeScriptArtifact({ ...parsed, modelInfo: { ...modelInfo, metrics: result.metrics || {} } }, input);
 }
 
@@ -4049,6 +4140,7 @@ function createScriptVersion(project, scriptArtifact, options = {}) {
     visualSummary: scriptArtifact.visualSummary || null,
     platformCopies: scriptArtifact.platformCopies || buildScript(project).platformCopies,
     modelInfo: scriptArtifact.modelInfo || null,
+    modelParseWarning: scriptArtifact.modelParseWarning || "",
     createdAt: now(),
     status: options.status || "done",
     isCurrent: true
@@ -4192,8 +4284,9 @@ async function generateScriptProject(projectId, options = {}) {
   }
   project.scriptModelId = options.payload?.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId;
   const version = createScriptVersion(project, script);
+  const warningSuffix = script.modelParseWarning ? "（模型未返回标准 JSON，已生成可编辑草稿）" : "";
   project.status = "script_ready";
-  setStage(project, "script", "done", `${version.label} 口播文案已生成。`);
+  setStage(project, "script", "done", `${version.label} 口播文案已生成。${warningSuffix}`);
   project.updatedAt = now();
   if (project.mode === "auto") {
     project.currentStep = "voice";
@@ -4201,16 +4294,16 @@ async function generateScriptProject(projectId, options = {}) {
   }
   setProjectProgress(project, {
     percent: options.queueId ? 40 : 100,
-    label: `${version.label} 口播文案已生成。`,
+    label: `${version.label} 口播文案已生成。${warningSuffix}`,
     stage: "script",
     status: project.status,
     queueId: options.queueId || ""
   });
-  pushJob(db, project.id, "generate_script", "completed", `${version.label} 口播文案已生成。`, version);
+  pushJob(db, project.id, "generate_script", "completed", `${version.label} 口播文案已生成。${warningSuffix}`, version);
   writeDb(db);
   updateQueueProgress(options.queueId, {
     percent: 40,
-    label: `${version.label} 口播文案已生成。`,
+    label: `${version.label} 口播文案已生成。${warningSuffix}`,
     stage: "script"
   });
   return project;
