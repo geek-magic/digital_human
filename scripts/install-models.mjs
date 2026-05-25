@@ -19,16 +19,16 @@ const skipBrowsers = args.has("--skip-browsers");
 
 const models = {
   llm: {
-    repo: "mlx-community/Qwen3.5-27B-4bit",
-    target: join(modelHome, "llm", "qwen3.5-27b-4bit-mlx"),
+    repo: "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    target: join(modelHome, "llm", "qwen2.5-7b-instruct-4bit-mlx"),
     runtime: join(runtimeHome, "llm"),
     packages: ["mlx-lm", "huggingface_hub[cli]"],
-    required: ["config.json", "tokenizer.json", "model.safetensors.index.json"],
+    required: ["config.json", "tokenizer.json"],
     protocol: {
       protocolId: "digital-human.llm.script",
       protocolVersion: "1.0",
-      engine: "Qwen3.5-27B 4bit MLX",
-      weightSource: "https://huggingface.co/mlx-community/Qwen3.5-27B-4bit",
+      engine: "Qwen2.5-7B-Instruct 4bit MLX",
+      weightSource: "https://huggingface.co/mlx-community/Qwen2.5-7B-Instruct-4bit",
       license: "Apache-2.0"
     }
   },
@@ -247,7 +247,7 @@ function installPackages(venv, packages, options = {}) {
 
 function hfDownload(repo, target, includes = [], pythonBin = python) {
   mkdirSync(target, { recursive: true });
-  const args = ["-m", "huggingface_hub.cli.hf", "download", repo, "--local-dir", target, "--local-dir-use-symlinks", "False"];
+  const args = ["-m", "huggingface_hub.cli.hf", "download", repo, "--local-dir", target];
   if (includes.length) args.push("--include", ...includes);
   run(pythonBin, args);
 }

@@ -85,16 +85,29 @@ const adapterProtocols = {
 
 const modelCatalog = [
   {
+    id: "qwen2-5-7b-instruct-4bit-mlx",
+    name: "Qwen2.5-7B-Instruct 4bit MLX",
+    type: "llm",
+    runtime: "内置 LLM CLI",
+    defaultPath: "llm/qwen2.5-7b-instruct-4bit-mlx",
+    protocolId: "llmScriptV1",
+    recommended: true,
+    bundleRole: "默认口播文案模型",
+    license: "Apache 2.0",
+    description: "非 thinking 指令模型，用于链接整理、选题提炼、口播正文、标题和发布文案生成。",
+    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen2.5-7b-instruct-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
+  },
+  {
     id: "qwen3-5-27b-4bit-mlx",
     name: "Qwen3.5-27B 4bit MLX",
     type: "llm",
     runtime: "内置 LLM CLI",
     defaultPath: "llm/qwen3.5-27b-4bit-mlx",
     protocolId: "llmScriptV1",
-    recommended: true,
-    bundleRole: "标准口播文案模型",
+    recommended: false,
+    bundleRole: "复杂分析备用模型",
     license: "Apache 2.0",
-    description: "用于链接理解、选题提炼、口播稿、标题和标签生成。",
+    description: "偏推理的大模型，保留为复杂分析备用；不建议作为口播正文默认模型。",
     installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen3.5-27b-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
   },
   {
@@ -297,9 +310,9 @@ const defaultDb = {
   publishPackages: [],
   publishRecords: [],
   settings: {
-    defaultTextModelId: "model-qwen3-5-27b-4bit-mlx",
+    defaultTextModelId: "model-qwen2-5-7b-instruct-4bit-mlx",
     defaultModelIds: {
-      llm: "model-qwen3-5-27b-4bit-mlx",
+      llm: "model-qwen2-5-7b-instruct-4bit-mlx",
       asr: "model-qwen3-asr-1-7b",
       tts: "model-qwen3-tts-1-7b-base",
       avatar: "model-musetalk-v15"
@@ -342,8 +355,14 @@ function normalizeDb(db) {
   db.publishPackages ||= [];
   db.publishRecords ||= [];
   db.settings ||= {};
-  db.settings.defaultTextModelId ||= "model-qwen3-5-27b-4bit-mlx";
+  db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
+  if (db.settings.defaultTextModelId === "model-qwen3-5-27b-4bit-mlx") {
+    db.settings.defaultTextModelId = "model-qwen2-5-7b-instruct-4bit-mlx";
+  }
   db.settings.defaultModelIds ||= {};
+  if (db.settings.defaultModelIds.llm === "model-qwen3-5-27b-4bit-mlx") {
+    db.settings.defaultModelIds.llm = "model-qwen2-5-7b-instruct-4bit-mlx";
+  }
   db.projects = db.projects.map(normalizeProject);
   db.queueItems = db.queueItems.map(normalizeQueueItem);
   for (const item of apiProviderCatalog) {
@@ -405,7 +424,7 @@ function normalizeDb(db) {
       if (recommended) db.settings.defaultModelIds[type] = recommended.id;
     }
   }
-  if (!db.settings.defaultTextModelId) db.settings.defaultTextModelId = db.settings.defaultModelIds.llm || "model-qwen3-5-27b-4bit-mlx";
+  if (!db.settings.defaultTextModelId) db.settings.defaultTextModelId = db.settings.defaultModelIds.llm || "model-qwen2-5-7b-instruct-4bit-mlx";
   if (!db.settings.defaultTextModelId.startsWith("provider:")) {
     db.settings.defaultModelIds.llm = db.settings.defaultTextModelId;
   } else {
@@ -2168,6 +2187,7 @@ function scriptGenerationMessages(input) {
         "你是短视频数字人口播策划。",
         "只输出最终口播正文纯文本，不要输出 JSON，不要输出 Markdown，不要输出标题、标签、大纲、发布建议、解释说明或 Thinking Process。",
         "不要展示推理过程，不要先列草稿，直接给最终可朗读正文。",
+        "不要保留输入里的话题标签、井号标签或平台标签。",
         "口播文案要自然、可直接朗读，中文为主，避免空话。"
       ].join("\n")
     },
@@ -2267,6 +2287,7 @@ function scriptTextFromModelText(text = "") {
   const selected = completeLines.at(-1) || spokenLines.sort((a, b) => b.length - a.length)[0] || "";
   const script = selected
     .replace(/^[“”"']+|[“”"']+$/g, "")
+    .replace(/\s*#[^\s#，。！？；、]+/g, "")
     .trim();
   if (!script || badMetaPattern.test(script)) return "";
   return script;
@@ -2427,7 +2448,7 @@ async function callCloudTts(provider, text, outPath, options = {}) {
 }
 
 async function generateScriptWithTextModel(db, project, payload = {}) {
-  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "model-qwen3-5-27b-4bit-mlx";
+  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
   const input = { ...project, ...payload, scriptModelId: modelId };
   const messages = scriptGenerationMessages(input);
   let result;
@@ -3319,7 +3340,7 @@ app.delete("/api/providers/:id", (req, res) => {
   const [provider] = db.apiProviders.splice(index, 1);
   const selectedValue = `provider:${provider.id}`;
   const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts"].includes(item)) || "llm";
-  const fallback = db.models.find((item) => item.type === capability && !item.hidden)?.id || (capability === "llm" ? "model-qwen3-5-27b-4bit-mlx" : "");
+  const fallback = db.models.find((item) => item.type === capability && !item.hidden)?.id || (capability === "llm" ? "model-qwen2-5-7b-instruct-4bit-mlx" : "");
   db.settings.defaultModelIds ||= {};
   if (capability === "llm" && (db.settings.defaultTextModelId === selectedValue || db.settings.defaultTextModelId === `provider:${provider.providerId}`)) {
     db.settings.defaultTextModelId = fallback;
@@ -3362,7 +3383,7 @@ app.post("/api/providers/:id/test", async (req, res, next) => {
 });
 
 function findTextModelTarget(db, modelId = "") {
-  const selected = String(modelId || db.settings.defaultTextModelId || "model-qwen3-5-27b-4bit-mlx");
+  const selected = String(modelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx");
   if (selected.startsWith("provider:")) {
     const providerKey = selected.replace("provider:", "");
     const provider = db.apiProviders.find((item) => item.id === providerKey || item.providerId === providerKey);
@@ -3983,7 +4004,7 @@ app.post("/api/projects", (req, res) => {
     reviewEnabled: mode === "manual",
     mode,
     platforms: req.body.platforms?.length ? req.body.platforms : ["douyin", "xiaohongshu", "wechat"],
-    scriptModelId: req.body.scriptModelId || db.settings.defaultTextModelId || "model-qwen3-5-27b-4bit-mlx",
+    scriptModelId: req.body.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx",
     avatarAssetId: req.body.avatarAssetId || "",
     voiceId: req.body.voiceId || "",
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
