@@ -108,7 +108,7 @@ const museTalkRuntimePackages = [
   "omegaconf",
   "ffmpeg-python",
   "moviepy",
-  "mediapipe"
+  "mediapipe==0.10.21"
 ];
 
 function run(command, args, options = {}) {

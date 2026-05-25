@@ -215,8 +215,12 @@ async function render(payloadPath, outPath) {
 
   if (settings.cropMode === "mediapipe") {
     const coordPath = join(workDir, `${basename(preparedVideo, ".mp4")}.pkl`);
-    await createMediapipeCoords(preparedVideo, coordPath, settings);
-    args.push("--use_saved_coord");
+    try {
+      await createMediapipeCoords(preparedVideo, coordPath, settings);
+      args.push("--use_saved_coord");
+    } catch (error) {
+      console.warn(`MediaPipe 坐标生成失败，回退 MuseTalk 默认坐标检测：${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   await run(pythonBin, args, {
