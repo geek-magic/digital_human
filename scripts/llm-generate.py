@@ -37,7 +37,10 @@ def main() -> int:
     if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template is not None:
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     else:
-        prompt = "\n".join(f"{item.get('role', 'user')}: {item.get('content', '')}" for item in messages)
+        prompt = "".join(
+            f"<|im_start|>{item.get('role', 'user')}\n{item.get('content', '')}<|im_end|>\n"
+            for item in messages
+        ) + "<|im_start|>assistant\n"
 
     infer_start = time.perf_counter()
     text = generate(

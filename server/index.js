@@ -2166,7 +2166,8 @@ function scriptGenerationMessages(input) {
       role: "system",
       content: [
         "你是短视频数字人口播策划。",
-        "只输出最终口播正文纯文本，不要输出 JSON，不要输出 Markdown，不要输出标题、标签、大纲、发布建议或解释说明。",
+        "只输出最终口播正文纯文本，不要输出 JSON，不要输出 Markdown，不要输出标题、标签、大纲、发布建议、解释说明或 Thinking Process。",
+        "不要展示推理过程，不要先列草稿，直接给最终可朗读正文。",
         "口播文案要自然、可直接朗读，中文为主，避免空话。"
       ].join("\n")
     },
@@ -2246,9 +2247,25 @@ function parseJsonCandidate(candidate = "") {
 }
 
 function scriptTextFromModelText(text = "") {
-  return stripModelJsonFence(text)
+  const cleaned = stripModelJsonFence(text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/^口播文案\s*[:：]\s*/i, "")
     .replace(/^正文\s*[:：]\s*/i, "")
+    .trim();
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const spokenLines = lines.filter((line) => {
+    if (/^(?:\d+\.|[-*#>`]|[（(]?\d+\s*[字秒]|\(?\d+\)?$)/.test(line)) return false;
+    if (/thinking process|final output|final review|character count|draft|critique|constraints|analyze the request|let's|wait,/i.test(line)) return false;
+    const cjkCount = (line.match(/[\u4e00-\u9fff]/g) || []).length;
+    return cjkCount >= 20 && cjkCount / Math.max(line.length, 1) > 0.45;
+  });
+  const completeLines = spokenLines.filter((line) => line.length >= 40 && /[。！？!?]$/.test(line));
+  const selected = (completeLines.at(-1) || spokenLines.sort((a, b) => b.length - a.length)[0] || cleaned);
+  return selected
+    .replace(/^[“”"']+|[“”"']+$/g, "")
     .trim();
 }
 
@@ -2301,7 +2318,7 @@ async function callLocalLlm(messages, options = {}) {
     "--temperature",
     String(options.temperature ?? 0.55),
     "--max-tokens",
-    String(options.maxTokens || 1100),
+    String(options.maxTokens || 1800),
     "--timeout",
     String(options.llmTimeout || 1200000)
   ], {
