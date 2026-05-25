@@ -2159,16 +2159,14 @@ function scriptGenerationMessages(input) {
   const payload = {
     sourceText: sourceText || input.inputText || input.sourceText || "",
     requirements: input.requirements || "",
-    title: input.title || "",
-    platforms: input.platforms || ["douyin", "xiaohongshu", "wechat"]
+    title: input.title || ""
   };
   return [
     {
       role: "system",
       content: [
-        "你是短视频数字人口播策划。只输出一个严格 JSON 对象，不要输出 Markdown，不要输出解释文字。",
-        "输出必须以 { 开头，以 } 结尾。字符串必须使用英文双引号，不能使用单引号，不能有尾逗号。",
-        "JSON 字段必须包含：title:string, outline:string[], script:string, tags:string[], visualSummary:{hook:string, bullets:string[], cta:string}, platformCopies:{douyin:{title:string,body:string,checklist:string[]}, xiaohongshu:{title:string,body:string,checklist:string[]}, wechat:{title:string,body:string,checklist:string[]}}。",
+        "你是短视频数字人口播策划。",
+        "只输出最终口播正文纯文本，不要输出 JSON，不要输出 Markdown，不要输出标题、标签、大纲、发布建议或解释说明。",
         "口播文案要自然、可直接朗读，中文为主，避免空话。"
       ].join("\n")
     },
@@ -2247,34 +2245,26 @@ function parseJsonCandidate(candidate = "") {
   return null;
 }
 
-function scriptArtifactFromLooseText(text = "", fallbackInput = {}, parseError = "") {
-  const cleaned = stripModelJsonFence(text)
-    .replace(/^JSON\s*[:：]?/i, "")
+function scriptTextFromModelText(text = "") {
+  return stripModelJsonFence(text)
+    .replace(/^口播文案\s*[:：]\s*/i, "")
+    .replace(/^正文\s*[:：]\s*/i, "")
     .trim();
-  const fallback = buildScript(fallbackInput);
-  const script = cleaned && cleaned.length <= 4000 ? cleaned : fallback.script;
-  return {
-    ...fallback,
-    script,
-    title: fallback.title,
-    modelParseWarning: parseError || "文本模型没有返回可解析 JSON，已把模型文本作为口播文案草稿。"
-  };
 }
 
-function jsonFromModelText(text = "", fallbackInput = {}) {
+function scriptArtifactFromModelText(text = "", fallbackInput = {}) {
   const cleaned = stripModelJsonFence(text);
   const direct = parseJsonCandidate(cleaned);
   if (direct) return direct;
-
   for (const candidate of findBalancedJsonObjects(cleaned)) {
     const parsed = parseJsonCandidate(candidate);
-    if (parsed) return parsed;
+    if (parsed?.script) return parsed;
   }
-
-  const error = cleaned.includes("{")
-    ? "文本模型返回了 JSON 片段，但格式不合法，已转为可编辑草稿。"
-    : "文本模型未返回 JSON，已转为可编辑草稿。";
-  return scriptArtifactFromLooseText(cleaned, fallbackInput, error);
+  const fallback = buildScript(fallbackInput);
+  return {
+    ...fallback,
+    script: scriptTextFromModelText(cleaned) || fallback.script
+  };
 }
 
 function normalizeScriptArtifact(value, fallbackInput) {
@@ -2439,7 +2429,7 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
     result = await callLocalLlm(messages, payload);
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
-  const parsed = jsonFromModelText(result.text || "", input);
+  const parsed = scriptArtifactFromModelText(result.text || "", input);
   return normalizeScriptArtifact({ ...parsed, modelInfo: { ...modelInfo, metrics: result.metrics || {} } }, input);
 }
 
@@ -4284,9 +4274,8 @@ async function generateScriptProject(projectId, options = {}) {
   }
   project.scriptModelId = options.payload?.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId;
   const version = createScriptVersion(project, script);
-  const warningSuffix = script.modelParseWarning ? "（模型未返回标准 JSON，已生成可编辑草稿）" : "";
   project.status = "script_ready";
-  setStage(project, "script", "done", `${version.label} 口播文案已生成。${warningSuffix}`);
+  setStage(project, "script", "done", `${version.label} 口播文案已生成。`);
   project.updatedAt = now();
   if (project.mode === "auto") {
     project.currentStep = "voice";
@@ -4294,16 +4283,16 @@ async function generateScriptProject(projectId, options = {}) {
   }
   setProjectProgress(project, {
     percent: options.queueId ? 40 : 100,
-    label: `${version.label} 口播文案已生成。${warningSuffix}`,
+    label: `${version.label} 口播文案已生成。`,
     stage: "script",
     status: project.status,
     queueId: options.queueId || ""
   });
-  pushJob(db, project.id, "generate_script", "completed", `${version.label} 口播文案已生成。${warningSuffix}`, version);
+  pushJob(db, project.id, "generate_script", "completed", `${version.label} 口播文案已生成。`, version);
   writeDb(db);
   updateQueueProgress(options.queueId, {
     percent: 40,
-    label: `${version.label} 口播文案已生成。${warningSuffix}`,
+    label: `${version.label} 口播文案已生成。`,
     stage: "script"
   });
   return project;
