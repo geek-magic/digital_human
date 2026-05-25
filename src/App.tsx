@@ -34,7 +34,7 @@ type WorkMode = "manual" | "auto";
 type StageKey = "input" | "script" | "voice" | "video" | "publish";
 type ModelTypeKey = "llm" | "asr" | "tts" | "avatar";
 
-type StageState = Record<StageKey, { label: string; status: string; message?: string; updatedAt?: string }>;
+type StageState = Record<StageKey, { label: string; status: string; message?: string; queuedAt?: string; startedAt?: string; finishedAt?: string; durationMs?: number; updatedAt?: string }>;
 
 type AdapterProtocol = {
   id: string;
@@ -473,6 +473,33 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
+function formatDurationMs(value?: number) {
+  if (value === undefined || Number.isNaN(value)) return "未开始";
+  const totalSeconds = Math.max(0, Math.round(value / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}小时${minutes}分`;
+  if (minutes) return `${minutes}分${seconds.toString().padStart(2, "0")}秒`;
+  return `${seconds}秒`;
+}
+
+function stageDurationMs(stage?: StageState[StageKey]) {
+  if (!stage) return undefined;
+  if (typeof stage.durationMs === "number") return stage.durationMs;
+  if (stageRunning(stage.status) && stage.startedAt) return Date.now() - new Date(stage.startedAt).getTime();
+  if (stage.startedAt && stage.finishedAt) return new Date(stage.finishedAt).getTime() - new Date(stage.startedAt).getTime();
+  return undefined;
+}
+
+function taskDurationMs(project: Project) {
+  const stageTotal = stageOrder.reduce((sum, stage) => sum + (stageDurationMs(project.stageState?.[stage]) || 0), 0);
+  if (stageTotal > 0) return stageTotal;
+  const active = ["queued", "running"].includes(project.status) || Object.values(project.stageState || {}).some((stage) => stageRunning(stage.status));
+  const end = active ? new Date().toISOString() : project.updatedAt;
+  return Math.max(0, new Date(end).getTime() - new Date(project.createdAt).getTime());
+}
+
 function stageDone(status = "") {
   return ["done", "ready", "video_ready", "completed"].some((item) => status.includes(item));
 }
@@ -568,6 +595,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [, setClock] = useState(Date.now());
 
   function showToast(message: string, tone: ToastState["tone"] = "success") {
     setToast({ message, tone });
@@ -586,6 +614,11 @@ export function App() {
       showToast(error.message, "error");
       setLoading(false);
     });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -768,7 +801,7 @@ function TaskCenter(props: {
                 <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
                   <div>
                     <strong>{project.title}</strong>
-                    <small>{formatDate(project.createdAt)} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
+                    <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
                   </div>
                   <StageDots project={project} />
                 </button>
@@ -1339,7 +1372,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         <div>
           <p className="eyebrow">当前任务 · {project.mode === "auto" ? "全自动模式" : "手动模式"}</p>
           <h2>{project.title}</h2>
-          <small>{formatDate(project.createdAt)}</small>
+          <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))}</small>
         </div>
         <button className="text-button danger-text" disabled={taskBusy} onClick={() => action("删除任务", () => request(`/api/projects/${project.id}`, { method: "DELETE" }))}><Trash2 size={14} />删除</button>
       </div>
@@ -1409,7 +1442,7 @@ function StepNavigator({
         return (
           <button key={stage} disabled={disabled} className={cx("step-tab", activeStage === stage && "active", currentStage === stage && "current", disabled && "locked")} onClick={() => onSelect(stage)}>
             <span className="step-index">{index + 1}</span>
-            <span><strong>{state?.label || stageCopy[stage].title}</strong><small>{statusText(state?.status || "pending")}</small></span>
+            <span><strong>{state?.label || stageCopy[stage].title}</strong><small>{statusText(state?.status || "pending")} · {formatDurationMs(stageDurationMs(state))}</small></span>
           </button>
         );
       })}
@@ -1510,7 +1543,7 @@ function StageWorkspace({
         <div>
           <p className="eyebrow">步骤 {stageOrder.indexOf(activeStage) + 1}</p>
           <h3>{stage?.label || stageCopy[activeStage].title}</h3>
-          <small>{stageCopy[activeStage].description}</small>
+          <small>{stageCopy[activeStage].description} · 阶段耗时 {formatDurationMs(stageDurationMs(stage))}</small>
         </div>
         <div className="step-head-actions">
           {project.mode === "manual" && nextStage && (
@@ -1734,11 +1767,11 @@ function FlowOverview({
         <div>
           <p className="eyebrow">流程定位</p>
           <h3>{stage?.label || currentStage} · {statusText(stage?.status)}</h3>
-          <small>{progressLabel}</small>
+          <small>{progressLabel} · 当前阶段耗时 {formatDurationMs(stageDurationMs(stage))}</small>
         </div>
         <div className="flow-progress">
           <strong>{progressValue(project)}%</strong>
-          <span>总进度</span>
+          <span>总进度 · {formatDurationMs(taskDurationMs(project))}</span>
         </div>
       </div>
       <div className="progress-track"><span style={{ width: `${progressValue(project)}%` }} /></div>
@@ -1782,6 +1815,7 @@ function QueuePanel({ queueItem, project, action }: { queueItem?: QueueItem; pro
       <div className="queue-meta">
         <span>{queueItem?.status === "queued" ? `队列第 ${queueItem.position || 1} 位` : statusText(queueItem?.status || project.status)}</span>
         {queueItem?.attempts ? <span>第 {queueItem.attempts} 次执行</span> : null}
+        {queueItem?.createdAt ? <span>队列耗时 {formatDurationMs(Date.now() - new Date(queueItem.createdAt).getTime())}</span> : null}
         {queueItem?.updatedAt ? <span>{formatDate(queueItem.updatedAt)}</span> : null}
       </div>
       <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
@@ -1957,7 +1991,7 @@ function StageTimeline({ project, currentStage }: { project: Project; currentSta
       {stageOrder.map((stage) => (
         <div key={stage} className={cx("stage-node", project.stageState?.[stage]?.status, currentStage === stage && "current")}>
           <span>{project.stageState?.[stage]?.label || stage}</span>
-          <small>{statusText(project.stageState?.[stage]?.status || "pending")}</small>
+          <small>{statusText(project.stageState?.[stage]?.status || "pending")} · {formatDurationMs(stageDurationMs(project.stageState?.[stage]))}</small>
           {project.stageState?.[stage]?.message && <em>{project.stageState[stage].message}</em>}
         </div>
       ))}

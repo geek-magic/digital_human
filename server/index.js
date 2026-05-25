@@ -1004,16 +1004,38 @@ function pushJob(db, projectId, step, status, message, artifact = null) {
 
 function setStage(project, stage, status, message = "") {
   project.stageState ||= {};
-  project.stageState[stage] = {
-    ...(project.stageState[stage] || {}),
+  const timestamp = now();
+  const previous = project.stageState[stage] || {};
+  const next = {
+    ...previous,
     label: stageLabels[stage],
     status,
     message,
-    updatedAt: now()
+    updatedAt: timestamp
+  };
+  if (status === "queued") {
+    next.queuedAt ||= timestamp;
+  } else if (status === "running") {
+    if (previous.status !== "running" || !previous.startedAt) next.startedAt = timestamp;
+    delete next.finishedAt;
+    delete next.durationMs;
+  } else if (["done", "ready", "failed", "cancelled", "completed"].includes(status)) {
+    const startedAt = next.startedAt || previous.updatedAt || timestamp;
+    next.startedAt = startedAt;
+    next.finishedAt = timestamp;
+    next.durationMs = Math.max(0, new Date(timestamp).getTime() - new Date(startedAt).getTime());
+  } else if (status === "pending") {
+    delete next.queuedAt;
+    delete next.startedAt;
+    delete next.finishedAt;
+    delete next.durationMs;
+  }
+  project.stageState[stage] = {
+    ...next
   };
   project.currentStep = stage;
   project.currentStage = stage;
-  project.updatedAt = now();
+  project.updatedAt = timestamp;
 }
 
 function resetStagesAfter(project, stage) {
@@ -4034,6 +4056,7 @@ app.post("/api/projects", (req, res) => {
         platformCopies: buildScript({ inputText, requirements: req.body.requirements }).platformCopies
       }
     : null;
+  const createdAt = now();
   const project = {
     id: `project-${randomUUID()}`,
     title,
@@ -4083,13 +4106,16 @@ app.post("/api/projects", (req, res) => {
           label: stageLabels[stage],
           status: stage === "input" || (manualScript && stage === "script") ? "done" : "pending",
           message: stage === "input" ? "输入已保存。" : manualScript && stage === "script" ? "已使用手动口播文案。" : "",
-          updatedAt: now()
+          updatedAt: createdAt,
+          ...(stage === "input" || (manualScript && stage === "script")
+            ? { startedAt: createdAt, finishedAt: createdAt, durationMs: 0 }
+            : {})
         }
       ])
     ),
     reviewSteps: [],
-    createdAt: now(),
-    updatedAt: now()
+    createdAt,
+    updatedAt: createdAt
   };
   if (project.scriptVersions[0]) {
     project.scriptVersions[0].projectId = project.id;
