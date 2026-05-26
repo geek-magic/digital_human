@@ -197,7 +197,7 @@ type Project = {
   progress?: ProgressState;
   stageState: StageState;
   sourceAnalysis: {
-    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string }>;
+    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string; audioUri?: string }>;
     transcripts: Array<{ text: string; status: string }>;
     notes: string[];
   };
@@ -394,6 +394,7 @@ const navItems = [
 ] as const;
 
 const stageOrder: StageKey[] = ["input", "script", "voice", "video", "publish"];
+const visibleStageOrder: StageKey[] = ["script", "voice", "video", "publish"];
 const platformLabels: Record<Platform, string> = { douyin: "抖音", xiaohongshu: "小红书", wechat: "公众号" };
 const stageCopy: Record<StageKey, { title: string; description: string }> = {
   input: { title: "输入", description: "确认原始文本和生成要求。" },
@@ -534,8 +535,14 @@ function getCurrentStage(project: Project): StageKey {
   return pendingStage || "publish";
 }
 
+function getVisibleStage(project: Project): StageKey {
+  const current = getCurrentStage(project);
+  return current === "input" ? "script" : current;
+}
+
 function getNextAction(project: Project, videoSettings: VideoSettings): FlowAction | undefined {
   const current = getCurrentStage(project);
+  if (current === "input") return stageActionMap.script;
   if (stageRunning(project.stageState?.[current]?.status)) return undefined;
   if (current === "video") return { label: "生成视频", path: "render-video", body: { videoSettings } };
   return stageActionMap[current];
@@ -545,8 +552,8 @@ function progressValue(project: Project) {
   if (typeof project.progress?.percent === "number" && ["queued", "running", "failed"].includes(project.progress.status || "")) {
     return project.progress.percent;
   }
-  const done = stageOrder.filter((stage) => stageDone(project.stageState?.[stage]?.status || "")).length;
-  return Math.round((done / stageOrder.length) * 100);
+  const done = visibleStageOrder.filter((stage) => stageDone(project.stageState?.[stage]?.status || "")).length;
+  return Math.round((done / visibleStageOrder.length) * 100);
 }
 
 function statusText(status = "") {
@@ -1224,11 +1231,13 @@ type AppAction = <T>(label: string, runner: () => Promise<T>) => Promise<T | und
 
 function TaskDetail({ project, state, busy, action }: { project?: Project; state: State; busy: string; action: AppAction }) {
   const [script, setScript] = useState("");
+  const [inputText, setInputText] = useState("");
+  const [requirements, setRequirements] = useState("");
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
-  const currentStage = project ? getCurrentStage(project) : "input";
+  const currentStage = project ? getVisibleStage(project) : "script";
   const [activeStage, setActiveStage] = useState<StageKey>(currentStage);
   const [selectedScriptVersionId, setSelectedScriptVersionId] = useState("");
   const [selectedAudioVersionId, setSelectedAudioVersionId] = useState("");
@@ -1239,10 +1248,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
 
   useEffect(() => {
     setScript(project?.artifacts.script?.script || project?.inputText || "");
+    setInputText(project?.inputText || "");
+    setRequirements(project?.requirements || "");
     setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
     setVoiceId(project?.voiceId || "");
     setAvatarAssetId(project?.avatarAssetId || "");
-  }, [project?.id, project?.artifacts.script?.script, project?.scriptModelId, project?.voiceId, project?.avatarAssetId, project?.inputText, state.settings?.defaultTextModelId, state.models]);
+  }, [project?.id, project?.artifacts.script?.script, project?.scriptModelId, project?.voiceId, project?.avatarAssetId, project?.inputText, project?.requirements, state.settings?.defaultTextModelId, state.models]);
 
   useEffect(() => {
     setActiveStage(currentStage);
@@ -1282,11 +1293,28 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       body: body ? JSON.stringify(body) : undefined
     }));
 
+  const saveInputConfig = (changedStage: StageKey = "script") =>
+    request<Project>(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inputText, requirements, scriptModelId, changedStage })
+    });
+
+  const generateScript = () =>
+    action("生成口播文案", async () => {
+      await saveInputConfig("script");
+      return request(`/api/projects/${project.id}/generate-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptModelId, inputText, requirements })
+      });
+    });
+
   const saveScript = () =>
     action("保存口播文案", () => request<Project>(`/api/projects/${project.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script, voiceId, scriptModelId, changedStage: "script" })
+      body: JSON.stringify({ script, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
     }));
 
   const saveVoice = () =>
@@ -1313,7 +1341,18 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptVersionId: selectedScriptVersionId })
+        body: JSON.stringify({ scriptVersionId: selectedScriptVersionId, voiceId })
+      });
+    });
+
+  const importAudioVersion = (file?: File) =>
+    action(file ? "保存音频版本" : "保存原始音频", async () => {
+      const body = new FormData();
+      if (file) body.append("audio", file);
+      if (selectedScriptVersionId) body.append("scriptVersionId", selectedScriptVersionId);
+      return request(`/api/projects/${project.id}/audio-versions/import`, {
+        method: "POST",
+        body
       });
     });
 
@@ -1327,7 +1366,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId })
+        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId })
       });
     });
 
@@ -1365,7 +1404,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
   const selectedAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
   const goNextStage = () => {
-    const nextStage = stageOrder[stageOrder.indexOf(activeStage) + 1];
+    const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
     if (nextStage && canEnterStage(project, nextStage)) setActiveStage(nextStage);
   };
 
@@ -1396,7 +1435,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         runStage={runStage}
         script={script}
         setScript={setScript}
+        inputText={inputText}
+        setInputText={setInputText}
+        requirements={requirements}
+        setRequirements={setRequirements}
         saveScript={saveScript}
+        generateScript={generateScript}
         scriptModelId={scriptModelId}
         setScriptModelId={setScriptModelId}
         selectedScriptVersionId={selectedScriptVersionId}
@@ -1406,6 +1450,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         selectedVoice={selectedVoice}
         saveVoice={saveVoice}
         generateVoice={generateVoice}
+        importAudioVersion={importAudioVersion}
         selectedAudioVersionId={selectedAudioVersionId}
         setSelectedAudioVersionId={setSelectedAudioVersionId}
         avatarAssetId={avatarAssetId}
@@ -1439,7 +1484,7 @@ function StepNavigator({
 }) {
   return (
     <nav className="step-nav" aria-label="任务步骤">
-      {stageOrder.map((stage, index) => {
+      {visibleStageOrder.map((stage, index) => {
         const state = project.stageState?.[stage];
         const disabled = !canEnterStage(project, stage);
         return (
@@ -1464,7 +1509,12 @@ function StageWorkspace({
   runStage,
   script,
   setScript,
+  inputText,
+  setInputText,
+  requirements,
+  setRequirements,
   saveScript,
+  generateScript,
   scriptModelId,
   setScriptModelId,
   selectedScriptVersionId,
@@ -1474,6 +1524,7 @@ function StageWorkspace({
   selectedVoice,
   saveVoice,
   generateVoice,
+  importAudioVersion,
   selectedAudioVersionId,
   setSelectedAudioVersionId,
   avatarAssetId,
@@ -1500,7 +1551,12 @@ function StageWorkspace({
   runStage: (label: string, path: string, body?: unknown) => Promise<Project | { queued: true; queueItem: QueueItem } | undefined>;
   script: string;
   setScript: (value: string) => void;
+  inputText: string;
+  setInputText: (value: string) => void;
+  requirements: string;
+  setRequirements: (value: string) => void;
   saveScript: () => Promise<Project | undefined>;
+  generateScript: () => Promise<unknown>;
   scriptModelId: string;
   setScriptModelId: (value: string) => void;
   selectedScriptVersionId: string;
@@ -1510,6 +1566,7 @@ function StageWorkspace({
   selectedVoice?: Asset;
   saveVoice: () => Promise<Project | undefined>;
   generateVoice: () => Promise<unknown>;
+  importAudioVersion: (file?: File) => Promise<unknown>;
   selectedAudioVersionId: string;
   setSelectedAudioVersionId: (value: string) => void;
   avatarAssetId: string;
@@ -1528,9 +1585,10 @@ function StageWorkspace({
 }) {
   const stage = project.stageState?.[activeStage];
   const queueStage = latestQueue?.progress?.stage || project.progress?.stage;
-  const stageQueue = latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage ? latestQueue : undefined;
+  const activeStageQueues = state.queueItems.filter((item) => item.projectId === project.id && isActiveQueue(item) && (item.progress?.stage || queueStage) === activeStage);
+  const stageQueue = activeStageQueues[0] || (latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage ? latestQueue : undefined);
   const stageProgress = stageQueue?.progress || project.progress;
-  const showStageProgress = Boolean(stageQueue);
+  const showStageProgress = Boolean(activeStageQueues.length || stageQueue);
   const publishRecords = state.publishRecords.filter((record) => record.projectId === project.id).slice(0, 6);
   const scriptVersions = project.scriptVersions || [];
   const audioVersions = project.audioVersions || [];
@@ -1538,38 +1596,37 @@ function StageWorkspace({
   const selectedScriptVersion = scriptVersions.find((version) => version.id === selectedScriptVersionId) || scriptVersions[0];
   const selectedAudioVersion = audioVersions.find((version) => version.id === selectedAudioVersionId) || audioVersions[0];
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
-  const nextStage = stageOrder[stageOrder.indexOf(activeStage) + 1];
+  const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
   const copyPublishField = (value: string) => navigator.clipboard?.writeText(value).catch(() => undefined);
 
   return (
     <section className="step-panel">
-      <div className="step-panel-head">
-        <div>
-          <p className="eyebrow">步骤 {stageOrder.indexOf(activeStage) + 1}</p>
-          <h3>{stage?.label || stageCopy[activeStage].title}</h3>
-          <small>{stageCopy[activeStage].description} · 阶段耗时 {formatDurationMs(stageDurationMs(stage))}</small>
+      {(showStageProgress || (project.mode === "manual" && nextStage)) && (
+        <div className="step-inline-status">
           {showStageProgress && (
             <div className="step-runtime" aria-live="polite">
               <div>
-                <span>{stageQueue?.status === "queued" ? `排队第 ${stageQueue.position || 1} 位` : "正在执行"}</span>
+                {activeStageQueues.length > 1 ? <span>{activeStageQueues.length} 个任务进行中</span> : <span>{stageQueue?.status === "queued" ? `排队第 ${stageQueue.position || 1} 位` : "正在执行"}</span>}
                 {stageQueue?.attempts ? <span>第 {stageQueue.attempts} 次执行</span> : null}
                 {stageQueue?.createdAt ? <span>已耗时 {formatDurationMs(Date.now() - new Date(stageQueue.createdAt).getTime())}</span> : null}
               </div>
               <small>{stageProgress?.label || "正在处理当前步骤。"}</small>
               <div className="progress-track"><span style={{ width: `${stageProgress?.percent ?? progressValue(project)}%` }} /></div>
+              {activeStageQueues.length > 1 && (
+                <div className="stage-task-list">
+                  {activeStageQueues.map((item) => <small key={item.id}>{item.label} · {statusText(item.status)} · {item.progress?.percent || 0}%</small>)}
+                </div>
+              )}
             </div>
           )}
-        </div>
-        <div className="step-head-actions">
           {project.mode === "manual" && nextStage && (
-            <button className="secondary-button" disabled={taskBusy || !canGoNext} onClick={onGoNext}>
+            <button className="secondary-button" disabled={!canGoNext} onClick={onGoNext}>
               下一步：{stageCopy[nextStage].title}
             </button>
           )}
-          <StatusBadge status={stage?.status || "pending"} />
         </div>
-      </div>
+      )}
 
       {activeStage === "input" && (
         <div className="step-body">
@@ -1586,19 +1643,16 @@ function StageWorkspace({
 
       {activeStage === "script" && (
         <div className="step-body">
-          <OutputItem title="当前输入" status={project.stageState?.input?.status} meta={project.requirements || "无额外要求"}>
-            <p>{project.inputText || "暂无输入内容。"}</p>
-          </OutputItem>
+          <label><span>原始输入</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
+          <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
           <textarea value={script} onChange={(event) => setScript(event.target.value)} />
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
-          {project.artifacts.script?.tags?.length ? <small>标签：{project.artifacts.script.tags.join(" / ")}</small> : null}
           <div className="step-actions">
             <button className="ghost-button" onClick={saveScript}><Settings2 size={15} />保存为新版本</button>
-            <ActionButton label="生成口播文案" busy={busy} disabled={taskBusy} onClick={() => runStage("生成口播文案", "generate-script", { scriptModelId })} />
-            {scriptVersions.length > 0 && <ActionButton label="生成口播音频" busy={busy} disabled={taskBusy} onClick={generateVoice} />}
+            <ActionButton label="生成口播文案" busy={busy} disabled={!inputText.trim()} onClick={generateScript} />
           </div>
-          <ScriptVersionList versions={scriptVersions} selectedId={selectedScriptVersionId} onSelect={(id) => {
+          <ScriptVersionList project={project} versions={scriptVersions} action={action} onSelect={(id) => {
             setSelectedScriptVersionId(id);
             const next = scriptVersions.find((version) => version.id === id);
             if (next) setScript(next.scriptText || "");
@@ -1636,9 +1690,16 @@ function StageWorkspace({
             ) : <p>选择音色后点击生成口播音频。</p>}
           </OutputItem>
           <div className="step-actions">
-            <ActionButton label="生成口播音频" busy={busy} disabled={taskBusy || !selectedScriptVersion} onClick={generateVoice} />
+            <ActionButton label="生成口播音频" busy={busy} disabled={!selectedScriptVersion} onClick={generateVoice} />
+            <button className="ghost-button" disabled={!project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}><Save size={15} />保存原始音频</button>
+            <label className="file-chip"><Upload size={16} />上传音频保存<input type="file" accept="audio/*" onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importAudioVersion(file);
+              event.currentTarget.value = "";
+            }} /></label>
+            <AudioRecorder label="录制并保存" onRecorded={(file) => importAudioVersion(file)} />
           </div>
-          <AudioVersionList versions={audioVersions} scriptVersions={scriptVersions} selectedId={selectedAudioVersionId} onSelect={setSelectedAudioVersionId} />
+          <AudioVersionList project={project} versions={audioVersions} scriptVersions={scriptVersions} selectedId={selectedAudioVersionId} onSelect={setSelectedAudioVersionId} action={action} />
         </div>
       )}
 
@@ -1662,13 +1723,13 @@ function StageWorkspace({
           <VideoSettingsEditor videoSettings={videoSettings} setVideoSettings={setVideoSettings} />
           <div className="preset-row">
             <button className="ghost-button" onClick={() => setVideoSettings(defaultVideoSettings)}>推荐参数</button>
-            <code>MediaPipe / jaw / upper 0.50 / margin 0</code>
+            <code>智能裁剪 / 稳定融合 / 上边界 0.50</code>
           </div>
           <div className="video-surface">
             {selectedVideoVersion ? <video src={selectedVideoVersion.artifact.video.uri} controls /> : <EmptyState text="视频生成后会显示在这里。" />}
           </div>
           <div className="step-actions">
-            <ActionButton label="生成视频" busy={busy} disabled={taskBusy || !selectedAudioVersion || !selectedAsset} onClick={generateVideo} />
+            <ActionButton label="生成视频" busy={busy} disabled={!selectedAudioVersion || !selectedAsset} onClick={generateVideo} />
           </div>
           <VideoVersionPanel project={project} versions={videoVersions} selectedId={selectedVideoVersionId} onSelect={setSelectedVideoVersionId} busy={busy} action={action} />
         </div>
@@ -1743,18 +1804,20 @@ function AvatarSample({ asset }: { asset?: Asset }) {
 
 function VideoSettingsEditor({ videoSettings, setVideoSettings }: { videoSettings: VideoSettings; setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>> }) {
   return (
-    <div className="param-grid">
-      <label><span>渲染引擎</span><select value={videoSettings.engine} title={videoSettingTips.engine} onChange={(event) => setVideoSettings((current) => ({ ...current, engine: event.target.value as VideoSettings["engine"] }))}><option value="musetalk">MuseTalk</option></select><small className="param-help">{videoSettingTips.engine}</small></label>
-      <label><span>裁剪方式</span><select value={videoSettings.cropMode} title={videoSettingTips.cropMode} onChange={(event) => setVideoSettings((current) => ({ ...current, cropMode: event.target.value as VideoSettings["cropMode"] }))}><option value="mediapipe">MediaPipe</option><option value="default">默认</option></select><small className="param-help">{videoSettingTips.cropMode}</small></label>
-      <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">jaw</option><option value="raw">raw</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
-      <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
-      <label><span>下巴边距</span><input type="number" min="0" max="40" step="1" value={videoSettings.extraMargin} title={videoSettingTips.extraMargin} onChange={(event) => setVideoSettings((current) => ({ ...current, extraMargin: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.extraMargin}</small></label>
-      <label><span>脸颊扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={videoSettings.facePad} title={videoSettingTips.facePad} onChange={(event) => setVideoSettings((current) => ({ ...current, facePad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.facePad}</small></label>
-      <label><span>底部扩展</span><input type="number" min="0" max="0.12" step="0.01" value={videoSettings.lowerPad} title={videoSettingTips.lowerPad} onChange={(event) => setVideoSettings((current) => ({ ...current, lowerPad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.lowerPad}</small></label>
-      <label><span>批大小</span><input type="number" min="1" max="4" step="1" value={videoSettings.batchSize} title={videoSettingTips.batchSize} onChange={(event) => setVideoSettings((current) => ({ ...current, batchSize: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.batchSize}</small></label>
-      <label><span>左脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.leftCheekWidth} title={videoSettingTips.leftCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, leftCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.leftCheekWidth}</small></label>
-      <label><span>右脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.rightCheekWidth} title={videoSettingTips.rightCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, rightCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.rightCheekWidth}</small></label>
-    </div>
+    <details className="advanced-settings">
+      <summary><Settings2 size={15} />高级参数</summary>
+      <div className="param-grid">
+        <label><span>裁剪方式</span><select value={videoSettings.cropMode} title={videoSettingTips.cropMode} onChange={(event) => setVideoSettings((current) => ({ ...current, cropMode: event.target.value as VideoSettings["cropMode"] }))}><option value="mediapipe">智能裁剪</option><option value="default">默认</option></select><small className="param-help">{videoSettingTips.cropMode}</small></label>
+        <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">稳定融合</option><option value="raw">轻量融合</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
+        <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
+        <label><span>下巴边距</span><input type="number" min="0" max="40" step="1" value={videoSettings.extraMargin} title={videoSettingTips.extraMargin} onChange={(event) => setVideoSettings((current) => ({ ...current, extraMargin: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.extraMargin}</small></label>
+        <label><span>脸颊扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={videoSettings.facePad} title={videoSettingTips.facePad} onChange={(event) => setVideoSettings((current) => ({ ...current, facePad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.facePad}</small></label>
+        <label><span>底部扩展</span><input type="number" min="0" max="0.12" step="0.01" value={videoSettings.lowerPad} title={videoSettingTips.lowerPad} onChange={(event) => setVideoSettings((current) => ({ ...current, lowerPad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.lowerPad}</small></label>
+        <label><span>批大小</span><input type="number" min="1" max="4" step="1" value={videoSettings.batchSize} title={videoSettingTips.batchSize} onChange={(event) => setVideoSettings((current) => ({ ...current, batchSize: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.batchSize}</small></label>
+        <label><span>左脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.leftCheekWidth} title={videoSettingTips.leftCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, leftCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.leftCheekWidth}</small></label>
+        <label><span>右脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.rightCheekWidth} title={videoSettingTips.rightCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, rightCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.rightCheekWidth}</small></label>
+      </div>
+    </details>
   );
 }
 
@@ -1871,7 +1934,11 @@ function VersionSelect<T extends { id: string; label: string; createdAt: string 
   );
 }
 
-function ScriptVersionList({ versions, selectedId, onSelect }: { versions: ScriptVersion[]; selectedId: string; onSelect: (id: string) => void }) {
+function ScriptVersionList({ project, versions, onSelect, action }: { project: Project; versions: ScriptVersion[]; onSelect: (id: string) => void; action: AppAction }) {
+  const deleteVersion = (version: ScriptVersion) => {
+    if (!window.confirm(`删除口播文案版本「${version.label}」？`)) return;
+    action("删除口播文案版本", () => request(`/api/projects/${project.id}/script-versions/${version.id}`, { method: "DELETE" }));
+  };
   return (
     <section className="version-panel">
       <div className="section-head">
@@ -1880,14 +1947,15 @@ function ScriptVersionList({ versions, selectedId, onSelect }: { versions: Scrip
       </div>
       <div className="version-list">
         {versions.length ? versions.map((version) => (
-          <article className={cx("version-row", version.id === selectedId && "current")} key={version.id}>
+          <article className="version-row" key={version.id}>
             <div>
               <strong>{version.label} · {version.title}</strong>
               <small>{formatDate(version.createdAt)} · {version.modelInfo?.providerName || version.modelInfo?.modelName || version.modelInfo?.model || "文本模型"}</small>
               <p>{version.scriptText}</p>
             </div>
             <div className="version-actions">
-              <button className="text-button" onClick={() => onSelect(version.id)}>{version.id === selectedId ? "已选择" : "选择"}</button>
+              <button className="text-button" onClick={() => onSelect(version.id)}>编辑</button>
+              <button className="text-button danger-text" onClick={() => deleteVersion(version)}>删除</button>
             </div>
           </article>
         )) : <EmptyState text="还没有口播文案版本。" />}
@@ -1896,8 +1964,12 @@ function ScriptVersionList({ versions, selectedId, onSelect }: { versions: Scrip
   );
 }
 
-function AudioVersionList({ versions, scriptVersions, selectedId, onSelect }: { versions: AudioVersion[]; scriptVersions: ScriptVersion[]; selectedId: string; onSelect: (id: string) => void }) {
+function AudioVersionList({ project, versions, scriptVersions, selectedId, onSelect, action }: { project: Project; versions: AudioVersion[]; scriptVersions: ScriptVersion[]; selectedId: string; onSelect: (id: string) => void; action: AppAction }) {
   const scriptLabel = (id: string) => scriptVersions.find((version) => version.id === id)?.label || "未关联文案";
+  const deleteVersion = (version: AudioVersion) => {
+    if (!window.confirm(`删除口播音频版本「${version.label}」？`)) return;
+    action("删除口播音频版本", () => request(`/api/projects/${project.id}/audio-versions/${version.id}`, { method: "DELETE" }));
+  };
   return (
     <section className="version-panel">
       <div className="section-head">
@@ -1914,6 +1986,7 @@ function AudioVersionList({ versions, scriptVersions, selectedId, onSelect }: { 
             </div>
             <div className="version-actions">
               <button className="text-button" onClick={() => onSelect(version.id)}>{version.id === selectedId ? "已选择" : "选择"}</button>
+              <button className="text-button danger-text" onClick={() => deleteVersion(version)}>删除</button>
             </div>
           </article>
         )) : <EmptyState text="还没有口播音频版本。" />}
@@ -1975,7 +2048,7 @@ function VideoVersionPanel({ project, versions, selectedId, onSelect, busy, acti
 function StageTimeline({ project, currentStage }: { project: Project; currentStage: StageKey }) {
   return (
     <div className="stage-timeline">
-      {stageOrder.map((stage) => (
+      {visibleStageOrder.map((stage) => (
         <div key={stage} className={cx("stage-node", project.stageState?.[stage]?.status, currentStage === stage && "current")}>
           <span>{project.stageState?.[stage]?.label || stage}</span>
           <small>{statusText(project.stageState?.[stage]?.status || "pending")} · {formatDurationMs(stageDurationMs(project.stageState?.[stage]))}</small>
@@ -2096,7 +2169,7 @@ function RecentJobs({ jobs }: { jobs: JobRecord[] }) {
 }
 
 function StageDots({ project }: { project: Project }) {
-  return <div className="stage-dots">{stageOrder.map((stage) => <span key={stage} className={cx(project.stageState?.[stage]?.status)} />)}</div>;
+  return <div className="stage-dots">{visibleStageOrder.map((stage) => <span key={stage} className={cx(project.stageState?.[stage]?.status)} />)}</div>;
 }
 
 function AudioRecorder({ onRecorded, label = "录制音频" }: { onRecorded: (file: File) => void; label?: string }) {

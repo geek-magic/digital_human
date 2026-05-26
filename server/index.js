@@ -1172,12 +1172,35 @@ function publicQueueItem(item, db) {
   };
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function queueSignature(project, type, payload = {}) {
+  if (type === "generate_script") {
+    const modelId = payload.scriptModelId || project.scriptModelId || "";
+    return stableStringify({ type, inputText: payload.inputText ?? project.inputText ?? "", requirements: payload.requirements ?? project.requirements ?? "", modelId });
+  }
+  if (type === "synthesize_speech") {
+    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "" });
+  }
+  if (type === "render_video") {
+    return stableStringify({ type, audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "", avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "", videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings) });
+  }
+  return stableStringify({ type, payload });
+}
+
 function visibleProjects(db) {
   return db.projects.filter((project) => !project.deletedAt).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-let activeQueueItemId = "";
+const activeQueueItemIds = new Set();
 let queueLoopScheduled = false;
+const queueConcurrency = Math.max(1, Number(process.env.DIGITAL_HUMAN_QUEUE_CONCURRENCY || 3));
 
 function scheduleQueue() {
   if (queueLoopScheduled) return;
@@ -1186,7 +1209,7 @@ function scheduleQueue() {
     queueLoopScheduled = false;
     processQueue().catch((error) => {
       console.error("Queue worker crashed:", error);
-      activeQueueItemId = "";
+      activeQueueItemIds.clear();
     });
   });
 }
@@ -1194,9 +1217,22 @@ function scheduleQueue() {
 function enqueueProjectJob(projectId, type, payload = {}) {
   const db = readDb();
   const project = ensureProject(db, projectId);
-  const existingActive = activeQueueItems(db).find((item) => item.projectId === projectId);
-  if (existingActive) {
-    return publicQueueItem(existingActive, db);
+  const signature = queueSignature(project, type, payload);
+  const duplicate = activeQueueItems(db).find((item) => item.projectId === projectId && item.type === type && item.signature === signature);
+  if (duplicate) return publicQueueItem(duplicate, db);
+  if (type === "generate_script") {
+    const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "";
+    const inputSnapshot = payload.inputText ?? project.inputText ?? "";
+    const requirementsSnapshot = payload.requirements ?? project.requirements ?? "";
+    const existingVersion = (project.scriptVersions || []).find((version) => !version.deletedAt
+      && String(version.sourceInputSnapshot || "") === String(inputSnapshot)
+      && String(version.requirementsSnapshot || "") === String(requirementsSnapshot)
+      && [version.modelInfo?.modelId, version.modelInfo?.providerId, version.modelInfo?.providerId ? `provider:${version.modelInfo.providerId}` : "", version.modelInfo?.model].filter(Boolean).includes(modelId));
+    if (existingVersion) {
+      const err = new Error(`相同输入、生成要求和模型已生成过 ${existingVersion.label}，请修改内容后再生成。`);
+      err.status = 409;
+      throw err;
+    }
   }
   const stage = queueStageMap[type] || "input";
   const item = normalizeQueueItem({
@@ -1206,6 +1242,7 @@ function enqueueProjectJob(projectId, type, payload = {}) {
     label: queueTypeLabels[type] || type,
     status: "queued",
     payload,
+    signature,
     progress: {
       percent: 0,
       label: "已进入队列，等待本地 Worker 执行。",
@@ -1232,13 +1269,16 @@ function enqueueProjectJob(projectId, type, payload = {}) {
 }
 
 async function processQueue() {
-  if (activeQueueItemId) return;
   const db = readDb();
-  const next = [...(db.queueItems || [])]
+  const available = Math.max(0, queueConcurrency - activeQueueItemIds.size);
+  if (!available) return;
+  const nextItems = [...(db.queueItems || [])]
     .filter((item) => item.status === "queued")
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
-  if (!next) return;
-  activeQueueItemId = next.id;
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .slice(0, available);
+  if (!nextItems.length) return;
+  for (const next of nextItems) {
+    activeQueueItemIds.add(next.id);
   next.status = "running";
   next.attempts = (next.attempts || 0) + 1;
   next.startedAt = now();
@@ -1263,8 +1303,15 @@ async function processQueue() {
       setStage(project, next.progress.stage, "running", next.progress.label);
     }
   }
+  }
   writeDb(db);
 
+  for (const next of nextItems) {
+    runQueueItem(next).catch((error) => console.error("Queue item crashed:", error));
+  }
+}
+
+async function runQueueItem(next) {
   try {
     await executeQueueItem(next);
     const doneDb = readDb();
@@ -1325,7 +1372,7 @@ async function processQueue() {
     }
     writeDb(failDb);
   } finally {
-    activeQueueItemId = "";
+    activeQueueItemIds.delete(next.id);
     scheduleQueue();
   }
 }
@@ -1337,7 +1384,7 @@ async function executeQueueItem(item) {
   if (item.type === "process_source") return processSourceProject(item.projectId, { queueId: item.id });
   if (item.type === "generate_script") return await generateScriptProject(item.projectId, { queueId: item.id, payload: item.payload });
   if (item.type === "synthesize_speech") return synthesizeProject(item.projectId, { queueId: item.id, payload: item.payload });
-  if (item.type === "render_video") return renderProject(item.projectId, { queueId: item.id, videoSettings: item.payload?.videoSettings, audioVersionId: item.payload?.audioVersionId });
+  if (item.type === "render_video") return renderProject(item.projectId, { queueId: item.id, videoSettings: item.payload?.videoSettings, audioVersionId: item.payload?.audioVersionId, avatarAssetId: item.payload?.avatarAssetId });
   if (item.type === "run_all") return runAllProject(item.projectId, { queueId: item.id });
   if (item.type === "ab_render") return renderAbProject(item.projectId, { queueId: item.id, payload: item.payload });
   throw new Error(`Unknown queue type: ${item.type}`);
@@ -2662,9 +2709,9 @@ async function probeMediaDuration(filePath) {
   }
 }
 
-function resolveTtsVoice(db, project) {
+function resolveTtsVoice(db, project, requestedVoiceId = "") {
   const activeVoices = (db.voices || []).filter((item) => !item.deletedAt && item.path && existsSync(item.path));
-  const selected = activeVoices.find((item) => item.id === project.voiceId);
+  const selected = activeVoices.find((item) => item.id === (requestedVoiceId || project.voiceId));
   return selected || activeVoices[0] || null;
 }
 
@@ -4262,8 +4309,8 @@ function createScriptVersion(project, scriptArtifact, options = {}) {
     id: `script-${randomUUID()}`,
     versionNo,
     label: versionLabel(versionNo),
-    sourceInputSnapshot: project.inputText || "",
-    requirementsSnapshot: project.requirements || "",
+    sourceInputSnapshot: options.sourceInputSnapshot ?? project.inputText ?? "",
+    requirementsSnapshot: options.requirementsSnapshot ?? project.requirements ?? "",
     scriptText: scriptArtifact.script || "",
     title: scriptArtifact.title || project.title || versionLabel(versionNo),
     outline: scriptArtifact.outline || [],
@@ -4414,7 +4461,10 @@ async function generateScriptProject(projectId, options = {}) {
     throw error;
   }
   project.scriptModelId = options.payload?.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId;
-  const version = createScriptVersion(project, script);
+  const version = createScriptVersion(project, script, {
+    sourceInputSnapshot: options.payload?.inputText ?? project.inputText ?? "",
+    requirementsSnapshot: options.payload?.requirements ?? project.requirements ?? ""
+  });
   project.status = "script_ready";
   setStage(project, "script", "done", `${version.label} 口播文案已生成。`);
   project.updatedAt = now();
@@ -4481,6 +4531,26 @@ app.patch("/api/projects/:id/script-versions/:versionId", (req, res) => {
   res.json({ scriptVersion: version, project });
 });
 
+app.delete("/api/projects/:id/script-versions/:versionId", (req, res) => {
+  const db = readDb();
+  const project = ensureProject(db, req.params.id);
+  const version = project.scriptVersions?.find((item) => item.id === req.params.versionId);
+  if (!version) return res.status(404).json({ error: "Script version not found" });
+  version.deletedAt = now();
+  version.status = "deleted";
+  if (project.selectedScriptVersionId === version.id) {
+    const next = newestVersion(project.scriptVersions || []);
+    project.selectedScriptVersionId = next?.id || "";
+    if (next) project.artifacts.script = scriptArtifactFromVersion(project, next);
+    else delete project.artifacts.script;
+  }
+  resetStagesAfter(project, "script");
+  project.updatedAt = now();
+  pushJob(db, project.id, "delete_script_version", "completed", `${version.label} 已删除。`);
+  writeDb(db);
+  res.json({ ok: true, project });
+});
+
 app.post("/api/projects/:id/review/approve", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
@@ -4517,7 +4587,7 @@ async function synthesizeProject(projectId, options = {}) {
     const outDir = join(artifactDir, project.id, "audio-versions", `audio-${randomUUID()}`);
     mkdirSync(outDir, { recursive: true });
     const modelAudioPath = join(outDir, "voiceover.wav");
-    const voice = resolveTtsVoice(db, project);
+    const voice = resolveTtsVoice(db, project, options.payload?.voiceId || "");
     project.status = "running";
     setStage(project, "voice", "running", "正在生成口播音频。");
     setProjectProgress(project, {
@@ -4593,6 +4663,64 @@ app.post("/api/projects/:id/audio-versions", async (req, res, next) => {
   enqueueAndRespond(req, res, next, "synthesize_speech", req.body || {});
 });
 
+app.post("/api/projects/:id/audio-versions/import", upload.single("audio"), async (req, res, next) => {
+  try {
+    const db = readDb();
+    const project = ensureProject(db, req.params.id);
+    const sourcePath = req.file?.path
+      || project.sourceAnalysis?.links?.find((link) => link.audioPath)?.audioPath
+      || project.artifacts.audio?.path
+      || "";
+    if (!sourcePath || !existsSync(sourcePath)) return res.status(400).json({ error: "没有可保存的音频文件，请先上传或录制音频。" });
+    const outDir = join(artifactDir, project.id, "audio-versions", `audio-${randomUUID()}`);
+    mkdirSync(outDir, { recursive: true });
+    const ext = extname(sourcePath) || ".wav";
+    const audioPath = join(outDir, `voiceover${ext}`);
+    copyFileSync(sourcePath, audioPath);
+    const duration = Math.ceil(await probeMediaDuration(audioPath) || 0);
+    const audioArtifact = {
+      uri: publicPath(audioPath),
+      path: audioPath,
+      duration,
+      adapter: req.file ? "uploaded-audio" : "source-audio",
+      note: req.file ? "用户上传或录制的口播音频。" : "已将原始来源音频保存为口播音频版本。",
+      voiceId: "",
+      voiceName: req.body.voiceName || (req.file ? "自定义音频" : "原始音频"),
+      metrics: {}
+    };
+    const version = createAudioVersion(project, audioArtifact, { sourceScriptVersionId: req.body.scriptVersionId || project.selectedScriptVersionId || "" });
+    project.status = "voice_ready";
+    setStage(project, "voice", "done", `${version.label} 口播音频已保存。`);
+    resetStagesAfter(project, "voice");
+    project.updatedAt = now();
+    pushJob(db, project.id, "import_audio_version", "completed", `${version.label} 口播音频已保存。`, version);
+    writeDb(db);
+    res.json({ audioVersion: version, project });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/projects/:id/audio-versions/:versionId", (req, res) => {
+  const db = readDb();
+  const project = ensureProject(db, req.params.id);
+  const version = project.audioVersions?.find((item) => item.id === req.params.versionId);
+  if (!version) return res.status(404).json({ error: "Audio version not found" });
+  version.deletedAt = now();
+  version.status = "deleted";
+  if (project.selectedAudioVersionId === version.id) {
+    const next = newestVersion(project.audioVersions || []);
+    project.selectedAudioVersionId = next?.id || "";
+    if (next) project.artifacts.audio = audioArtifactFromVersion(next);
+    else delete project.artifacts.audio;
+  }
+  resetStagesAfter(project, "voice");
+  project.updatedAt = now();
+  pushJob(db, project.id, "delete_audio_version", "completed", `${version.label} 已删除。`);
+  writeDb(db);
+  res.json({ ok: true, project });
+});
+
 async function renderProject(projectId, options = {}) {
     const db = readDb();
     const project = ensureProject(db, projectId);
@@ -4615,12 +4743,14 @@ async function renderProject(projectId, options = {}) {
     const outDir = join(artifactDir, project.id);
     mkdirSync(outDir, { recursive: true });
     const duration = project.artifacts.audio?.duration || 45;
-    const avatar = db.avatarAssets.find((item) => item.id === project.avatarAssetId);
+    const avatarAssetId = options.avatarAssetId || project.avatarAssetId;
+    const avatar = db.avatarAssets.find((item) => item.id === avatarAssetId);
     if (!avatar?.path) {
       const err = new Error("请先选择可用的数字人素材。");
       err.status = 400;
       throw err;
     }
+    project.avatarAssetId = avatarAssetId || project.avatarAssetId;
     project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...(options.videoSettings || {}) });
     project.status = "running";
     setStage(project, "video", "running", "正在生成数字人视频。");
@@ -4737,14 +4867,16 @@ async function renderProject(projectId, options = {}) {
 app.post("/api/projects/:id/render-video", async (req, res, next) => {
   enqueueAndRespond(req, res, next, "render_video", {
     videoSettings: req.body?.videoSettings || null,
-    audioVersionId: req.body?.audioVersionId || ""
+    audioVersionId: req.body?.audioVersionId || "",
+    avatarAssetId: req.body?.avatarAssetId || ""
   });
 });
 
 app.post("/api/projects/:id/video-versions", async (req, res, next) => {
   enqueueAndRespond(req, res, next, "render_video", {
     videoSettings: req.body?.videoSettings || null,
-    audioVersionId: req.body?.audioVersionId || ""
+    audioVersionId: req.body?.audioVersionId || "",
+    avatarAssetId: req.body?.avatarAssetId || ""
   });
 });
 
@@ -5044,8 +5176,8 @@ app.post("/api/queue/:id/retry", (req, res) => {
     return res.status(400).json({ error: "只有失败或已取消的任务可以重试。" });
   }
   const project = ensureProject(db, item.projectId);
-  const active = activeQueueItems(db).find((entry) => entry.projectId === item.projectId);
-  if (active) return res.status(409).json({ error: "该任务已有队列项正在执行或等待。" });
+  const duplicate = activeQueueItems(db).find((entry) => entry.projectId === item.projectId && entry.type === item.type && entry.signature === item.signature);
+  if (duplicate) return res.status(409).json({ error: "相同参数的任务已在执行或等待。" });
   item.status = "queued";
   item.lastError = "";
   item.cancelRequested = false;
