@@ -98,19 +98,6 @@ const modelCatalog = [
     installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen2.5-7b-instruct-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
   },
   {
-    id: "qwen3-5-27b-4bit-mlx",
-    name: "Qwen3.5-27B 4bit MLX",
-    type: "llm",
-    runtime: "内置 LLM CLI",
-    defaultPath: "llm/qwen3.5-27b-4bit-mlx",
-    protocolId: "llmScriptV1",
-    recommended: false,
-    bundleRole: "复杂分析备用模型",
-    license: "Apache 2.0",
-    description: "偏推理的大模型，保留为复杂分析备用；不建议作为口播正文默认模型。",
-    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen3.5-27b-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
-  },
-  {
     id: "qwen3-asr-1-7b",
     name: "Qwen3-ASR 1.7B",
     type: "asr",

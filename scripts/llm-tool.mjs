@@ -41,9 +41,7 @@ function candidateRuntime(overrides = {}) {
     overrides.model,
     process.env.DH_LLM_MODEL_PATH,
     join(rootDir, "models", "llm", "qwen2.5-7b-instruct-4bit-mlx"),
-    join(rootDir, "storage", "models", "llm", "qwen2.5-7b-instruct-4bit-mlx"),
-    join(rootDir, "models", "llm", "qwen3.5-27b-4bit-mlx"),
-    join(rootDir, "storage", "models", "llm", "qwen3.5-27b-4bit-mlx")
+    join(rootDir, "storage", "models", "llm", "qwen2.5-7b-instruct-4bit-mlx")
   ]);
   const python = pythonCandidates.find((item) => existsSync(item)) || "";
   const model = modelCandidates.find((item) => existsSync(item)) || "";
