@@ -779,6 +779,7 @@ function TaskCenter(props: {
           onCreated={props.setSelectedProjectId}
           inputText={draftInputText}
           setInputText={setDraftInputText}
+          busy={props.busy}
         />
         <div className="section-head task-list-head">
           <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
@@ -1043,13 +1044,15 @@ function TaskComposer({
   action,
   onCreated,
   inputText,
-  setInputText
+  setInputText,
+  busy
 }: {
   state: State;
   action: AppAction;
   onCreated: (id: string) => void;
   inputText: string;
   setInputText: (value: string) => void;
+  busy: string;
 }) {
   const [title, setTitle] = useState("");
   const [requirements, setRequirements] = useState("");
@@ -1064,7 +1067,8 @@ function TaskComposer({
   async function submit(event: FormEvent) {
     event.preventDefault();
     let createdProjectId = "";
-    await action(mode === "auto" ? "创建并自动生成" : "创建手动任务", async () => {
+    const actionLabel = mode === "auto" ? "创建任务并提交自动流程" : "创建任务";
+    await action(actionLabel, async () => {
       const project = await request<Project>("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1093,6 +1097,8 @@ function TaskComposer({
     setRequirements("");
     setScriptModelId(state.settings?.defaultTextModelId || "");
   }
+  const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
+  const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
 
   return (
     <section className="composer">
@@ -1120,7 +1126,10 @@ function TaskComposer({
           )}
         </div>
         <div className="toolbar-row">
-          <button className="primary-button" disabled={!inputText.trim()}><Play size={17} />{mode === "auto" ? "创建并自动生成" : "创建手动任务"}</button>
+          <button className="primary-button" disabled={submitting || !inputText.trim()}>
+            {submitting ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
+            {submitting ? "创建中" : submitLabel}
+          </button>
         </div>
       </form>
     </section>
@@ -1602,6 +1611,12 @@ function StageWorkspace({
   const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
   const copyPublishField = (value: string) => navigator.clipboard?.writeText(value).catch(() => undefined);
+  const savingScript = busy === "保存口播文案";
+  const savingVoice = busy === "保存音色";
+  const savingVideoSetup = busy === "保存视频设置";
+  const savingSourceAudio = busy === "保存原始音频";
+  const openingPublish = busy === "打开发布入口";
+  const recordingPublish = busy === "记录发布结果";
 
   return (
     <section className="step-panel">
@@ -1648,7 +1663,10 @@ function StageWorkspace({
           <textarea value={script} onChange={(event) => setScript(event.target.value)} />
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
           <div className="step-actions">
-            <button className="ghost-button" onClick={saveScript}><Settings2 size={15} />保存为新版本</button>
+            <button className="ghost-button" disabled={savingScript} onClick={saveScript}>
+              {savingScript ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}
+              {savingScript ? "保存中" : "保存为新版本"}
+            </button>
             <ActionButton label="生成口播文案" busy={busy} disabled={!inputText.trim()} onClick={generateScript} />
           </div>
           <ScriptVersionList project={project} versions={scriptVersions} action={action} onSelect={(id) => {
@@ -1677,7 +1695,10 @@ function StageWorkspace({
           </OutputItem>
           <div className="field-row">
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-            <button className="secondary-button align-end" onClick={saveVoice}><Mic2 size={16} />保存音色</button>
+            <button className="secondary-button align-end" disabled={savingVoice} onClick={saveVoice}>
+              {savingVoice ? <Loader2 className="spin" size={16} /> : <Mic2 size={16} />}
+              {savingVoice ? "保存中" : "保存音色"}
+            </button>
           </div>
           <VoiceSample asset={selectedVoice} />
           <OutputItem title="当前音频预览" status={selectedAudioVersion?.status || project.stageState?.voice?.status} meta={selectedAudioVersion ? `${selectedAudioVersion.label} · ${selectedAudioVersion.duration}s` : "未生成"}>
@@ -1690,7 +1711,10 @@ function StageWorkspace({
           </OutputItem>
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!selectedScriptVersion} onClick={generateVoice} />
-            <button className="ghost-button" disabled={!project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}><Save size={15} />保存原始音频</button>
+            <button className="ghost-button" disabled={savingSourceAudio || !project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}>
+              {savingSourceAudio ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+              {savingSourceAudio ? "保存中" : "保存原始音频"}
+            </button>
             <label className="file-chip"><Upload size={16} />上传音频保存<input type="file" accept="audio/*" onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) importAudioVersion(file);
@@ -1716,7 +1740,10 @@ function StageWorkspace({
           </OutputItem>
           <div className="field-row">
             <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-            <button className="secondary-button align-end" onClick={saveVideoSetup}><Settings2 size={16} />保存设置</button>
+            <button className="secondary-button align-end" disabled={savingVideoSetup} onClick={saveVideoSetup}>
+              {savingVideoSetup ? <Loader2 className="spin" size={16} /> : <Settings2 size={16} />}
+              {savingVideoSetup ? "保存中" : "保存设置"}
+            </button>
           </div>
           <AvatarSample asset={selectedAsset} />
           <VideoSettingsEditor videoSettings={videoSettings} setVideoSettings={setVideoSettings} />
@@ -1747,7 +1774,12 @@ function StageWorkspace({
             {selectedVideoVersion ? <video src={selectedVideoVersion.artifact.video.uri} controls /> : <EmptyState text="视频生成后再进入发布。" />}
           </div>
           <div className="publish-buttons">
-            {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="primary-link" disabled={!selectedVideoVersion} onClick={() => preparePublish(platform)}><ExternalLink size={16} />{platformLabels[platform]}</button>)}
+            {(Object.keys(platformLabels) as Platform[]).map((platform) => (
+              <button key={platform} className="primary-link" disabled={openingPublish || !selectedVideoVersion} onClick={() => preparePublish(platform)}>
+                {openingPublish ? <Loader2 className="spin" size={16} /> : <ExternalLink size={16} />}
+                {openingPublish ? "打开中" : platformLabels[platform]}
+              </button>
+            ))}
             {selectedVideoVersion && <a className="secondary-button" href={selectedVideoVersion.artifact.video.uri} download><Download size={16} />下载视频</a>}
           </div>
           <small>点击平台会生成该平台发布草稿、复制完整发布素材并打开创作者后台；平台表单仍需用户确认后粘贴或上传。</small>
@@ -1761,7 +1793,12 @@ function StageWorkspace({
             </OutputItem>
           )}
           <div className="publish-buttons">
-            {(Object.keys(platformLabels) as Platform[]).map((platform) => <button key={platform} className="ghost-button" disabled={!selectedVideoVersion} onClick={() => recordPublished(platform)}>记录{platformLabels[platform]}结果</button>)}
+            {(Object.keys(platformLabels) as Platform[]).map((platform) => (
+              <button key={platform} className="ghost-button" disabled={recordingPublish || !selectedVideoVersion} onClick={() => recordPublished(platform)}>
+                {recordingPublish && <Loader2 className="spin" size={15} />}
+                {recordingPublish ? "记录中" : `记录${platformLabels[platform]}结果`}
+              </button>
+            ))}
           </div>
           <div className="output-list">
             {publishRecords.length ? publishRecords.map((record) => (
@@ -2256,6 +2293,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState("");
   const [editingName, setEditingName] = useState("");
+  const [uploading, setUploading] = useState(false);
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
   const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : "/api/voices/reference-samples";
   const endpointFor = (id: string) => kind === "avatar" ? `/api/assets/avatar-videos/${id}` : `/api/voices/reference-samples/${id}`;
@@ -2276,10 +2314,10 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     const body = new FormData();
     body.append("name", name || file.name);
     body.append("file", file);
-    await fetch(uploadUrl, { method: "POST", body });
+    setUploading(true);
+    await action(uploadLabel, () => request(uploadUrl, { method: "POST", body })).finally(() => setUploading(false));
     setName("");
     setFile(null);
-    await refresh();
   }
 
   function toggleAll(checked: boolean) {
@@ -2340,7 +2378,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder={nameLabel} />
         <label className="file-chip"><Upload size={16} />{file ? file.name : fileLabel}<input type="file" accept={kind === "avatar" ? "video/*" : "audio/*"} onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
         {kind === "voice" && <AudioRecorder label="录制参考音色" onRecorded={setFile} />}
-        <button className="primary-button" disabled={!file}><Plus size={16} />{uploadLabel}</button>
+        <button className="primary-button" disabled={uploading || !file}>{uploading ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}{uploading ? "上传中" : uploadLabel}</button>
       </form>
       <div className="bulk-toolbar manager-bulk-toolbar">
         <label className="checkbox-pill">
