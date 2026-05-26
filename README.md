@@ -75,7 +75,7 @@ npm run setup
 
 FFmpeg 不是 Mac 专用工具，Windows、Linux、macOS 都支持。项目的视频下载、抽音频、预览视频和字幕处理都依赖 `ffmpeg/ffprobe`。
 
-安装脚本还会执行 Playwright Chromium 安装，用于抖音等网页解析；如果机器已安装 Chrome，系统会优先使用 Chrome，否则使用 Playwright Chromium。`yt-dlp` 会安装到项目内 `runtime/tools` 虚拟环境，后端会优先调用该本地版本；缺失时抖音专用解析仍可用，但 B站、YouTube 等通用视频探测会降级。
+安装脚本还会执行 Playwright Chromium 安装，用于抖音等网页解析；如果机器已安装 Chrome，系统会优先使用 Chrome，否则使用 Playwright Chromium。`yt-dlp` 会安装到项目内 `runtime/tools` 虚拟环境，后端优先调用 `runtime/tools/bin/yt-dlp`（Windows 为 `runtime/tools/Scripts/yt-dlp.exe`），不要求系统 PATH 里有全局 `yt-dlp`；缺失时抖音专用解析仍可用，但 B站、YouTube 等通用视频探测会降级。
 
 MuseTalk 官方 `requirements.txt` 包含 Web Demo 和部分可选依赖，其中 `tensorflow==2.12.0` 在不少新 macOS/Python 环境不可安装。项目安装脚本会安装经过裁剪的推理依赖集，覆盖当前数字人合成链路需要的 PyTorch、diffusers、transformers、opencv、mediapipe、moviepy 等包，不再盲装官方完整 requirements。
 

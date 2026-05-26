@@ -10,6 +10,9 @@ const rootDir = join(__dirname, "..");
 const modelHome = process.env.MODEL_HOME || join(rootDir, "models");
 const runtimeHome = process.env.DH_RUNTIME_HOME || join(rootDir, "runtime");
 const toolsRuntime = join(runtimeHome, "tools");
+const ytDlpBin = process.platform === "win32"
+  ? join(toolsRuntime, "Scripts", "yt-dlp.exe")
+  : join(toolsRuntime, "bin", "yt-dlp");
 const python = process.env.DH_INSTALL_PYTHON || (process.platform === "win32" ? "python" : "python3");
 const hfEndpoint = process.env.HF_ENDPOINT || "";
 const args = new Set(process.argv.slice(2));
@@ -145,6 +148,18 @@ function commandAny(names) {
   return names.find((name) => commandExists(name)) || "";
 }
 
+function ensureYtDlp() {
+  if (!existsSync(ytDlpBin)) installPackages(toolsRuntime, ["yt-dlp"]);
+  try {
+    const version = execFileSync(ytDlpBin, ["--version"], { encoding: "utf8" }).trim();
+    console.log(`yt-dlp 检查通过：${ytDlpBin} (${version})`);
+  } catch {
+    installPackages(toolsRuntime, ["yt-dlp"]);
+    const version = execFileSync(ytDlpBin, ["--version"], { encoding: "utf8" }).trim();
+    console.log(`yt-dlp 已安装：${ytDlpBin} (${version})`);
+  }
+}
+
 function installWithHomebrew(packages) {
   if (!commandExists("brew")) return false;
   const missing = packages.filter((pkg) => !commandExists(pkg.command));
@@ -211,7 +226,7 @@ function ensureSystemDependencies() {
     throw new Error(`缺少系统工具，无法保证完整运行：\n${details}`);
   }
 
-  if (!commandExists("yt-dlp")) installPackages(toolsRuntime, ["yt-dlp"]);
+  ensureYtDlp();
 }
 
 function ensurePlaywrightBrowser() {
