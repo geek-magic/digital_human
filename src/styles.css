@@ -770,6 +770,26 @@ small { color: var(--muted); font-size: 12px; }
   border-bottom: 1px solid var(--line);
 }
 .step-panel-head h3 { margin-bottom: 4px; }
+.step-runtime {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+  margin-top: 10px;
+}
+.step-runtime > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.step-runtime span {
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f5f8fb;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
 .step-head-actions {
   display: flex;
   flex-wrap: wrap;
@@ -840,13 +860,13 @@ small { color: var(--muted); font-size: 12px; }
   display: block;
 }
 .media-sample small { margin-top: 3px; }
-.editor-block, .source-block, .video-settings-block, .job-log-block, .stage-output-block, .queue-panel, .quality-panel, .version-panel {
+.editor-block, .source-block, .video-settings-block, .job-log-block, .stage-output-block, .quality-panel, .version-panel {
   display: grid;
   gap: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
-.step-panel .queue-panel, .step-panel .version-panel {
+.step-panel .version-panel {
   padding-top: 0;
   border-top: 0;
 }
@@ -882,12 +902,12 @@ small { color: var(--muted); font-size: 12px; }
   font-size: 12px;
   font-weight: 800;
 }
-.queue-meta, .quality-metrics {
+.quality-metrics {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.queue-meta span, .quality-metrics span {
+.quality-metrics span {
   min-height: 24px;
   padding: 4px 8px;
   border-radius: 999px;
@@ -895,11 +915,6 @@ small { color: var(--muted); font-size: 12px; }
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
-}
-.queue-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 .error-note {
   display: inline-flex;

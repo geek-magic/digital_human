@@ -1528,7 +1528,9 @@ function StageWorkspace({
 }) {
   const stage = project.stageState?.[activeStage];
   const queueStage = latestQueue?.progress?.stage || project.progress?.stage;
-  const showQueue = latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage;
+  const stageQueue = latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage ? latestQueue : undefined;
+  const stageProgress = stageQueue?.progress || project.progress;
+  const showStageProgress = Boolean(stageQueue);
   const publishRecords = state.publishRecords.filter((record) => record.projectId === project.id).slice(0, 6);
   const scriptVersions = project.scriptVersions || [];
   const audioVersions = project.audioVersions || [];
@@ -1547,6 +1549,17 @@ function StageWorkspace({
           <p className="eyebrow">步骤 {stageOrder.indexOf(activeStage) + 1}</p>
           <h3>{stage?.label || stageCopy[activeStage].title}</h3>
           <small>{stageCopy[activeStage].description} · 阶段耗时 {formatDurationMs(stageDurationMs(stage))}</small>
+          {showStageProgress && (
+            <div className="step-runtime" aria-live="polite">
+              <div>
+                <span>{stageQueue?.status === "queued" ? `排队第 ${stageQueue.position || 1} 位` : "正在执行"}</span>
+                {stageQueue?.attempts ? <span>第 {stageQueue.attempts} 次执行</span> : null}
+                {stageQueue?.createdAt ? <span>已耗时 {formatDurationMs(Date.now() - new Date(stageQueue.createdAt).getTime())}</span> : null}
+              </div>
+              <small>{stageProgress?.label || "正在处理当前步骤。"}</small>
+              <div className="progress-track"><span style={{ width: `${stageProgress?.percent ?? progressValue(project)}%` }} /></div>
+            </div>
+          )}
         </div>
         <div className="step-head-actions">
           {project.mode === "manual" && nextStage && (
@@ -1557,7 +1570,6 @@ function StageWorkspace({
           <StatusBadge status={stage?.status || "pending"} />
         </div>
       </div>
-      {showQueue && <QueuePanel queueItem={latestQueue} project={project} action={action} />}
 
       {activeStage === "input" && (
         <div className="step-body">
@@ -1800,34 +1812,6 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
         <strong>队列保护</strong>
         <span>运行 {active.filter((item) => item.status === "running").length} · 等待 {active.filter((item) => item.status === "queued").length}</span>
       </div>
-    </section>
-  );
-}
-
-function QueuePanel({ queueItem, project, action }: { queueItem?: QueueItem; project: Project; action: AppAction }) {
-  if (!queueItem || !isActiveQueue(queueItem)) return null;
-  const active = isActiveQueue(queueItem);
-  const percent = queueItem?.progress?.percent ?? project.progress?.percent ?? 0;
-  const label = queueItem?.progress?.label || project.progress?.label || project.lastError || "暂无队列状态。";
-  return (
-    <section className="queue-panel">
-      <div className="section-head">
-        <div><p className="eyebrow">执行队列</p><h3>{queueItem?.label || "最近任务"}</h3></div>
-        <StatusBadge status={queueItem?.status || project.status} />
-      </div>
-      <div className="queue-meta">
-        <span>{queueItem?.status === "queued" ? `队列第 ${queueItem.position || 1} 位` : statusText(queueItem?.status || project.status)}</span>
-        {queueItem?.attempts ? <span>第 {queueItem.attempts} 次执行</span> : null}
-        {queueItem?.createdAt ? <span>队列耗时 {formatDurationMs(Date.now() - new Date(queueItem.createdAt).getTime())}</span> : null}
-        {queueItem?.updatedAt ? <span>{formatDate(queueItem.updatedAt)}</span> : null}
-      </div>
-      <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
-      <small>{label}</small>
-      {active && (
-        <div className="queue-actions">
-          {active && queueItem?.status === "queued" && <button className="ghost-button danger" onClick={() => action("取消任务", () => request(`/api/queue/${queueItem.id}/cancel`, { method: "POST" }))}><XCircle size={15} />取消</button>}
-        </div>
-      )}
     </section>
   );
 }
