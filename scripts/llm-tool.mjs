@@ -94,17 +94,18 @@ async function chat(args) {
     return 2;
   }
   const messages = args.messages || JSON.stringify([{ role: "user", content: args.prompt || "" }]);
-  const { stdout } = await execFileAsync(runtime.python, [
+  const commandArgs = [
     runtime.script,
     "--model",
     runtime.model,
     "--messages",
     messages,
     "--temperature",
-    args.temperature || process.env.DH_LLM_TEMPERATURE || "0.6",
-    "--max-tokens",
-    args["max-tokens"] || process.env.DH_LLM_MAX_TOKENS || "900"
-  ], {
+    args.temperature || process.env.DH_LLM_TEMPERATURE || "0.6"
+  ];
+  const maxTokens = args["max-tokens"] || process.env.DH_LLM_MAX_TOKENS;
+  if (maxTokens) commandArgs.push("--max-tokens", maxTokens);
+  const { stdout } = await execFileAsync(runtime.python, commandArgs, {
     timeout: Number(args.timeout || process.env.DH_LLM_TIMEOUT_MS || 1200000),
     maxBuffer: 1024 * 1024 * 16,
     env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }

@@ -2422,18 +2422,20 @@ function normalizeScriptArtifact(value, fallbackInput) {
 async function callLocalLlm(messages, options = {}) {
   if (!existsSync(LLM_TOOL_PATH)) throw new Error("缺少本地 LLM CLI 工具。");
   const timeoutMs = Number(options.llmTimeout || 240000);
-  const { stdout } = await execFileAsync(process.execPath, [
+  const args = [
     LLM_TOOL_PATH,
     "chat",
     "--messages",
     JSON.stringify(messages),
     "--temperature",
     String(options.temperature ?? 0.55),
-    "--max-tokens",
-    String(options.maxTokens || 700),
     "--timeout",
     String(timeoutMs)
-  ], {
+  ];
+  if (options.maxTokens !== undefined && options.maxTokens !== null) {
+    args.push("--max-tokens", String(options.maxTokens));
+  }
+  const { stdout } = await execFileAsync(process.execPath, args, {
     timeout: timeoutMs + 5000,
     maxBuffer: 1024 * 1024 * 16,
     env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
@@ -2448,18 +2450,21 @@ async function callCloudLlm(provider, messages, options = {}) {
   if (!apiKey) throw new Error(`${provider.name} 未配置 API Key。`);
   if (!provider.endpoint) throw new Error(`${provider.name} 未配置 endpoint。`);
   if (!provider.model) throw new Error(`${provider.name} 未配置模型名。`);
+  const body = {
+    model: provider.model,
+    messages,
+    temperature: options.temperature ?? 0.55
+  };
+  if (options.maxTokens !== undefined && options.maxTokens !== null) {
+    body.max_tokens = options.maxTokens;
+  }
   const response = await fetch(provider.endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: provider.model,
-      messages,
-      temperature: options.temperature ?? 0.55,
-      max_tokens: options.maxTokens || 1100
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(options.timeout || 120000)
   });
   const raw = await response.text();

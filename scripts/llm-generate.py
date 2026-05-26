@@ -17,7 +17,7 @@ def main() -> int:
     parser.add_argument("--model", required=True, help="Local MLX model directory.")
     parser.add_argument("--messages", required=True, help="JSON array of chat messages.")
     parser.add_argument("--temperature", type=float, default=0.6)
-    parser.add_argument("--max-tokens", type=int, default=900)
+    parser.add_argument("--max-tokens", type=int, default=4096)
     args = parser.parse_args()
 
     model_path = Path(args.model).expanduser().resolve()
