@@ -1496,10 +1496,13 @@ function StepNavigator({
       {visibleStageOrder.map((stage, index) => {
         const state = project.stageState?.[stage];
         const disabled = !canEnterStage(project, stage);
+        const meta = stage === "publish"
+          ? statusText(state?.status || "pending")
+          : `${statusText(state?.status || "pending")} · ${formatDurationMs(stageDurationMs(state))}`;
         return (
           <button key={stage} disabled={disabled} className={cx("step-tab", activeStage === stage && "active", currentStage === stage && "current", disabled && "locked")} onClick={() => onSelect(stage)}>
             <span className="step-index">{index + 1}</span>
-            <span><strong>{state?.label || stageCopy[stage].title}</strong><small>{statusText(state?.status || "pending")} · {formatDurationMs(stageDurationMs(state))}</small></span>
+            <span><strong>{state?.label || stageCopy[stage].title}</strong><small>{meta}</small></span>
           </button>
         );
       })}
@@ -1875,13 +1878,16 @@ function FlowOverview({
   const stage = project.stageState?.[currentStage];
   const running = stageRunning(stage?.status) || isActiveQueue(activeQueue);
   const progressLabel = activeQueue?.progress?.label || project.progress?.label || stage?.message || "等待下一步操作。";
+  const progressMeta = currentStage === "publish"
+    ? progressLabel
+    : `${progressLabel} · 当前阶段耗时 ${formatDurationMs(stageDurationMs(stage))}`;
   return (
     <section className="flow-overview" aria-live="polite">
       <div className="flow-head">
         <div>
           <p className="eyebrow">流程定位</p>
           <h3>{stage?.label || currentStage} · {statusText(stage?.status)}</h3>
-          <small>{progressLabel} · 当前阶段耗时 {formatDurationMs(stageDurationMs(stage))}</small>
+          <small>{progressMeta}</small>
         </div>
         <div className="flow-progress">
           <strong>{progressValue(project)}%</strong>
@@ -2112,13 +2118,19 @@ function VideoVersionPanel({ project, versions, selectedId, onSelect, busy, acti
 function StageTimeline({ project, currentStage }: { project: Project; currentStage: StageKey }) {
   return (
     <div className="stage-timeline">
-      {visibleStageOrder.map((stage) => (
-        <div key={stage} className={cx("stage-node", project.stageState?.[stage]?.status, currentStage === stage && "current")}>
-          <span>{project.stageState?.[stage]?.label || stage}</span>
-          <small>{statusText(project.stageState?.[stage]?.status || "pending")} · {formatDurationMs(stageDurationMs(project.stageState?.[stage]))}</small>
-          {project.stageState?.[stage]?.message && <em>{project.stageState[stage].message}</em>}
-        </div>
-      ))}
+      {visibleStageOrder.map((stage) => {
+        const state = project.stageState?.[stage];
+        const meta = stage === "publish"
+          ? statusText(state?.status || "pending")
+          : `${statusText(state?.status || "pending")} · ${formatDurationMs(stageDurationMs(state))}`;
+        return (
+          <div key={stage} className={cx("stage-node", state?.status, currentStage === stage && "current")}>
+            <span>{state?.label || stage}</span>
+            <small>{meta}</small>
+            {state?.message && <em>{state.message}</em>}
+          </div>
+        );
+      })}
     </div>
   );
 }
