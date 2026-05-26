@@ -1329,7 +1329,8 @@ async function runQueueItem(next) {
       };
     }
     if (doneProject) {
-      doneProject.activeQueueId = "";
+      const nextActive = activeQueueItems(doneDb).find((item) => item.projectId === doneProject.id && item.id !== doneItem?.id);
+      doneProject.activeQueueId = nextActive?.id || "";
       setProjectProgress(doneProject, {
         percent: 100,
         label: doneItem?.progress?.label || "任务已完成。",
@@ -1357,14 +1358,15 @@ async function runQueueItem(next) {
     }
     if (failedProject) {
       const stage = failedItem?.progress?.stage || queueStageMap[failedItem?.type] || failedProject.currentStage;
-      failedProject.status = "failed";
-      failedProject.activeQueueId = "";
+      const nextActive = activeQueueItems(failDb).find((item) => item.projectId === failedProject.id && item.id !== failedItem?.id);
+      failedProject.status = nextActive ? "running" : "failed";
+      failedProject.activeQueueId = nextActive?.id || "";
       failedProject.lastError = message;
       setProjectProgress(failedProject, {
         percent: failedItem?.progress?.percent || 0,
         label: message,
         stage,
-        status: "failed",
+        status: failedProject.status,
         queueId: failedItem?.id || ""
       });
       if (stage && failedProject.stageState?.[stage]) setStage(failedProject, stage, "failed", message);
@@ -4443,50 +4445,57 @@ async function generateScriptProject(projectId, options = {}) {
   try {
     script = await generateScriptWithTextModel(db, project, options.payload || {});
   } catch (error) {
+    const failDb = readDb();
+    const failedProject = ensureProject(failDb, projectId);
     const message = error instanceof Error ? error.message : "文本模型生成口播文案失败。";
-    project.status = "failed";
-    project.lastError = message;
-    setStage(project, "script", "failed", message);
-    setProjectProgress(project, {
+    failedProject.status = "failed";
+    failedProject.lastError = message;
+    setStage(failedProject, "script", "failed", message);
+    setProjectProgress(failedProject, {
       percent: options.queueId ? 30 : 0,
       label: message,
       stage: "script",
       status: "failed",
       queueId: options.queueId || ""
     });
-    project.updatedAt = now();
-    pushJob(db, project.id, "generate_script", "failed", message, { scriptModelId: options.payload?.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId });
-    writeDb(db);
+    failedProject.updatedAt = now();
+    pushJob(failDb, failedProject.id, "generate_script", "failed", message, { scriptModelId: options.payload?.scriptModelId || failedProject.scriptModelId || failDb.settings.defaultTextModelId });
+    writeDb(failDb);
     updateQueueProgress(options.queueId, { percent: 30, label: message, stage: "script", stageStatus: "failed" });
     throw error;
   }
-  project.scriptModelId = options.payload?.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId;
-  const version = createScriptVersion(project, script, {
-    sourceInputSnapshot: options.payload?.inputText ?? project.inputText ?? "",
-    requirementsSnapshot: options.payload?.requirements ?? project.requirements ?? ""
+  const latestDb = readDb();
+  const latestProject = ensureProject(latestDb, projectId);
+  latestProject.scriptModelId = options.payload?.scriptModelId || latestProject.scriptModelId || latestDb.settings.defaultTextModelId;
+  if (options.payload?.inputText !== undefined) latestProject.inputText = options.payload.inputText;
+  if (options.payload?.requirements !== undefined) latestProject.requirements = options.payload.requirements;
+  latestProject.sourceText = latestProject.inputText || latestProject.sourceText || "";
+  const version = createScriptVersion(latestProject, script, {
+    sourceInputSnapshot: options.payload?.inputText ?? latestProject.inputText ?? "",
+    requirementsSnapshot: options.payload?.requirements ?? latestProject.requirements ?? ""
   });
-  project.status = "script_ready";
-  setStage(project, "script", "done", `${version.label} 口播文案已生成。`);
-  project.updatedAt = now();
-  if (project.mode === "auto") {
-    project.currentStep = "voice";
-    project.currentStage = "voice";
+  latestProject.status = "script_ready";
+  setStage(latestProject, "script", "done", `${version.label} 口播文案已生成。`);
+  latestProject.updatedAt = now();
+  if (latestProject.mode === "auto") {
+    latestProject.currentStep = "voice";
+    latestProject.currentStage = "voice";
   }
-  setProjectProgress(project, {
+  setProjectProgress(latestProject, {
     percent: options.queueId ? 40 : 100,
     label: `${version.label} 口播文案已生成。`,
     stage: "script",
-    status: project.status,
+    status: latestProject.status,
     queueId: options.queueId || ""
   });
-  pushJob(db, project.id, "generate_script", "completed", `${version.label} 口播文案已生成。`, version);
-  writeDb(db);
+  pushJob(latestDb, latestProject.id, "generate_script", "completed", `${version.label} 口播文案已生成。`, version);
+  writeDb(latestDb);
   updateQueueProgress(options.queueId, {
     percent: 40,
     label: `${version.label} 口播文案已生成。`,
     stage: "script"
   });
-  return project;
+  return latestProject;
 }
 
 function enqueueAndRespond(req, res, next, type, payload = {}) {
@@ -4604,20 +4613,22 @@ async function synthesizeProject(projectId, options = {}) {
     try {
       ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, options);
     } catch (error) {
+      const failDb = readDb();
+      const failedProject = ensureProject(failDb, projectId);
       const message = error instanceof Error ? error.message : "本地 TTS 生成失败。";
-      setStage(project, "voice", "failed", message);
-      setProjectProgress(project, {
+      setStage(failedProject, "voice", "failed", message);
+      setProjectProgress(failedProject, {
         percent: options.queueId ? 50 : 0,
         label: message,
         stage: "voice",
         status: "failed",
         queueId: options.queueId || ""
       });
-      project.status = "failed";
-      project.lastError = message;
-      project.updatedAt = now();
-      pushJob(db, project.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "" });
-      writeDb(db);
+      failedProject.status = "failed";
+      failedProject.lastError = message;
+      failedProject.updatedAt = now();
+      pushJob(failDb, failedProject.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "" });
+      writeDb(failDb);
       updateQueueProgress(options.queueId, { percent: 50, label: message, stage: "voice", stageStatus: "failed" });
       throw error;
     }
@@ -4634,25 +4645,29 @@ async function synthesizeProject(projectId, options = {}) {
       voiceName: voice?.name || "",
       metrics: ttsResult?.metrics || {}
     };
-    const version = createAudioVersion(project, audioArtifact, { sourceScriptVersionId: scriptVersion.id });
-    project.status = "voice_ready";
-    setStage(project, "voice", "done", `${version.label} 口播音频已生成。`);
-    if (project.mode === "auto") {
-      project.currentStep = "video";
-      project.currentStage = "video";
+    const latestDb = readDb();
+    const latestProject = ensureProject(latestDb, projectId);
+    latestProject.selectedScriptVersionId = scriptVersion.id;
+    latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
+    const version = createAudioVersion(latestProject, audioArtifact, { sourceScriptVersionId: scriptVersion.id });
+    latestProject.status = "voice_ready";
+    setStage(latestProject, "voice", "done", `${version.label} 口播音频已生成。`);
+    if (latestProject.mode === "auto") {
+      latestProject.currentStep = "video";
+      latestProject.currentStage = "video";
     }
-    setProjectProgress(project, {
+    setProjectProgress(latestProject, {
       percent: options.queueId ? 62 : 100,
       label: `${version.label} 口播音频已生成。`,
       stage: "voice",
-      status: project.status,
+      status: latestProject.status,
       queueId: options.queueId || ""
     });
-    project.updatedAt = now();
-    pushJob(db, project.id, "synthesize_speech", "completed", `${version.label} 口播音频已生成。`, version);
-    writeDb(db);
+    latestProject.updatedAt = now();
+    pushJob(latestDb, latestProject.id, "synthesize_speech", "completed", `${version.label} 口播音频已生成。`, version);
+    writeDb(latestDb);
     updateQueueProgress(options.queueId, { percent: 62, label: `${version.label} 口播音频已生成。`, stage: "voice" });
-    return project;
+    return latestProject;
 }
 
 app.post("/api/projects/:id/synthesize-speech", async (req, res, next) => {
@@ -4789,20 +4804,22 @@ async function renderProject(projectId, options = {}) {
     }));
     const externalRendered = Boolean(avatarRender.ok);
     if (!externalRendered) {
+      const failDb = readDb();
+      const failedProject = ensureProject(failDb, projectId);
       const message = `数字人口型生成失败：${avatarRender.error || "口型 Adapter 未生成视频。"}`;
-      project.status = "failed";
-      project.lastError = message;
-      setStage(project, "video", "failed", message);
-      setProjectProgress(project, {
+      failedProject.status = "failed";
+      failedProject.lastError = message;
+      setStage(failedProject, "video", "failed", message);
+      setProjectProgress(failedProject, {
         percent: options.queueId ? 82 : 0,
         label: message,
         stage: "video",
         status: "failed",
         queueId: options.queueId || ""
       });
-      project.updatedAt = now();
-      pushJob(db, project.id, "render_video", "failed", message, { videoSettings: project.videoSettings, error: avatarRender.error || "" });
-      writeDb(db);
+      failedProject.updatedAt = now();
+      pushJob(failDb, failedProject.id, "render_video", "failed", message, { videoSettings: project.videoSettings, error: avatarRender.error || "" });
+      writeDb(failDb);
       updateQueueProgress(options.queueId, { percent: 82, label: message, stage: "video", stageStatus: "failed" });
       throw new Error(message);
     }
@@ -4813,7 +4830,7 @@ async function renderProject(projectId, options = {}) {
       rendered = true;
     }
     const subtitlesEmbedded = rendered ? await embedSubtitlesInMp4(videoPath, srtPath) : false;
-    project.artifacts.video = {
+    const videoArtifact = {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
@@ -4830,38 +4847,48 @@ async function renderProject(projectId, options = {}) {
         ]
       }
     };
-    project.artifacts.subtitles = {
+    const subtitlesArtifact = {
       uri: publicPath(srtPath),
       path: srtPath,
       format: "srt"
     };
-    project.status = "video_ready";
-    project.lastError = "";
-    setStage(project, "video", "done", "视频已生成。");
-    if (project.mode === "auto") {
-      project.currentStep = "publish";
-      project.currentStage = "publish";
+    const latestDb = readDb();
+    const latestProject = ensureProject(latestDb, projectId);
+    latestProject.selectedAudioVersionId = audioVersion.id;
+    latestProject.artifacts.audio = audioArtifactFromVersion(audioVersion);
+    latestProject.selectedScriptVersionId = scriptVersion.id;
+    latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
+    latestProject.avatarAssetId = avatarAssetId || latestProject.avatarAssetId;
+    latestProject.videoSettings = project.videoSettings;
+    latestProject.artifacts.video = videoArtifact;
+    latestProject.artifacts.subtitles = subtitlesArtifact;
+    latestProject.status = "video_ready";
+    latestProject.lastError = "";
+    setStage(latestProject, "video", "done", "视频已生成。");
+    if (latestProject.mode === "auto") {
+      latestProject.currentStep = "publish";
+      latestProject.currentStage = "publish";
     }
-    const version = options.createVersion === false ? null : createVideoVersion(db, project, {
+    const version = options.createVersion === false ? null : createVideoVersion(latestDb, latestProject, {
       queueId: options.queueId || "",
       abGroupId: options.abGroupId || "",
       variantLabel: options.variantLabel || "",
-      videoSettings: project.videoSettings,
+      videoSettings: latestProject.videoSettings,
       sourceAudioVersionId: audioVersion.id,
       sourceScriptVersionId: scriptVersion.id
     });
-    setProjectProgress(project, {
+    setProjectProgress(latestProject, {
       percent: options.queueId ? 96 : 100,
       label: version ? `${version.label} 视频版本已生成。` : "视频已生成。",
       stage: "video",
-      status: project.status,
+      status: latestProject.status,
       queueId: options.queueId || ""
     });
-    project.updatedAt = now();
-    pushJob(db, project.id, "render_video", "completed", "视频已生成。", project.artifacts.video);
-    writeDb(db);
+    latestProject.updatedAt = now();
+    pushJob(latestDb, latestProject.id, "render_video", "completed", "视频已生成。", latestProject.artifacts.video);
+    writeDb(latestDb);
     updateQueueProgress(options.queueId, { percent: 96, label: version ? `${version.label} 视频版本已生成。` : "视频已生成。", stage: "video" });
-    return project;
+    return latestProject;
 }
 
 app.post("/api/projects/:id/render-video", async (req, res, next) => {

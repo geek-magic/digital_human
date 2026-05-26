@@ -776,6 +776,10 @@ small { color: var(--muted); font-size: 12px; }
   justify-content: space-between;
   gap: 12px;
 }
+.step-next-row {
+  display: flex;
+  justify-content: flex-end;
+}
 .step-runtime {
   display: grid;
   gap: 6px;
@@ -796,11 +800,32 @@ small { color: var(--muted); font-size: 12px; }
   font-size: 12px;
   font-weight: 800;
 }
+.stage-task-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
 .stage-task-list {
   display: grid;
-  gap: 3px;
+  gap: 8px;
 }
-.stage-task-list small {
+.stage-task-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+.stage-task-row strong, .stage-task-row small {
+  display: block;
+}
+.stage-task-row small {
   color: var(--muted);
 }
 .step-head-actions {

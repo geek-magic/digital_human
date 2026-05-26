@@ -1585,7 +1585,10 @@ function StageWorkspace({
 }) {
   const stage = project.stageState?.[activeStage];
   const queueStage = latestQueue?.progress?.stage || project.progress?.stage;
-  const activeStageQueues = state.queueItems.filter((item) => item.projectId === project.id && isActiveQueue(item) && (item.progress?.stage || queueStage) === activeStage);
+  const stageQueues = state.queueItems
+    .filter((item) => item.projectId === project.id && (item.progress?.stage || queueStage) === activeStage)
+    .slice(0, 8);
+  const activeStageQueues = stageQueues.filter(isActiveQueue);
   const stageQueue = activeStageQueues[0] || (latestQueue && isActiveQueue(latestQueue) && queueStage === activeStage ? latestQueue : undefined);
   const stageProgress = stageQueue?.progress || project.progress;
   const showStageProgress = Boolean(activeStageQueues.length || stageQueue);
@@ -1602,31 +1605,27 @@ function StageWorkspace({
 
   return (
     <section className="step-panel">
-      {(showStageProgress || (project.mode === "manual" && nextStage)) && (
-        <div className="step-inline-status">
-          {showStageProgress && (
-            <div className="step-runtime" aria-live="polite">
-              <div>
-                {activeStageQueues.length > 1 ? <span>{activeStageQueues.length} 个任务进行中</span> : <span>{stageQueue?.status === "queued" ? `排队第 ${stageQueue.position || 1} 位` : "正在执行"}</span>}
-                {stageQueue?.attempts ? <span>第 {stageQueue.attempts} 次执行</span> : null}
-                {stageQueue?.createdAt ? <span>已耗时 {formatDurationMs(Date.now() - new Date(stageQueue.createdAt).getTime())}</span> : null}
-              </div>
-              <small>{stageProgress?.label || "正在处理当前步骤。"}</small>
-              <div className="progress-track"><span style={{ width: `${stageProgress?.percent ?? progressValue(project)}%` }} /></div>
-              {activeStageQueues.length > 1 && (
-                <div className="stage-task-list">
-                  {activeStageQueues.map((item) => <small key={item.id}>{item.label} · {statusText(item.status)} · {item.progress?.percent || 0}%</small>)}
-                </div>
-              )}
-            </div>
-          )}
-          {project.mode === "manual" && nextStage && (
-            <button className="secondary-button" disabled={!canGoNext} onClick={onGoNext}>
-              下一步：{stageCopy[nextStage].title}
-            </button>
-          )}
+      {project.mode === "manual" && nextStage && (
+        <div className="step-next-row">
+          <button className="secondary-button" disabled={!canGoNext} onClick={onGoNext}>
+            下一步：{stageCopy[nextStage].title}
+          </button>
         </div>
       )}
+      {showStageProgress && (
+        <div className="step-inline-status">
+          <div className="step-runtime" aria-live="polite">
+            <div>
+              {activeStageQueues.length > 1 ? <span>{activeStageQueues.length} 个任务进行中</span> : <span>{stageQueue?.status === "queued" ? `排队第 ${stageQueue.position || 1} 位` : "正在执行"}</span>}
+              {stageQueue?.attempts ? <span>第 {stageQueue.attempts} 次执行</span> : null}
+              {stageQueue?.createdAt ? <span>已耗时 {formatDurationMs(Date.now() - new Date(stageQueue.createdAt).getTime())}</span> : null}
+            </div>
+            <small>{stageProgress?.label || "正在处理当前步骤。"}</small>
+            <div className="progress-track"><span style={{ width: `${stageProgress?.percent ?? progressValue(project)}%` }} /></div>
+          </div>
+        </div>
+      )}
+      {stageQueues.length > 0 && <StageTaskPanel queueItems={stageQueues} />}
 
       {activeStage === "input" && (
         <div className="step-body">
@@ -1874,6 +1873,34 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
         <ShieldCheck size={17} />
         <strong>队列保护</strong>
         <span>运行 {active.filter((item) => item.status === "running").length} · 等待 {active.filter((item) => item.status === "queued").length}</span>
+      </div>
+    </section>
+  );
+}
+
+function StageTaskPanel({ queueItems }: { queueItems: QueueItem[] }) {
+  return (
+    <section className="stage-task-panel">
+      <div className="section-head">
+        <div><p className="eyebrow">任务</p><h3>执行任务</h3></div>
+        <span className="count-pill">{queueItems.length}</span>
+      </div>
+      <div className="stage-task-list">
+        {queueItems.map((item) => (
+          <article className="stage-task-row" key={item.id}>
+            <StatusBadge status={item.status} />
+            <div>
+              <strong>{item.label}</strong>
+              <small>
+                {statusText(item.status)}
+                {item.attempts ? ` · 第 ${item.attempts} 次执行` : ""}
+                {item.createdAt ? ` · ${formatDate(item.createdAt)}` : ""}
+              </small>
+              <small>{item.progress?.label || item.lastError || "等待执行。"}</small>
+              <div className="progress-track"><span style={{ width: `${item.progress?.percent || 0}%` }} /></div>
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   );
