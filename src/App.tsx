@@ -819,9 +819,6 @@ function TaskCreatePage(props: {
     <div className="task-layout">
       <section className="task-main create-only">
         <div className="task-create-panel">
-          <div className="task-create-toolbar">
-            <button type="button" className="ghost-button" onClick={() => setExtractOpen(true)}><Download size={15} />链接解析</button>
-          </div>
           <TaskComposer
             state={props.state}
             action={props.action}
@@ -829,6 +826,7 @@ function TaskCreatePage(props: {
             inputText={draftInputText}
             setInputText={setDraftInputText}
             busy={props.busy}
+            onOpenExtraction={() => setExtractOpen(true)}
           />
         </div>
       </section>
@@ -1239,7 +1237,8 @@ function TaskComposer({
   onCreated,
   inputText,
   setInputText,
-  busy
+  busy,
+  onOpenExtraction
 }: {
   state: State;
   action: AppAction;
@@ -1247,6 +1246,7 @@ function TaskComposer({
   inputText: string;
   setInputText: (value: string) => void;
   busy: string;
+  onOpenExtraction: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [requirements, setRequirements] = useState("");
@@ -1301,6 +1301,9 @@ function TaskComposer({
         <div className="mode-switch" role="group" aria-label="任务模式">
           <button type="button" className={cx(mode === "manual" && "active")} onClick={() => setMode("manual")}>手动模式</button>
           <button type="button" className={cx(mode === "auto" && "active")} onClick={() => setMode("auto")}>全自动模式</button>
+        </div>
+        <div className="task-create-toolbar">
+          <button type="button" className="ghost-button" onClick={onOpenExtraction}><Download size={15} />链接解析</button>
         </div>
         <label>
           <span>任务标题</span>
