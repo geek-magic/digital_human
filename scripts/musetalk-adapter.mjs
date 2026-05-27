@@ -45,11 +45,16 @@ function normalizeSettings(settings = {}) {
 }
 
 async function run(command, args, options = {}) {
-  await execFileAsync(command, args, {
+  return execFileAsync(command, args, {
     timeout: Number(process.env.MUSETALK_TIMEOUT_MS || 1200000),
     maxBuffer: 1024 * 1024 * 32,
     ...options
   });
+}
+
+function tailText(value = "", max = 6000) {
+  const text = String(value || "");
+  return text.length > max ? text.slice(-max) : text;
 }
 
 async function prepareInputs(payload, workDir) {
@@ -145,17 +150,44 @@ while True:
     last = box
 cap.release()
 face_mesh.close()
+
+def is_valid_box(item):
+    try:
+        x1, y1, x2, y2 = item
+        return float(x2) > float(x1) and float(y2) > float(y1) and not (float(x1) == 0 and float(y1) == 0 and float(x2) == 0 and float(y2) == 0)
+    except Exception:
+        return False
+
+detected_valid = sum(1 for item in coords if is_valid_box(item))
+first_valid = next((item for item in coords if is_valid_box(item)), None)
+if first_valid is not None:
+    filled = []
+    last_valid = first_valid
+    for item in coords:
+        if is_valid_box(item):
+            last_valid = item
+            filled.append(item)
+        else:
+            filled.append(last_valid)
+    coords = filled
+valid = sum(1 for item in coords if is_valid_box(item))
 with open(coord_path, "wb") as f:
     pickle.dump(coords, f)
-print(json.dumps({"frames": len(coords), "coordPath": coord_path}))
+print(json.dumps({"frames": len(coords), "detectedValidFrames": detected_valid, "validFrames": valid, "coordPath": coord_path}))
 `;
-  await run(pythonBin, ["-c", script, videoPath, coordPath, JSON.stringify(settings)], {
+  const { stdout } = await run(pythonBin, ["-c", script, videoPath, coordPath, JSON.stringify(settings)], {
     cwd: museTalkHome,
     env: {
       ...process.env,
       PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
     }
   });
+  const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
+  const result = JSON.parse(lines[lines.length - 1] || "{}");
+  if (!result.validFrames) {
+    throw new Error(`MediaPipe 未检测到有效人脸坐标。frames=${result.frames || 0}, validFrames=0`);
+  }
+  return result;
 }
 
 async function render(payloadPath, outPath) {
@@ -216,14 +248,15 @@ async function render(payloadPath, outPath) {
   if (settings.cropMode === "mediapipe") {
     const coordPath = join(workDir, `${basename(preparedVideo, ".mp4")}.pkl`);
     try {
-      await createMediapipeCoords(preparedVideo, coordPath, settings);
+      const coordResult = await createMediapipeCoords(preparedVideo, coordPath, settings);
+      console.log(`MediaPipe 坐标生成完成：frames=${coordResult.frames}, detectedValidFrames=${coordResult.detectedValidFrames || coordResult.validFrames}, validFrames=${coordResult.validFrames}`);
       args.push("--use_saved_coord");
     } catch (error) {
       console.warn(`MediaPipe 坐标生成失败，回退 MuseTalk 默认坐标检测：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  await run(pythonBin, args, {
+  const inference = await run(pythonBin, args, {
     cwd: museTalkHome,
     env: {
       ...process.env,
@@ -238,7 +271,22 @@ async function render(payloadPath, outPath) {
   });
 
   const generatedPath = join(resultDir, "v15", resultName);
-  assertFile(generatedPath, "MuseTalk 输出视频");
+  if (!existsSync(generatedPath)) {
+    const stdout = tailText(inference.stdout);
+    const stderr = tailText(inference.stderr);
+    const likelyFaceError = stdout.includes("integer division or modulo by zero")
+      || stdout.includes("Number of frames: 0")
+      || stdout.includes("Error occurred during processing");
+    const reason = likelyFaceError
+      ? "MuseTalk 未生成输出视频，通常是当前素材没有检测到有效人脸区域。请更换正脸清晰素材，或重新剪辑到人物脸部完整可见的片段。"
+      : "MuseTalk 未生成输出视频。";
+    throw new Error([
+      `${reason}`,
+      `预期输出：${generatedPath}`,
+      stdout ? `MuseTalk stdout:\n${stdout}` : "",
+      stderr ? `MuseTalk stderr:\n${stderr}` : ""
+    ].filter(Boolean).join("\n\n"));
+  }
   try {
     await run(ffmpegBin, [
       "-y",

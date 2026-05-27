@@ -2978,6 +2978,7 @@ async function createExternalAvatarVideo(input, outPath) {
         engine: attempt.engine,
         settings: input.videoSettings || {},
         message: error?.message || "avatar render failed",
+        stdout: error?.stdout || "",
         stderr: error?.stderr || "",
         updatedAt: now()
       }, null, 2));
