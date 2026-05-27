@@ -1429,7 +1429,7 @@ function PolishDialog({
         </div>
         <div className="polish-body">
           <label><span>输入内容</span><textarea value={draftInputText} onChange={(event) => setDraftInputText(event.target.value)} placeholder="输入或粘贴需要润色的口播内容" /></label>
-          <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不适用</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+          <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不使用</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
           <section className="polish-result-panel">
