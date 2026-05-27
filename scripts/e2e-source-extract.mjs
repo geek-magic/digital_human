@@ -30,7 +30,9 @@ try {
   await page.getByRole("heading", { name: "任务中心" }).waitFor({ timeout: 30000 });
 
   const seed = `链接解析端到端验证-${Date.now()}`;
-  await page.getByRole("textbox", { name: "原始输入" }).fill(seed);
+  const composer = page.locator("form").first();
+  await composer.getByRole("textbox", { name: "任务标题" }).fill(seed);
+  await composer.getByPlaceholder("输入主题、需求、参考信息").fill(seed);
   await page.getByRole("button", { name: "创建手动任务" }).click();
   await page.waitForFunction((expected) => {
     return document.querySelector(".task-detail")?.textContent?.includes(expected);
@@ -67,8 +69,8 @@ try {
   const navTexts = await page.locator(".step-nav .step-tab strong").allTextContents().catch(() => []);
   await page.screenshot({ path: join(outDir, "02-after-extract.png"), fullPage: true });
 
-  assert(textareaValue.includes(seed), `原始输入丢失初始内容：${textareaValue}`);
-  assert(textareaValue.includes("AI 剪辑教程"), `原始输入没有追加最终文本：${textareaValue}`);
+  assert(textareaValue.includes(seed), `输入内容丢失初始内容：${textareaValue}`);
+  assert(textareaValue.includes("AI 剪辑教程"), `输入内容没有追加最终文本：${textareaValue}`);
   assert(!textareaValue.includes("https://v.douyin.com"), `一键添加不应追加链接：${textareaValue}`);
   assert(!textareaValue.includes("来源视频标题"), `一键添加不应追加来源包装：${textareaValue}`);
   assert(stepTexts.some((text) => text.includes("提取链接") && text.includes("https://v.douyin.com/gInMOEMQ5cI/")), "步骤中没有展示提取出的链接。");

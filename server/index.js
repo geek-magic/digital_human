@@ -1194,7 +1194,14 @@ function queueSignature(project, type, payload = {}) {
     return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "" });
   }
   if (type === "render_video") {
-    return stableStringify({ type, audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "", avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "", videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings) });
+    return stableStringify({
+      type,
+      audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "",
+      avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "",
+      previewDuration: Number(payload.previewDuration || 0),
+      variantLabel: payload.variantLabel || "",
+      videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
+    });
   }
   return stableStringify({ type, payload });
 }
@@ -1504,7 +1511,14 @@ async function executeQueueItem(item) {
   if (item.type === "process_source") return processSourceProject(item.projectId, { queueId: item.id });
   if (item.type === "generate_script") return await generateScriptProject(item.projectId, { queueId: item.id, payload: item.payload });
   if (item.type === "synthesize_speech") return synthesizeProject(item.projectId, { queueId: item.id, payload: item.payload });
-  if (item.type === "render_video") return renderProject(item.projectId, { queueId: item.id, videoSettings: item.payload?.videoSettings, audioVersionId: item.payload?.audioVersionId, avatarAssetId: item.payload?.avatarAssetId });
+  if (item.type === "render_video") return renderProject(item.projectId, {
+    queueId: item.id,
+    videoSettings: item.payload?.videoSettings,
+    audioVersionId: item.payload?.audioVersionId,
+    avatarAssetId: item.payload?.avatarAssetId,
+    previewDuration: item.payload?.previewDuration,
+    variantLabel: item.payload?.variantLabel
+  });
   if (item.type === "run_all") return runAllProject(item.projectId, { queueId: item.id });
   if (item.type === "ab_render") return renderAbProject(item.projectId, { queueId: item.id, payload: item.payload });
   throw new Error(`Unknown queue type: ${item.type}`);
@@ -2338,7 +2352,7 @@ function sourceExtractionNotes(source = "", sourceAnalysis = {}) {
     if (transcript.message) notes.push(`ASR：${transcript.message}`);
   }
   if (!links.length) {
-    notes.push("已识别为文本内容，直接填入原始输入。");
+    notes.push("已识别为文本内容，直接填入输入内容。");
   } else if (!hasTranscribed) {
     notes.push("本次没有拿到可用 ASR 文本，已先使用可提取的视频标题/描述。");
   }
@@ -2394,6 +2408,76 @@ function scriptGenerationMessages(input) {
       content: JSON.stringify(payload, null, 2)
     }
   ];
+}
+
+function titleGenerationMessages(input) {
+  const sourceText = buildExtractedSourceText(input.inputText || input.sourceText || "", input.sourceAnalysis || {});
+  return [
+    {
+      role: "system",
+      content: [
+        "你是短视频任务命名助手。",
+        "只输出一个中文任务标题，不要解释，不要 Markdown，不要引号。",
+        "标题要能概括内容主题，避免直接截取原文，避免出现“生成”“帮我”“输入内容”等过程词。",
+        "控制在8到18个中文字符，适合显示在任务列表。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        sourceText: sourceText || input.inputText || input.sourceText || "",
+        requirements: input.requirements || ""
+      }, null, 2)
+    }
+  ];
+}
+
+function cleanGeneratedTitle(text = "", fallback = "") {
+  const cleaned = stripModelJsonFence(text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .find((line) => !/thinking|标题|解释|建议|以下|任务命名/i.test(line)) || "";
+  return compactChinese(
+    (cleaned || fallback)
+      .replace(/^["“”'「标题：:：\s]+|["“”'」\s]+$/g, "")
+      .replace(/^(任务标题|标题)\s*[:：]\s*/i, "")
+      .replace(/[。！？!?；;，,]+$/g, "")
+      .trim(),
+    18
+  ) || fallback || "新建数字人任务";
+}
+
+async function generateProjectTitleWithTextModel(db, input = {}) {
+  const fallback = deriveProjectTitle(input.inputText || input.sourceText || "", input.requirements || "");
+  const modelId = input.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const messages = titleGenerationMessages(input);
+  try {
+    let result;
+    if (String(modelId).startsWith("provider:")) {
+      const providerId = String(modelId).replace("provider:", "");
+      const provider = db.apiProviders.find((item) => item.id === providerId || item.providerId === providerId);
+      if (!provider) return fallback;
+      result = await callCloudLlm(provider, messages, { temperature: 0.35, timeout: 60000 });
+    } else {
+      const model = db.models.find((item) => item.id === modelId && item.type === "llm");
+      if (!model) return fallback;
+      const detection = detectModel(model);
+      model.status = detection.status;
+      model.resolvedPath = detection.resolvedPath;
+      model.protocolStatus = detection.protocolStatus;
+      model.protocolMessage = detection.protocolMessage;
+      model.healthMessage = detection.message;
+      model.lastCheckedAt = now();
+      if (detection.status === "missing") return fallback;
+      result = await callLocalLlm(messages, { temperature: 0.35, llmTimeout: 120000 });
+    }
+    return cleanGeneratedTitle(result.text || "", fallback);
+  } catch (error) {
+    console.warn(`[title-generation] fallback: ${error instanceof Error ? error.message : String(error)}`);
+    return fallback;
+  }
 }
 
 function stripModelJsonFence(text = "") {
@@ -4222,12 +4306,19 @@ app.post("/api/source/extract", async (req, res, next) => {
   }
 });
 
-app.post("/api/projects", (req, res) => {
+app.post("/api/projects", async (req, res, next) => {
+  try {
   const db = readDb();
   const inputText = req.body.inputText || req.body.sourceText || "";
   const manualScript = Boolean(req.body.manualScript);
-  const title = String(req.body.title || "").trim() || deriveProjectTitle(inputText, req.body.requirements || "");
   const mode = req.body.mode === "auto" ? "auto" : "manual";
+  const scriptModelId = req.body.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const title = String(req.body.title || "").trim() || await generateProjectTitleWithTextModel(db, {
+    inputText,
+    sourceText: inputText,
+    requirements: req.body.requirements || "",
+    scriptModelId
+  });
   const initialScript = manualScript
     ? {
         title,
@@ -4249,7 +4340,7 @@ app.post("/api/projects", (req, res) => {
     reviewEnabled: mode === "manual",
     mode,
     platforms: req.body.platforms?.length ? req.body.platforms : ["douyin", "xiaohongshu", "wechat"],
-    scriptModelId: req.body.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx",
+    scriptModelId,
     avatarAssetId: req.body.avatarAssetId || "",
     voiceId: req.body.voiceId || "",
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
@@ -4306,6 +4397,9 @@ app.post("/api/projects", (req, res) => {
   pushJob(db, project.id, "create_project", "completed", "任务已创建。");
   writeDb(db);
   res.json(project);
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.post("/api/projects/bulk-delete", (req, res) => {
@@ -4383,10 +4477,10 @@ app.post("/api/projects/:id/input/apply-source", (req, res) => {
     : `${project.inputText.trim()}\n\n${text}`;
   project.sourceText = project.inputText;
   project.sourceAnalysis = extraction.sourceAnalysis || project.sourceAnalysis || { links: [], transcripts: [], notes: [] };
-  setStage(project, "input", "done", mode === "replace" ? "解析结果已覆盖原始输入。" : "解析结果已追加到原始输入。");
+  setStage(project, "input", "done", mode === "replace" ? "解析结果已覆盖输入内容。" : "解析结果已追加到输入内容。");
   resetStagesAfter(project, "input");
   project.updatedAt = now();
-  pushJob(db, project.id, "apply_source", "completed", mode === "replace" ? "解析结果已覆盖原始输入。" : "解析结果已追加到原始输入。", extraction);
+  pushJob(db, project.id, "apply_source", "completed", mode === "replace" ? "解析结果已覆盖输入内容。" : "解析结果已追加到输入内容。", extraction);
   writeDb(db);
   res.json({ updatedInputText: project.inputText, project });
 });
@@ -4895,7 +4989,9 @@ async function renderProject(projectId, options = {}) {
     project.artifacts.script = scriptArtifactFromVersion(project, scriptVersion);
     const outDir = join(artifactDir, project.id);
     mkdirSync(outDir, { recursive: true });
-    const duration = project.artifacts.audio?.duration || 45;
+    const fullDuration = project.artifacts.audio?.duration || 45;
+    const previewDuration = Number(options.previewDuration || 0);
+    const duration = previewDuration > 0 ? Math.min(fullDuration, Math.max(1, previewDuration)) : fullDuration;
     const avatarAssetId = options.avatarAssetId || project.avatarAssetId;
     const avatar = db.avatarAssets.find((item) => item.id === avatarAssetId);
     if (!avatar?.path) {
@@ -4914,7 +5010,7 @@ async function renderProject(projectId, options = {}) {
       status: "running",
       queueId: options.queueId || ""
     });
-    pushJob(db, project.id, "render_video", "running", "开始生成数字人视频。", { videoSettings: project.videoSettings });
+    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration });
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: "正在生成字幕文件。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human.mp4");
@@ -5002,7 +5098,7 @@ async function renderProject(projectId, options = {}) {
     latestProject.artifacts.subtitles = subtitlesArtifact;
     latestProject.status = "video_ready";
     latestProject.lastError = "";
-    setStage(latestProject, "video", "done", "视频已生成。");
+    setStage(latestProject, "video", "done", previewDuration > 0 ? "3秒预览已生成。" : "视频已生成。");
     if (latestProject.mode === "auto") {
       latestProject.currentStep = "publish";
       latestProject.currentStage = "publish";
@@ -5010,22 +5106,22 @@ async function renderProject(projectId, options = {}) {
     const version = options.createVersion === false ? null : createVideoVersion(latestDb, latestProject, {
       queueId: options.queueId || "",
       abGroupId: options.abGroupId || "",
-      variantLabel: options.variantLabel || "",
+      variantLabel: options.variantLabel || (previewDuration > 0 ? "3秒预览" : ""),
       videoSettings: latestProject.videoSettings,
       sourceAudioVersionId: audioVersion.id,
       sourceScriptVersionId: scriptVersion.id
     });
     setProjectProgress(latestProject, {
       percent: options.queueId ? 96 : 100,
-      label: version ? `${version.label} 视频版本已生成。` : "视频已生成。",
+      label: version ? `${version.label}${previewDuration > 0 ? " 3秒预览" : " 视频版本"}已生成。` : "视频已生成。",
       stage: "video",
       status: latestProject.status,
       queueId: options.queueId || ""
     });
     latestProject.updatedAt = now();
-    pushJob(latestDb, latestProject.id, "render_video", "completed", "视频已生成。", latestProject.artifacts.video);
+    pushJob(latestDb, latestProject.id, "render_video", "completed", previewDuration > 0 ? "3秒预览已生成。" : "视频已生成。", latestProject.artifacts.video);
     writeDb(latestDb);
-    updateQueueProgress(options.queueId, { percent: 96, label: version ? `${version.label} 视频版本已生成。` : "视频已生成。", stage: "video" });
+    updateQueueProgress(options.queueId, { percent: 96, label: version ? `${version.label}${previewDuration > 0 ? " 3秒预览" : " 视频版本"}已生成。` : "视频已生成。", stage: "video" });
     return latestProject;
 }
 
@@ -5034,6 +5130,16 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || ""
+  });
+});
+
+app.post("/api/projects/:id/render-preview", async (req, res, next) => {
+  enqueueAndRespond(req, res, next, "render_video", {
+    videoSettings: req.body?.videoSettings || null,
+    audioVersionId: req.body?.audioVersionId || "",
+    avatarAssetId: req.body?.avatarAssetId || "",
+    previewDuration: 3,
+    variantLabel: "3秒预览"
   });
 });
 

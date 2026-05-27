@@ -436,6 +436,33 @@ const defaultVideoSettings: VideoSettings = {
   leftCheekWidth: 90,
   rightCheekWidth: 90
 };
+const requirementTemplates = [
+  {
+    id: "douyin-knowledge",
+    label: "抖音知识口播",
+    value: "生成一条抖音知识分享口播，开头要有强钩子，语言直接、有节奏，控制在30-45秒，结尾引导评论或收藏。"
+  },
+  {
+    id: "xiaohongshu-planting",
+    label: "小红书种草",
+    value: "生成一条小红书种草风格口播，语气真实、有体验感，先讲痛点再讲解决方案，避免硬广，结尾给出适用人群。"
+  },
+  {
+    id: "product-intro",
+    label: "产品介绍",
+    value: "生成一条产品介绍口播，突出核心卖点、适用场景和具体收益，表达克制可信，不夸张承诺，控制在45秒以内。"
+  },
+  {
+    id: "course-lead",
+    label: "课程引流",
+    value: "生成一条课程引流口播，先指出目标用户常见误区，再给出方法框架，最后自然引导用户了解课程或私信咨询。"
+  },
+  {
+    id: "local-life",
+    label: "本地生活",
+    value: "生成一条本地生活口播，突出地点、体验、价格或服务亮点，语气像真实探店推荐，结尾提示适合什么人去。"
+  }
+] as const;
 const videoSettingTips: Record<keyof VideoSettings, string> = {
   engine: "MuseTalk 用于当前本地口型生成；失败时会直接标记失败，不生成无效占位视频。",
   cropMode: "MediaPipe 会按人脸关键点裁下半脸，通常比默认框更稳。",
@@ -1111,6 +1138,10 @@ function TaskComposer({
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
   const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
+  const applyRequirementTemplate = (templateId: string) => {
+    const template = requirementTemplates.find((item) => item.id === templateId);
+    if (template) setRequirements(template.value);
+  };
 
   return (
     <section className="composer">
@@ -1128,6 +1159,7 @@ function TaskComposer({
           <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
         </label>
         <div className={cx("composer-grid", mode === "manual" && "compact")}>
+          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
           {mode === "auto" && (
@@ -1389,6 +1421,20 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       });
     });
 
+  const generateVideoPreview = () =>
+    action("生成3秒预览", async () => {
+      await request<Project>(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avatarAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
+      });
+      return request(`/api/projects/${project.id}/render-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId })
+      });
+    });
+
   async function preparePublish(platform: Platform) {
     const payload = await action("打开发布入口", () => request<PublishRecord>(`/api/projects/${currentProject.id}/publish/${platform}`, {
       method: "POST",
@@ -1477,6 +1523,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         setVideoSettings={setVideoSettings}
         saveVideoSetup={saveVideoSetup}
         generateVideo={generateVideo}
+        generateVideoPreview={generateVideoPreview}
         selectedVideoVersionId={selectedVideoVersionId}
         setSelectedVideoVersionId={setSelectedVideoVersionId}
         publishDraft={publishDraft}
@@ -1552,6 +1599,7 @@ function StageWorkspace({
   setVideoSettings,
   saveVideoSetup,
   generateVideo,
+  generateVideoPreview,
   selectedVideoVersionId,
   setSelectedVideoVersionId,
   publishDraft,
@@ -1592,6 +1640,7 @@ function StageWorkspace({
   setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>>;
   saveVideoSetup: () => Promise<Project | undefined>;
   generateVideo: () => Promise<unknown>;
+  generateVideoPreview: () => Promise<unknown>;
   selectedVideoVersionId: string;
   setSelectedVideoVersionId: (value: string) => void;
   publishDraft: PublishRecord | null;
@@ -1624,6 +1673,10 @@ function StageWorkspace({
   const savingSourceAudio = busy === "保存原始音频";
   const openingPublish = busy === "打开发布入口";
   const recordingPublish = busy === "记录发布结果";
+  const applyRequirementTemplate = (templateId: string) => {
+    const template = requirementTemplates.find((item) => item.id === templateId);
+    if (template) setRequirements(template.value);
+  };
 
   return (
     <section className="step-panel">
@@ -1665,6 +1718,7 @@ function StageWorkspace({
       {activeStage === "script" && (
         <div className="step-body">
           <label><span>输入内容</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
+          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
@@ -1760,6 +1814,7 @@ function StageWorkspace({
             {selectedVideoVersion ? <video src={selectedVideoVersion.artifact.video.uri} controls /> : <EmptyState text="视频生成后会显示在这里。" />}
           </div>
           <div className="step-actions">
+            <ActionButton label="生成3秒预览" busy={busy} disabled={!selectedAudioVersion || !selectedAsset} onClick={generateVideoPreview} />
             <ActionButton label="生成视频" busy={busy} disabled={!selectedAudioVersion || !selectedAsset} onClick={generateVideo} />
           </div>
           <VideoVersionPanel project={project} versions={videoVersions} selectedId={selectedVideoVersionId} onSelect={setSelectedVideoVersionId} busy={busy} action={action} />
@@ -1794,6 +1849,7 @@ function StageWorkspace({
                 <label><span>标题</span><input readOnly value={publishDraft.title} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.title)}>复制</button></label>
                 <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
                 <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
+                {publishDraft.videoPath && <label><span>本地文件</span><input readOnly value={publishDraft.videoPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.videoPath || "")}>复制</button></label>}
               </div>
             </OutputItem>
           )}

@@ -40,18 +40,20 @@ await noHorizontalOverflow(page, "tasks");
 await screenshot(page, "01-tasks.png");
 
 const marker = `流程验证-${Date.now()}`;
-await page.getByRole("textbox", { name: "原始输入" }).fill(`${marker} 数字人口播流程验证。`);
-await page.getByRole("textbox", { name: "生成要求" }).fill("验证手动模式、节点锁定和文案版本。");
+const composer = page.locator("form").first();
+await composer.getByRole("textbox", { name: "任务标题" }).fill(marker);
+await composer.getByPlaceholder("输入主题、需求、参考信息").fill(`${marker} 数字人口播流程验证。`);
+await composer.getByRole("textbox", { name: "生成要求" }).fill("验证手动模式、节点锁定和文案版本。");
 await page.getByRole("button", { name: "创建手动任务" }).click();
 await page.locator(".task-select").filter({ hasText: marker }).waitFor({ timeout: 30000 });
 await page.locator(".task-select").filter({ hasText: marker }).click();
 await page.locator(".detail-title h2").filter({ hasText: marker }).waitFor({ timeout: 30000 });
 
 const navTexts = await page.locator(".step-nav .step-tab strong").allTextContents();
-assert(navTexts.join(" > ") === "输入 > 生成口播文案 > 生成口播音频 > 视频合成 > 发布", `流程节点错误：${navTexts.join(" / ")}`);
+assert(navTexts.join(" > ") === "生成口播文案 > 生成口播音频 > 视频合成 > 发布", `流程节点错误：${navTexts.join(" / ")}`);
 await page.locator(".step-nav button").filter({ hasText: "生成口播文案" }).click();
 await page.locator(".step-body textarea").first().fill(`${marker} 口播文案 V1。`);
-await page.getByRole("button", { name: "保存为新版本" }).click();
+await page.getByRole("button", { name: "保存为口播文案" }).click();
 await page.getByText("V1", { exact: false }).first().waitFor({ timeout: 30000 });
 await noHorizontalOverflow(page, "task detail");
 await screenshot(page, "02-task-detail.png");
