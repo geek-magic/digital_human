@@ -1675,7 +1675,7 @@ function StageWorkspace({
           <label><span>原始输入</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
-          <textarea value={script} onChange={(event) => setScript(event.target.value)} />
+          <label><span>口播文案草稿</span><textarea value={script} onChange={(event) => setScript(event.target.value)} /></label>
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
           <div className="step-actions">
             <button className="ghost-button" disabled={savingScript} onClick={saveScript}>

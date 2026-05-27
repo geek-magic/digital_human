@@ -1273,21 +1273,6 @@ function enqueueProjectJob(projectId, type, payload = {}) {
   return publicQueueItem(item, db);
 }
 
-function assertNewScriptGenerationAllowed(project, payload = {}, db = readDb()) {
-  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "";
-  const inputSnapshot = payload.inputText ?? project.inputText ?? "";
-  const requirementsSnapshot = payload.requirements ?? project.requirements ?? "";
-  const existingVersion = (project.scriptVersions || []).find((version) => !version.deletedAt
-    && String(version.sourceInputSnapshot || "") === String(inputSnapshot)
-    && String(version.requirementsSnapshot || "") === String(requirementsSnapshot)
-    && [version.modelInfo?.modelId, version.modelInfo?.providerId, version.modelInfo?.providerId ? `provider:${version.modelInfo.providerId}` : "", version.modelInfo?.model].filter(Boolean).includes(modelId));
-  if (existingVersion) {
-    const err = new Error(`相同输入、生成要求和模型已生成过 ${existingVersion.label}，请修改内容后再生成。`);
-    err.status = 409;
-    throw err;
-  }
-}
-
 function startImmediateProjectJob(projectId, type, payload = {}) {
   const db = readDb();
   const project = ensureProject(db, projectId);
@@ -1298,7 +1283,6 @@ function startImmediateProjectJob(projectId, type, payload = {}) {
     err.status = 409;
     throw err;
   }
-  if (type === "generate_script") assertNewScriptGenerationAllowed(project, payload, db);
   const stage = queueStageMap[type] || project.currentStage || "input";
   const item = normalizeQueueItem({
     id: `task-${randomUUID()}`,
