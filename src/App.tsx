@@ -2613,16 +2613,17 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
               </span>
             </div>
           ) : clipAssetId === item.id ? (
-            <div className="asset-edit-stack">
-              <span className="asset-title"><strong>{item.name}</strong><small>选择片段后生成新素材，原素材保留。</small></span>
-              <div className="clip-editor">
-                <input value={clipName} onChange={(event) => setClipName(event.target.value)} aria-label="片段名称" placeholder="片段名称" />
-                <label><span>开始</span><input type="number" min="0" step="0.1" value={clipStart} onChange={(event) => setClipStart(event.target.value)} /></label>
-                <label><span>结束</span><input type="number" min="0.1" step="0.1" value={clipEnd} onChange={(event) => setClipEnd(event.target.value)} /></label>
-                <button className="ghost-button" onClick={() => createClip(item)} disabled={!clipName.trim() || Number(clipEnd) <= Number(clipStart)}><Scissors size={14} />生成片段</button>
-                <button className="icon-mini" onClick={cancelClip} aria-label="取消"><X size={14} /></button>
-              </div>
-            </div>
+            <ClipEditor
+              item={item}
+              clipName={clipName}
+              setClipName={setClipName}
+              clipStart={clipStart}
+              setClipStart={setClipStart}
+              clipEnd={clipEnd}
+              setClipEnd={setClipEnd}
+              onCreate={() => createClip(item)}
+              onCancel={cancelClip}
+            />
           ) : (
             <span className="asset-title"><strong>{item.name}</strong><small>{item.mimeType || item.provider || "local"}</small></span>
           ),
@@ -2636,6 +2637,149 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
         ])}
       />
     </section>
+  );
+}
+
+function formatClipTime(value: number) {
+  if (!Number.isFinite(value)) return "00:00.0";
+  const safe = Math.max(0, value);
+  const minutes = Math.floor(safe / 60);
+  const seconds = Math.floor(safe % 60);
+  const tenths = Math.floor((safe % 1) * 10);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
+}
+
+function ClipEditor({
+  item,
+  clipName,
+  setClipName,
+  clipStart,
+  setClipStart,
+  clipEnd,
+  setClipEnd,
+  onCreate,
+  onCancel
+}: {
+  item: Asset;
+  clipName: string;
+  setClipName: (value: string) => void;
+  clipStart: string;
+  setClipStart: (value: string) => void;
+  clipEnd: string;
+  setClipEnd: (value: string) => void;
+  onCreate: () => void;
+  onCancel: () => void;
+}) {
+  const [duration, setDuration] = useState(0);
+  const [dragging, setDragging] = useState<"start" | "end" | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const start = Math.max(0, Number(clipStart) || 0);
+  const end = Math.max(start + 0.1, Number(clipEnd) || start + 0.1);
+  const maxDuration = Math.max(duration, end, 0.1);
+  const selectedDuration = Math.max(0, end - start);
+  const startPercent = Math.min(100, Math.max(0, (start / maxDuration) * 100));
+  const endPercent = Math.min(100, Math.max(startPercent, (end / maxDuration) * 100));
+  const canCreate = Boolean(clipName.trim() && end > start);
+
+  function syncVideo(time: number) {
+    if (videoRef.current && Number.isFinite(time)) videoRef.current.currentTime = Math.max(0, Math.min(time, maxDuration));
+  }
+
+  function setRange(nextStart: number, nextEnd: number, focus: "start" | "end") {
+    const safeStart = Math.max(0, Math.min(nextStart, maxDuration - 0.1));
+    const safeEnd = Math.max(safeStart + 0.1, Math.min(nextEnd, maxDuration));
+    setClipStart(safeStart.toFixed(1));
+    setClipEnd(safeEnd.toFixed(1));
+    syncVideo(focus === "start" ? safeStart : safeEnd);
+  }
+
+  function timeFromPointer(clientX: number) {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return ratio * maxDuration;
+  }
+
+  function beginDrag(handle: "start" | "end", event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    setDragging(handle);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (!dragging) return;
+    const time = timeFromPointer(event.clientX);
+    if (dragging === "start") setRange(Math.min(time, end - 0.1), end, "start");
+    if (dragging === "end") setRange(start, Math.max(time, start + 0.1), "end");
+  }
+
+  function jumpToNearestHandle(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.target !== trackRef.current) return;
+    const time = timeFromPointer(event.clientX);
+    const nearest = Math.abs(time - start) <= Math.abs(time - end) ? "start" : "end";
+    if (nearest === "start") setRange(Math.min(time, end - 0.1), end, "start");
+    if (nearest === "end") setRange(start, Math.max(time, start + 0.1), "end");
+  }
+
+  function handleMetadata(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const nextDuration = event.currentTarget.duration;
+    if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
+    setDuration(nextDuration);
+    if (Number(clipEnd) > nextDuration || clipEnd === "5") setClipEnd(Math.min(5, nextDuration).toFixed(1));
+  }
+
+  return (
+    <div className="clip-editor-panel">
+      <div className="clip-preview">
+        <video ref={videoRef} src={item.uri} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />
+      </div>
+      <div className="clip-controls">
+        <div className="clip-title-row">
+          <label>
+            <span>新素材名称</span>
+            <input value={clipName} onChange={(event) => setClipName(event.target.value)} aria-label="片段名称" placeholder="片段名称" />
+          </label>
+          <button className="icon-mini" onClick={onCancel} aria-label="取消"><X size={14} /></button>
+        </div>
+        <div className="clip-time-meta">
+          <span>开始 {formatClipTime(start)}</span>
+          <span>结束 {formatClipTime(end)}</span>
+          <span>片段 {formatClipTime(selectedDuration)}</span>
+          <span>总长 {duration ? formatClipTime(duration) : "读取中"}</span>
+        </div>
+        <div
+          ref={trackRef}
+          className="clip-timeline"
+          onPointerDown={jumpToNearestHandle}
+          onPointerMove={moveDrag}
+          onPointerUp={() => setDragging(null)}
+          onPointerCancel={() => setDragging(null)}
+        >
+          <div className="clip-track-bg" />
+          <div className="clip-selection" style={{ left: `${startPercent}%`, width: `${Math.max(1, endPercent - startPercent)}%` }} />
+          <button
+            type="button"
+            className={cx("clip-handle", "start", dragging === "start" && "dragging")}
+            style={{ left: `${startPercent}%` }}
+            onPointerDown={(event) => beginDrag("start", event)}
+            aria-label="拖动开始时间"
+          />
+          <button
+            type="button"
+            className={cx("clip-handle", "end", dragging === "end" && "dragging")}
+            style={{ left: `${endPercent}%` }}
+            onPointerDown={(event) => beginDrag("end", event)}
+            aria-label="拖动结束时间"
+          />
+        </div>
+        <div className="clip-time-inputs">
+          <label><span>开始秒</span><input type="number" min="0" step="0.1" value={clipStart} onChange={(event) => setRange(Number(event.target.value), end, "start")} /></label>
+          <label><span>结束秒</span><input type="number" min="0.1" step="0.1" value={clipEnd} onChange={(event) => setRange(start, Number(event.target.value), "end")} /></label>
+          <button className="ghost-button" onClick={onCreate} disabled={!canCreate}><Scissors size={14} />生成片段</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
