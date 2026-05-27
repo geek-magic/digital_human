@@ -35,7 +35,7 @@ page.on("console", (msg) => {
 page.on("pageerror", (error) => errors.push(error.message));
 
 await page.goto(baseUrl, { waitUntil: "networkidle" });
-await page.getByRole("heading", { name: "任务中心" }).waitFor();
+await page.getByRole("heading", { name: "创建任务" }).waitFor();
 await noHorizontalOverflow(page, "tasks");
 await screenshot(page, "01-tasks.png");
 
@@ -45,8 +45,6 @@ await composer.getByRole("textbox", { name: "任务标题" }).fill(marker);
 await composer.getByPlaceholder("输入主题、需求、参考信息").fill(`${marker} 数字人口播流程验证。`);
 await composer.getByRole("textbox", { name: "生成要求" }).fill("验证手动模式、节点锁定和文案版本。");
 await page.getByRole("button", { name: "创建手动任务" }).click();
-await page.locator(".task-select").filter({ hasText: marker }).waitFor({ timeout: 30000 });
-await page.locator(".task-select").filter({ hasText: marker }).click();
 await page.locator(".detail-title h2").filter({ hasText: marker }).waitFor({ timeout: 30000 });
 
 const navTexts = await page.locator(".step-nav .step-tab strong").allTextContents();

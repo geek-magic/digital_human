@@ -797,8 +797,7 @@ function TaskCreatePage(props: {
     <div className="task-layout">
       <section className="task-main create-only">
         <div className="task-create-panel">
-          <div className="section-head">
-            <div><p className="eyebrow">任务</p><h2>创建任务</h2></div>
+          <div className="task-create-toolbar">
             <button type="button" className="ghost-button" onClick={() => setExtractOpen(true)}><Download size={15} />链接解析</button>
           </div>
           <TaskComposer
@@ -858,12 +857,9 @@ function TaskListPage(props: {
 
   return (
     <div className="task-layout">
-      <section className="task-main">
-        <div className="section-head task-list-head">
-          <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
-          <span className="count-pill">{props.state.projects.length}</span>
-        </div>
+      <section className="task-main list-only">
         <div className="bulk-toolbar">
+          <span className="count-pill">{props.state.projects.length}</span>
           <label className="checkbox-pill">
             <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
             全选
@@ -935,7 +931,7 @@ function SourceExtractionDialog({ action, onClose }: { action: AppAction; onClos
     }}>
       <section className="source-modal" role="dialog" aria-modal="true" aria-label="链接解析">
         <div className="modal-head">
-          <div><p className="eyebrow">链接解析</p><h2>解析链接内容</h2></div>
+          <h2>链接解析</h2>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
         </div>
         <SourceExtractionTool action={action} />
@@ -1017,12 +1013,6 @@ function SourceExtractionTool({
 
   return (
     <section className="source-tool">
-      <div className="section-head">
-        <div><p className="eyebrow">链接解析</p><h2>独立解析工具</h2></div>
-        <div className="source-head-actions">
-          <StatusBadge status={status === "done" ? "done" : status === "failed" ? "failed" : status === "running" ? "running" : "pending"} />
-        </div>
-      </div>
       <div className="extract-control">
         <textarea
           aria-label="链接解析输入"
