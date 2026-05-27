@@ -1099,11 +1099,16 @@ function updateQueueProgress(queueId, progress) {
   const db = readDb();
   const item = db.queueItems.find((entry) => entry.id === queueId);
   if (!item) return;
+  const extraProgress = {};
+  for (const key of ["resultVersionId", "resultVersionLabel", "artifactUri", "artifactType"]) {
+    if (progress[key] !== undefined) extraProgress[key] = progress[key];
+  }
   item.progress = {
     ...(item.progress || {}),
     percent: clampNumber(progress.percent, 0, 100, item.progress?.percent || 0, true),
     label: progress.label || item.progress?.label || statusTextForQueue(item.status),
     stage: progress.stage || item.progress?.stage || queueStageMap[item.type] || "input",
+    ...extraProgress,
     updatedAt: now()
   };
   item.updatedAt = now();
@@ -1266,6 +1271,135 @@ function enqueueProjectJob(projectId, type, payload = {}) {
   writeDb(db);
   scheduleQueue();
   return publicQueueItem(item, db);
+}
+
+function assertNewScriptGenerationAllowed(project, payload = {}, db = readDb()) {
+  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "";
+  const inputSnapshot = payload.inputText ?? project.inputText ?? "";
+  const requirementsSnapshot = payload.requirements ?? project.requirements ?? "";
+  const existingVersion = (project.scriptVersions || []).find((version) => !version.deletedAt
+    && String(version.sourceInputSnapshot || "") === String(inputSnapshot)
+    && String(version.requirementsSnapshot || "") === String(requirementsSnapshot)
+    && [version.modelInfo?.modelId, version.modelInfo?.providerId, version.modelInfo?.providerId ? `provider:${version.modelInfo.providerId}` : "", version.modelInfo?.model].filter(Boolean).includes(modelId));
+  if (existingVersion) {
+    const err = new Error(`相同输入、生成要求和模型已生成过 ${existingVersion.label}，请修改内容后再生成。`);
+    err.status = 409;
+    throw err;
+  }
+}
+
+function startImmediateProjectJob(projectId, type, payload = {}) {
+  const db = readDb();
+  const project = ensureProject(db, projectId);
+  const signature = queueSignature(project, type, payload);
+  const duplicate = activeQueueItems(db).find((item) => item.projectId === projectId && item.type === type && item.signature === signature);
+  if (duplicate) {
+    const err = new Error("相同参数的任务正在执行，请不要重复提交。");
+    err.status = 409;
+    throw err;
+  }
+  if (type === "generate_script") assertNewScriptGenerationAllowed(project, payload, db);
+  const stage = queueStageMap[type] || project.currentStage || "input";
+  const item = normalizeQueueItem({
+    id: `task-${randomUUID()}`,
+    projectId,
+    type,
+    label: queueTypeLabels[type] || type,
+    status: "running",
+    payload,
+    signature,
+    progress: {
+      percent: type === "generate_script" ? 10 : 12,
+      label: type === "generate_script" ? "已提交，正在生成口播文案。" : "已提交，正在生成口播音频。",
+      stage,
+      updatedAt: now()
+    },
+    attempts: 1,
+    createdAt: now(),
+    startedAt: now(),
+    updatedAt: now()
+  });
+  db.queueItems.unshift(item);
+  project.status = "running";
+  project.activeQueueId = item.id;
+  setProjectProgress(project, {
+    ...item.progress,
+    status: item.status,
+    queueId: item.id
+  });
+  if (stage && stage !== "input") setStage(project, stage, "running", item.progress.label);
+  pushJob(db, project.id, type, "running", `${item.label}已开始执行。`);
+  writeDb(db);
+  runImmediateItem(item).catch((error) => console.error("Immediate task crashed:", error));
+  return publicQueueItem(item, db);
+}
+
+async function runImmediateItem(item) {
+  try {
+    if (item.type === "generate_script") await generateScriptProject(item.projectId, { queueId: item.id, payload: item.payload });
+    else if (item.type === "synthesize_speech") await synthesizeProject(item.projectId, { queueId: item.id, payload: item.payload });
+    else throw new Error(`Unsupported immediate task type: ${item.type}`);
+    const doneDb = readDb();
+    const doneItem = doneDb.queueItems.find((entry) => entry.id === item.id);
+    const doneProject = doneDb.projects.find((entry) => entry.id === item.projectId);
+    if (doneItem) {
+      doneItem.status = "completed";
+      doneItem.finishedAt = now();
+      doneItem.updatedAt = now();
+      doneItem.progress = {
+        ...(doneItem.progress || {}),
+        percent: 100,
+        label: doneItem.progress?.label || "任务已完成。",
+        updatedAt: now()
+      };
+    }
+    if (doneProject) {
+      const nextActive = activeQueueItems(doneDb).find((entry) => entry.projectId === doneProject.id && entry.id !== doneItem?.id);
+      doneProject.activeQueueId = nextActive?.id || "";
+      if (nextActive) doneProject.status = "running";
+      setProjectProgress(doneProject, {
+        percent: 100,
+        label: doneItem?.progress?.label || "任务已完成。",
+        stage: doneItem?.progress?.stage || doneProject.currentStage,
+        status: doneProject.status,
+        queueId: doneItem?.id || ""
+      });
+    }
+    writeDb(doneDb);
+  } catch (error) {
+    const failDb = readDb();
+    const failedItem = failDb.queueItems.find((entry) => entry.id === item.id);
+    const failedProject = failDb.projects.find((entry) => entry.id === item.projectId);
+    const message = error?.message || "任务执行失败";
+    if (failedItem) {
+      failedItem.status = "failed";
+      failedItem.lastError = message;
+      failedItem.finishedAt = now();
+      failedItem.updatedAt = now();
+      failedItem.progress = {
+        ...(failedItem.progress || {}),
+        label: message,
+        updatedAt: now()
+      };
+    }
+    if (failedProject) {
+      const stage = failedItem?.progress?.stage || queueStageMap[failedItem?.type] || failedProject.currentStage;
+      const nextActive = activeQueueItems(failDb).find((entry) => entry.projectId === failedProject.id && entry.id !== failedItem?.id);
+      failedProject.status = nextActive ? "running" : "failed";
+      failedProject.activeQueueId = nextActive?.id || "";
+      failedProject.lastError = message;
+      setProjectProgress(failedProject, {
+        percent: failedItem?.progress?.percent || 0,
+        label: message,
+        stage,
+        status: failedProject.status,
+        queueId: failedItem?.id || ""
+      });
+      if (stage && failedProject.stageState?.[stage] && !nextActive) setStage(failedProject, stage, "failed", message);
+      pushJob(failDb, failedProject.id, failedItem?.type || "task", "failed", message);
+    }
+    writeDb(failDb);
+  }
 }
 
 async function processQueue() {
@@ -4493,7 +4627,10 @@ async function generateScriptProject(projectId, options = {}) {
   updateQueueProgress(options.queueId, {
     percent: 40,
     label: `${version.label} 口播文案已生成。`,
-    stage: "script"
+    stage: "script",
+    resultVersionId: version.id,
+    resultVersionLabel: version.label,
+    artifactType: "script"
   });
   return latestProject;
 }
@@ -4507,12 +4644,21 @@ function enqueueAndRespond(req, res, next, type, payload = {}) {
   }
 }
 
+function startImmediateAndRespond(req, res, next, type, payload = {}) {
+  try {
+    const item = startImmediateProjectJob(req.params.id, type, payload);
+    res.status(202).json({ submitted: true, queueItem: item });
+  } catch (err) {
+    next(err);
+  }
+}
+
 app.post("/api/projects/:id/process-source", (req, res, next) => {
   enqueueAndRespond(req, res, next, "process_source");
 });
 
 app.post("/api/projects/:id/generate-script", (req, res, next) => {
-  enqueueAndRespond(req, res, next, "generate_script", req.body || {});
+  startImmediateAndRespond(req, res, next, "generate_script", req.body || {});
 });
 
 app.post("/api/projects/:id/script-versions", (req, res, next) => {
@@ -4666,16 +4812,24 @@ async function synthesizeProject(projectId, options = {}) {
     latestProject.updatedAt = now();
     pushJob(latestDb, latestProject.id, "synthesize_speech", "completed", `${version.label} 口播音频已生成。`, version);
     writeDb(latestDb);
-    updateQueueProgress(options.queueId, { percent: 62, label: `${version.label} 口播音频已生成。`, stage: "voice" });
+    updateQueueProgress(options.queueId, {
+      percent: 62,
+      label: `${version.label} 口播音频已生成。`,
+      stage: "voice",
+      resultVersionId: version.id,
+      resultVersionLabel: version.label,
+      artifactUri: version.audioUri,
+      artifactType: "audio"
+    });
     return latestProject;
 }
 
 app.post("/api/projects/:id/synthesize-speech", async (req, res, next) => {
-  enqueueAndRespond(req, res, next, "synthesize_speech", req.body || {});
+  startImmediateAndRespond(req, res, next, "synthesize_speech", req.body || {});
 });
 
 app.post("/api/projects/:id/audio-versions", async (req, res, next) => {
-  enqueueAndRespond(req, res, next, "synthesize_speech", req.body || {});
+  startImmediateAndRespond(req, res, next, "synthesize_speech", req.body || {});
 });
 
 app.post("/api/projects/:id/audio-versions/import", upload.single("audio"), async (req, res, next) => {
@@ -5202,6 +5356,14 @@ app.post("/api/queue/:id/retry", (req, res) => {
   if (!["failed", "cancelled"].includes(item.status)) {
     return res.status(400).json({ error: "只有失败或已取消的任务可以重试。" });
   }
+  if (["generate_script", "synthesize_speech"].includes(item.type)) {
+    try {
+      const retryItem = startImmediateProjectJob(item.projectId, item.type, item.payload || {});
+      return res.status(202).json({ submitted: true, queueItem: retryItem });
+    } catch (error) {
+      return res.status(error.status || 500).json({ error: error.message || "重试失败。" });
+    }
+  }
   const project = ensureProject(db, item.projectId);
   const duplicate = activeQueueItems(db).find((entry) => entry.projectId === item.projectId && entry.type === item.type && entry.signature === item.signature);
   if (duplicate) return res.status(409).json({ error: "相同参数的任务已在执行或等待。" });
@@ -5265,6 +5427,16 @@ app.post("/api/queue/:id/cancel", (req, res) => {
   }
   writeDb(db);
   res.json({ ok: true, queueItem: publicQueueItem(item, db) });
+});
+
+app.post("/api/queue/clear", (req, res) => {
+  const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids.map(String) : []);
+  if (!ids.size) return res.status(400).json({ error: "请选择要清理的执行记录。" });
+  const db = readDb();
+  const before = db.queueItems.length;
+  db.queueItems = db.queueItems.filter((item) => !ids.has(item.id) || !["completed", "cancelled"].includes(item.status));
+  writeDb(db);
+  res.json({ ok: true, deleted: before - db.queueItems.length });
 });
 
 app.post("/api/projects/:id/versions/:versionId/use", (req, res) => {

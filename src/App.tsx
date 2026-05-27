@@ -264,6 +264,10 @@ type ProgressState = {
   stage?: StageKey;
   status?: string;
   queueId?: string;
+  resultVersionId?: string;
+  resultVersionLabel?: string;
+  artifactUri?: string;
+  artifactType?: string;
   updatedAt?: string;
 };
 
@@ -470,6 +474,10 @@ function isQueuedResponse(value: unknown): value is { queued: true; queueItem: Q
   return Boolean(value && typeof value === "object" && "queued" in value && (value as { queued?: unknown }).queued === true);
 }
 
+function isSubmittedResponse(value: unknown): value is { submitted: true; queueItem: QueueItem } {
+  return Boolean(value && typeof value === "object" && "submitted" in value && (value as { submitted?: unknown }).submitted === true);
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
@@ -655,7 +663,11 @@ export function App() {
     try {
       const result = await runner();
       await refresh();
-      showToast(isQueuedResponse(result) ? `${label}已提交队列` : `${label}已完成`, "success");
+      showToast(isQueuedResponse(result)
+        ? `${label}已提交队列`
+        : isSubmittedResponse(result)
+          ? `${label}已开始执行`
+          : `${label}已完成`, "success");
       return result;
     } catch (error) {
       await refresh().catch(() => undefined);
@@ -1560,7 +1572,7 @@ function StageWorkspace({
   taskBusy: boolean;
   latestQueue?: QueueItem;
   action: AppAction;
-  runStage: (label: string, path: string, body?: unknown) => Promise<Project | { queued: true; queueItem: QueueItem } | undefined>;
+  runStage: (label: string, path: string, body?: unknown) => Promise<Project | { queued: true; queueItem: QueueItem } | { submitted: true; queueItem: QueueItem } | undefined>;
   script: string;
   setScript: (value: string) => void;
   inputText: string;
@@ -1643,7 +1655,7 @@ function StageWorkspace({
           </div>
         </div>
       )}
-      {stageQueues.length > 0 && <StageTaskPanel queueItems={stageQueues} />}
+      {["script", "voice", "video"].includes(activeStage) && <StageTaskPanel queueItems={stageQueues} action={action} />}
 
       {activeStage === "input" && (
         <div className="step-body">
@@ -1921,29 +1933,53 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
   );
 }
 
-function StageTaskPanel({ queueItems }: { queueItems: QueueItem[] }) {
+function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; action: AppAction }) {
+  const retryTask = (item: QueueItem) => action("重试执行任务", () => request(`/api/queue/${item.id}/retry`, { method: "POST" }));
+  const cancelTask = (item: QueueItem) => action("取消执行任务", () => request(`/api/queue/${item.id}/cancel`, { method: "POST" }));
+  const clearableIds = queueItems.filter((item) => ["completed", "cancelled"].includes(item.status)).map((item) => item.id);
+  const clearFinished = () => action("清理执行记录", () => request("/api/queue/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: clearableIds })
+  }));
   return (
     <section className="stage-task-panel">
       <div className="section-head">
-        <div><p className="eyebrow">任务</p><h3>执行任务</h3></div>
-        <span className="count-pill">{queueItems.length}</span>
+        <div><p className="eyebrow">任务</p><h3>并行执行任务</h3></div>
+        <div className="stage-task-head-actions">
+          {clearableIds.length > 0 && <button className="text-button" onClick={clearFinished}>清理已完成</button>}
+          <span className="count-pill">{queueItems.length}</span>
+        </div>
       </div>
       <div className="stage-task-list">
-        {queueItems.map((item) => (
-          <article className="stage-task-row" key={item.id}>
-            <StatusBadge status={item.status} />
-            <div>
-              <strong>{item.label}</strong>
-              <small>
-                {statusText(item.status)}
-                {item.attempts ? ` · 第 ${item.attempts} 次执行` : ""}
-                {item.createdAt ? ` · ${formatDate(item.createdAt)}` : ""}
-              </small>
-              <small>{item.progress?.label || item.lastError || "等待执行。"}</small>
-              <div className="progress-track"><span style={{ width: `${item.progress?.percent || 0}%` }} /></div>
-            </div>
-          </article>
-        ))}
+        {queueItems.length ? queueItems.map((item) => {
+          const elapsedFrom = item.startedAt || item.createdAt;
+          const finishedAt = item.finishedAt ? new Date(item.finishedAt).getTime() : Date.now();
+          const elapsed = elapsedFrom ? Math.max(0, finishedAt - new Date(elapsedFrom).getTime()) : 0;
+          return (
+            <article className="stage-task-row" key={item.id}>
+              <StatusBadge status={item.status} />
+              <div>
+                <strong>{item.label}{item.progress?.resultVersionLabel ? ` · ${item.progress.resultVersionLabel}` : ""}</strong>
+                <small>
+                  {statusText(item.status)}
+                  {item.attempts ? ` · 第 ${item.attempts} 次执行` : ""}
+                  {elapsedFrom ? ` · 耗时 ${formatDurationMs(elapsed)}` : ""}
+                  {item.createdAt ? ` · ${formatDate(item.createdAt)}` : ""}
+                </small>
+                <small>{item.lastError || item.progress?.label || "等待执行。"}</small>
+                {item.progress?.artifactUri && item.progress.artifactType === "audio" && <audio controls src={item.progress.artifactUri} />}
+                <div className="progress-track"><span style={{ width: `${item.progress?.percent || 0}%` }} /></div>
+              </div>
+              <div className="stage-task-actions">
+                {["failed", "cancelled"].includes(item.status) && <button className="text-button" onClick={() => retryTask(item)}>重试</button>}
+                {item.status === "queued" && <button className="text-button danger-text" onClick={() => cancelTask(item)}>取消</button>}
+              </div>
+            </article>
+          );
+        }) : (
+          <EmptyState text="当前阶段还没有执行任务。提交生成后会在这里显示进度、结果和失败原因。" />
+        )}
       </div>
     </section>
   );
