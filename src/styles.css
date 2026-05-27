@@ -158,7 +158,8 @@ small { color: var(--muted); font-size: 12px; }
 }
 .task-main {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
   overflow: hidden;
   padding: 14px;
 }
@@ -170,6 +171,49 @@ small { color: var(--muted); font-size: 12px; }
   height: 100%;
   padding: 14px;
   overflow: auto;
+}
+
+.task-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f6f9fc;
+}
+.task-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 900;
+}
+.task-tabs button.active {
+  background: #fff;
+  color: var(--primary-strong);
+  box-shadow: inset 0 0 0 1px #c9dce6;
+}
+.task-tab-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+.extract-tab {
+  display: grid;
+}
+.extract-tab .source-tool {
+  height: 100%;
+  max-height: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.create-tab {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 12px;
 }
 
 .source-tool {
@@ -401,7 +445,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 
 .composer {
-  margin-bottom: 12px;
+  margin-bottom: 0;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
@@ -1835,12 +1879,19 @@ small { color: var(--muted); font-size: 12px; }
   }
   .task-main {
     display: grid;
-    grid-template-rows: auto auto auto auto;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
     overflow: visible;
     padding: 12px;
   }
+  .task-tab-panel {
+    overflow: visible;
+  }
+  .create-tab {
+    grid-template-rows: auto auto auto auto;
+  }
   .source-tool {
-    max-height: min(35dvh, 330px);
+    max-height: none;
   }
   .extract-control textarea {
     min-height: 56px;

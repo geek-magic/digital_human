@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   ChevronDown,
+  Copy,
   Cpu,
   Download,
   ExternalLink,
@@ -515,6 +516,22 @@ function compactDisplay(value = "", max = 24) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
 function formatDurationMs(value?: number) {
   if (value === undefined || Number.isNaN(value)) return "未开始";
   const totalSeconds = Math.max(0, Math.round(value / 1000));
@@ -781,6 +798,7 @@ function TaskCenter(props: {
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [draftInputText, setDraftInputText] = useState("");
+  const [activeTab, setActiveTab] = useState<"extract" | "create">("create");
   const checkedSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const allChecked = props.state.projects.length > 0 && props.state.projects.every((project) => checkedSet.has(project.id));
 
@@ -814,59 +832,71 @@ function TaskCenter(props: {
   return (
     <div className="task-layout">
       <section className="task-main">
-        <SourceExtractionTool
-          action={props.action}
-          onAppendToComposer={(text) => setDraftInputText((current) => current.trim() ? `${current.trim()}\n\n${text}` : text)}
-        />
-        <TaskComposer
-          state={props.state}
-          action={props.action}
-          onCreated={props.setSelectedProjectId}
-          inputText={draftInputText}
-          setInputText={setDraftInputText}
-          busy={props.busy}
-        />
-        <div className="section-head task-list-head">
-          <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
-          <span className="count-pill">{props.state.projects.length}</span>
+        <div className="task-tabs" role="tablist" aria-label="任务工作区">
+          <button type="button" className={cx(activeTab === "extract" && "active")} role="tab" aria-selected={activeTab === "extract"} onClick={() => setActiveTab("extract")}>
+            链接解析
+          </button>
+          <button type="button" className={cx(activeTab === "create" && "active")} role="tab" aria-selected={activeTab === "create"} onClick={() => setActiveTab("create")}>
+            创建任务
+          </button>
         </div>
-        <div className="bulk-toolbar">
-          <label className="checkbox-pill">
-            <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
-            全选
-          </label>
-          <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
-          {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
-        </div>
-        <div className="task-list">
-          {props.state.projects.map((project) => {
-            const deleteProject = () => {
-              if (!window.confirm(`删除任务「${project.title}」？`)) return;
-              if (props.selectedProjectId === project.id) props.setSelectedProjectId("");
-              props.action("删除任务", () => request(`/api/projects/${project.id}`, { method: "DELETE" }));
-            };
-            return (
-              <article key={project.id} className={cx("task-row", props.selectedProjectId === project.id && "active")}>
-                <input
-                  className="task-check"
-                  type="checkbox"
-                  aria-label={`选择任务 ${project.title}`}
-                  checked={checkedSet.has(project.id)}
-                  onChange={(event) => toggleOne(project.id, event.target.checked)}
-                />
-                <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
-                  <div>
-                    <strong>{project.title}</strong>
-                    <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
-                  </div>
-                  <StageDots project={project} />
-                </button>
-                <button className="task-delete" onClick={deleteProject} aria-label={`删除任务 ${project.title}`}><Trash2 size={15} /></button>
-              </article>
-            );
-          })}
-          {props.state.projects.length === 0 && <EmptyState text="还没有任务。输入需求后可以直接开始生成。" />}
-        </div>
+        {activeTab === "extract" ? (
+          <div className="task-tab-panel extract-tab" role="tabpanel">
+            <SourceExtractionTool action={props.action} />
+          </div>
+        ) : (
+          <div className="task-tab-panel create-tab" role="tabpanel">
+            <TaskComposer
+              state={props.state}
+              action={props.action}
+              onCreated={props.setSelectedProjectId}
+              inputText={draftInputText}
+              setInputText={setDraftInputText}
+              busy={props.busy}
+            />
+            <div className="section-head task-list-head">
+              <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
+              <span className="count-pill">{props.state.projects.length}</span>
+            </div>
+            <div className="bulk-toolbar">
+              <label className="checkbox-pill">
+                <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
+                全选
+              </label>
+              <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
+              {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
+            </div>
+            <div className="task-list">
+              {props.state.projects.map((project) => {
+                const deleteProject = () => {
+                  if (!window.confirm(`删除任务「${project.title}」？`)) return;
+                  if (props.selectedProjectId === project.id) props.setSelectedProjectId("");
+                  props.action("删除任务", () => request(`/api/projects/${project.id}`, { method: "DELETE" }));
+                };
+                return (
+                  <article key={project.id} className={cx("task-row", props.selectedProjectId === project.id && "active")}>
+                    <input
+                      className="task-check"
+                      type="checkbox"
+                      aria-label={`选择任务 ${project.title}`}
+                      checked={checkedSet.has(project.id)}
+                      onChange={(event) => toggleOne(project.id, event.target.checked)}
+                    />
+                    <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
+                      <div>
+                        <strong>{project.title}</strong>
+                        <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
+                      </div>
+                      <StageDots project={project} />
+                    </button>
+                    <button className="task-delete" onClick={deleteProject} aria-label={`删除任务 ${project.title}`}><Trash2 size={15} /></button>
+                  </article>
+                );
+              })}
+              {props.state.projects.length === 0 && <EmptyState text="还没有任务。输入需求后可以直接开始生成。" />}
+            </div>
+          </div>
+        )}
       </section>
       <TaskDetail project={props.selectedProject} state={props.state} busy={props.busy} action={props.action} />
     </div>
@@ -888,16 +918,14 @@ function extractionStepsFor(status: "idle" | "running" | "done" | "failed") {
 }
 
 function SourceExtractionTool({
-  action,
-  onAppendToComposer
+  action
 }: {
   action: AppAction;
-  onAppendToComposer: (text: string) => void;
 }) {
   const [sourceText, setSourceText] = useState("");
   const [result, setResult] = useState<SourceExtractResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [mediaName, setMediaName] = useState("");
   const extractedText = result?.extractedText || result?.inputText || "";
   const extractionId = result?.extractionId || result?.id || "";
@@ -949,10 +977,10 @@ function SourceExtractionTool({
     }
   }
 
-  async function applyToComposer() {
+  async function copyExtractedText() {
     if (!extractedText.trim()) return;
-    await action("一键添加", async () => {
-      onAppendToComposer(extractedText.trim());
+    await action("复制解析文本", async () => {
+      await copyTextToClipboard(extractedText.trim());
       return { ok: true };
     });
   }
@@ -1006,7 +1034,7 @@ function SourceExtractionTool({
             fallbackSteps={extractionStepsFor(status)}
             extractedText={extractedText}
             canApply={Boolean(extractedText && result?.status === "done")}
-            onApply={applyToComposer}
+            onApply={copyExtractedText}
           />
           {result?.status === "done" && mediaLinks.length > 0 && (
             <div className="source-save-panel">
@@ -1035,7 +1063,7 @@ function SourceExtractionTool({
           onClick={() => setExpanded(true)}
           aria-label="展开链接解析"
         >
-          <span>{result?.extractedText ? "已有解析结果，可展开查看。" : "粘贴抖音、小红书或网页链接，提取文本后添加到当前任务。"}</span>
+          <span>{result?.extractedText ? "已有解析结果，可展开查看。" : "粘贴抖音、小红书或网页链接，提取文本后复制最终文本。"}</span>
           <ChevronDown size={16} />
         </button>
       )}
@@ -1115,8 +1143,8 @@ function SourceStepCard({
       )}
       {isFinal && (
         <div className="source-final-actions">
-          <button className="primary-button" disabled={!canApply} onClick={onApply}><Send size={16} />一键添加</button>
-          {!canApply && <small>{finalText ? "可添加到下方输入内容。" : "最终文本生成后可添加到下方输入内容。"}</small>}
+          <button className="primary-button" disabled={!canApply} onClick={onApply}><Copy size={16} />复制</button>
+          {!canApply && <small>{finalText ? "可复制最终文本。" : "最终文本生成后可复制。"}</small>}
         </div>
       )}
     </article>
