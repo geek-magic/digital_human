@@ -1044,7 +1044,7 @@ function SourceStepCard({
       {isFinal && (
         <div className="source-final-actions">
           <button className="primary-button" disabled={!canApply} onClick={onApply}><Send size={16} />一键添加</button>
-          {!canApply && <small>{finalText ? "可添加到下方原始输入。" : "最终文本生成后可添加到下方原始输入。"}</small>}
+          {!canApply && <small>{finalText ? "可添加到下方输入内容。" : "最终文本生成后可添加到下方输入内容。"}</small>}
         </div>
       )}
     </article>
@@ -1124,7 +1124,7 @@ function TaskComposer({
           <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选；不填会自动生成短标题" />
         </label>
         <label>
-          <span>原始输入</span>
+          <span>输入内容</span>
           <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
         </label>
         <div className={cx("composer-grid", mode === "manual" && "compact")}>
@@ -1251,7 +1251,6 @@ function ExtractProgress({ steps }: { steps: Array<{ id: string; label: string; 
 type AppAction = <T>(label: string, runner: () => Promise<T>) => Promise<T | undefined>;
 
 function TaskDetail({ project, state, busy, action }: { project?: Project; state: State; busy: string; action: AppAction }) {
-  const [script, setScript] = useState("");
   const [inputText, setInputText] = useState("");
   const [requirements, setRequirements] = useState("");
   const [scriptModelId, setScriptModelId] = useState("");
@@ -1268,13 +1267,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const currentVersionId = (project?.videoVersions || project?.versions || []).find((version) => version.isCurrent)?.id || "";
 
   useEffect(() => {
-    setScript(project?.artifacts.script?.script || project?.inputText || "");
     setInputText(project?.inputText || "");
     setRequirements(project?.requirements || "");
     setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
     setVoiceId(project?.voiceId || "");
     setAvatarAssetId(project?.avatarAssetId || "");
-  }, [project?.id, project?.artifacts.script?.script, project?.scriptModelId, project?.voiceId, project?.avatarAssetId, project?.inputText, project?.requirements, state.settings?.defaultTextModelId, state.models]);
+  }, [project?.id, project?.scriptModelId, project?.voiceId, project?.avatarAssetId, project?.inputText, project?.requirements, state.settings?.defaultTextModelId, state.models]);
 
   useEffect(() => {
     setActiveStage(currentStage);
@@ -1335,7 +1333,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存口播文案", () => request<Project>(`/api/projects/${project.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
+      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
     }));
 
   const saveVoice = () =>
@@ -1454,8 +1452,6 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         latestQueue={latestQueue}
         action={action}
         runStage={runStage}
-        script={script}
-        setScript={setScript}
         inputText={inputText}
         setInputText={setInputText}
         requirements={requirements}
@@ -1531,8 +1527,6 @@ function StageWorkspace({
   latestQueue,
   action,
   runStage,
-  script,
-  setScript,
   inputText,
   setInputText,
   requirements,
@@ -1573,8 +1567,6 @@ function StageWorkspace({
   latestQueue?: QueueItem;
   action: AppAction;
   runStage: (label: string, path: string, body?: unknown) => Promise<Project | { queued: true; queueItem: QueueItem } | { submitted: true; queueItem: QueueItem } | undefined>;
-  script: string;
-  setScript: (value: string) => void;
   inputText: string;
   setInputText: (value: string) => void;
   requirements: string;
@@ -1659,7 +1651,7 @@ function StageWorkspace({
 
       {activeStage === "input" && (
         <div className="step-body">
-          <OutputItem title="原始输入" status={project.stageState?.input?.status} meta={formatDate(project.createdAt)}>
+          <OutputItem title="输入内容" status={project.stageState?.input?.status} meta={formatDate(project.createdAt)}>
             <p>{project.inputText || "暂无输入内容。"}</p>
             {project.requirements && <small>生成要求：{project.requirements}</small>}
           </OutputItem>
@@ -1672,22 +1664,24 @@ function StageWorkspace({
 
       {activeStage === "script" && (
         <div className="step-body">
-          <label><span>原始输入</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
+          <label><span>输入内容</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
-          <label><span>口播文案草稿</span><textarea value={script} onChange={(event) => setScript(event.target.value)} /></label>
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
           <div className="step-actions">
             <button className="ghost-button" disabled={savingScript} onClick={saveScript}>
               {savingScript ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}
-              {savingScript ? "保存中" : "保存为新版本"}
+              {savingScript ? "保存中" : "保存为口播文案"}
             </button>
             <ActionButton label="生成口播文案" busy={busy} disabled={!inputText.trim()} onClick={generateScript} />
           </div>
           <ScriptVersionList project={project} versions={scriptVersions} action={action} onSelect={(id) => {
             setSelectedScriptVersionId(id);
             const next = scriptVersions.find((version) => version.id === id);
-            if (next) setScript(next.scriptText || "");
+            if (next) {
+              setInputText(next.scriptText || "");
+              setRequirements(next.requirementsSnapshot || requirements);
+            }
           }} />
         </div>
       )}
@@ -1697,11 +1691,7 @@ function StageWorkspace({
           <VersionSelect
             label="口播文案版本"
             value={selectedScriptVersionId}
-            onChange={(id) => {
-              setSelectedScriptVersionId(id);
-              const next = scriptVersions.find((version) => version.id === id);
-              if (next) setScript(next.scriptText || "");
-            }}
+            onChange={setSelectedScriptVersionId}
             versions={scriptVersions}
             getMeta={(version) => version.title || formatDate(version.createdAt)}
           />
@@ -2060,7 +2050,7 @@ function ScriptVersionList({ project, versions, onSelect, action }: { project: P
               <p>{version.scriptText}</p>
             </div>
             <div className="version-actions">
-              <button className="text-button" onClick={() => onSelect(version.id)}>编辑</button>
+              <button className="text-button" onClick={() => onSelect(version.id)}>载入到输入</button>
               <button className="text-button danger-text" onClick={() => deleteVersion(version)}>删除</button>
             </div>
           </article>
