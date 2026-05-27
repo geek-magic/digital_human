@@ -1373,12 +1373,14 @@ function PolishDialog({
 }) {
   const [draftInputText, setDraftInputText] = useState(inputText);
   const [draftRequirements, setDraftRequirements] = useState(requirements);
+  const [draftTemplateId, setDraftTemplateId] = useState("");
   const [draftModelId, setDraftModelId] = useState(scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
   const [versions, setVersions] = useState<Array<{ id: string; label: string; text: string; requirements: string; scriptModelId: string; createdAt: string }>>([]);
   const [activeVersionId, setActiveVersionId] = useState("");
   const polishing = busy === "AI润色";
   const activeVersion = versions.find((version) => version.id === activeVersionId) || versions[0];
   const applyRequirementTemplate = (templateId: string) => {
+    setDraftTemplateId(templateId);
     const template = requirementTemplates.find((item) => item.id === templateId);
     if (template) setDraftRequirements(template.value);
   };
@@ -1427,7 +1429,7 @@ function PolishDialog({
         </div>
         <div className="polish-body">
           <label><span>输入内容</span><textarea value={draftInputText} onChange={(event) => setDraftInputText(event.target.value)} placeholder="输入或粘贴需要润色的口播内容" /></label>
-          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+          <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不适用</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
           <section className="polish-result-panel">
@@ -2987,7 +2989,7 @@ function MediaRangeEditor({
   }
 
   return (
-    <div className="clip-editor-panel">
+    <div className={cx("clip-editor-panel", mediaKind === "audio" && "audio-editor")}>
       <div className={cx("clip-preview", mediaKind === "audio" && "audio")}>
         {mediaKind === "video"
           ? <video ref={(node) => { mediaRef.current = node; }} src={src} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />

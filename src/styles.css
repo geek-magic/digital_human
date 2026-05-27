@@ -1634,6 +1634,9 @@ small { color: var(--muted); font-size: 12px; }
   border-radius: var(--radius);
   background: #fbfcfe;
 }
+.clip-editor-panel.audio-editor {
+  grid-template-columns: minmax(0, 1fr);
+}
 .clip-preview {
   min-width: 0;
 }
@@ -1649,8 +1652,8 @@ small { color: var(--muted); font-size: 12px; }
   position: relative;
   display: grid;
   align-content: center;
-  min-height: 104px;
-  padding: 14px;
+  min-height: 44px;
+  padding: 6px 8px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1662,7 +1665,8 @@ small { color: var(--muted); font-size: 12px; }
 .clip-preview.audio audio {
   position: relative;
   z-index: 1;
-  width: 100%;
+  width: min(360px, 100%);
+  height: 32px;
 }
 .clip-controls {
   display: grid;
