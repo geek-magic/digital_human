@@ -1052,8 +1052,8 @@ function SourceExtractionTool({
         canApply={Boolean(extractedText && result?.status === "done")}
         onApply={copyExtractedText}
       />
-      {result?.status === "done" && mediaLinks.length > 0 && (
-        <SourceMediaSavePanel links={mediaLinks} onSave={saveExtractionMedia} fallbackTitle={result.title || "链接解析媒体"} />
+      {mediaLinks.length > 0 && (
+        <SourceMediaSavePanel links={mediaLinks} onSave={saveExtractionMedia} fallbackTitle={result?.title || "链接解析媒体"} />
       )}
     </section>
   );
@@ -1197,7 +1197,7 @@ function SourceStepCard({
   const text = step.key === "type" ? "" : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
   const outputMetrics = metricDisplayEntries(step.outputJson as Record<string, unknown> | undefined);
   const showOutputJson = step.key !== "type" && outputMetrics.length > 0;
-  const hasMedia = Boolean(step.mediaUri);
+  const hasMedia = Boolean(step.mediaUri) && step.key !== "extract";
   return (
     <article className={cx("source-step-card", step.status)}>
       <div className="source-step-head">
@@ -2993,12 +2993,15 @@ function MediaRangeEditor({
 
   return (
     <div className={cx("clip-editor-panel", mediaKind === "audio" && "audio-editor")}>
-      <div className={cx("clip-preview", mediaKind === "audio" && "audio")}>
-        {mediaKind === "video"
-          ? <video ref={(node) => { mediaRef.current = node; }} src={src} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />
-          : <audio ref={(node) => { mediaRef.current = node; }} src={src} controls preload="metadata" onLoadedMetadata={handleMetadata} />}
-      </div>
+      {mediaKind === "video" && (
+        <div className="clip-preview">
+          <video ref={(node) => { mediaRef.current = node; }} src={src} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />
+        </div>
+      )}
       <div className="clip-controls">
+        {mediaKind === "audio" && (
+          <audio className="clip-audio-bar" ref={(node) => { mediaRef.current = node; }} src={src} controls preload="metadata" onLoadedMetadata={handleMetadata} />
+        )}
         <div className="clip-title-row">
           <label>
             <span>{nameLabel}</span>
