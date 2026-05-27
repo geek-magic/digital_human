@@ -3302,11 +3302,11 @@ async function probeMediaInfo(filePath) {
     const video = (data.streams || []).find((stream) => stream.codec_type === "video");
     const audio = (data.streams || []).find((stream) => stream.codec_type === "audio");
     return {
-      ok: Boolean(video),
+      ok: Boolean(video || audio),
       width: Number(video?.width || 0),
       height: Number(video?.height || 0),
       fps: Number(parseFps(video?.avg_frame_rate || video?.r_frame_rate || "").toFixed(2)),
-      duration: Number.parseFloat(video?.duration || data.format?.duration || "0") || 0,
+      duration: Number.parseFloat(video?.duration || audio?.duration || data.format?.duration || "0") || 0,
       codec: video?.codec_name || "",
       hasAudio: Boolean(audio),
       audioCodec: audio?.codec_name || "",
@@ -3541,6 +3541,27 @@ app.patch("/api/voices/reference-samples/:id", (req, res) => {
   voice.updatedAt = now();
   writeDb(db);
   res.json(voice);
+});
+
+app.post("/api/voices/reference-samples/:id/clip", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const voice = (db.voices || []).find((item) => item.id === req.params.id && !item.deletedAt);
+    if (!voice?.path || !existsSync(voice.path)) return res.status(404).json({ error: "Voice not found" });
+    const name = String(req.body.name || `${voice.name}-片段`).trim();
+    const clipped = await createVoiceFromPath(db, voice.path, {
+      name,
+      provider: voice.provider || "local",
+      authScope: voice.authScope || "self_authorized",
+      start: req.body.start,
+      end: req.body.end
+    });
+    clipped.sourceVoiceId = voice.id;
+    writeDb(db);
+    res.json(clipped);
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.delete("/api/voices/reference-samples/:id", (req, res) => {
@@ -4100,8 +4121,49 @@ function uploadCopyPath(sourcePath, fallbackName, extension = "") {
   return targetPath;
 }
 
+function shouldClipMedia(options = {}) {
+  return Number.isFinite(Number(options.start)) && Number.isFinite(Number(options.end)) && Number(options.end) > Number(options.start);
+}
+
+async function clipMediaToUpload(sourcePath, fallbackName, options = {}) {
+  if (!shouldClipMedia(options)) return uploadCopyPath(sourcePath, fallbackName, options.extension || "");
+  if (!sourcePath || !existsSync(sourcePath)) {
+    const err = new Error("解析产物文件不存在。");
+    err.status = 404;
+    throw err;
+  }
+  const media = await probeMediaInfo(sourcePath);
+  if (!media.ok) {
+    const err = new Error(media.error || "媒体文件不可用。");
+    err.status = 400;
+    throw err;
+  }
+  const minLength = options.mediaType === "audio" ? 0.2 : 0.5;
+  const start = clampNumber(options.start, 0, Math.max(0, media.duration - minLength), 0);
+  const end = clampNumber(options.end, start + minLength, media.duration || start + minLength, Math.min(media.duration || start + 5, start + 5));
+  if (end <= start) {
+    const err = new Error("结束时间必须大于开始时间。");
+    err.status = 400;
+    throw err;
+  }
+  const extension = options.extension || extname(sourcePath) || (options.mediaType === "audio" ? ".wav" : ".mp4");
+  const safeBase = basename(fallbackName || basename(sourcePath), extname(fallbackName || basename(sourcePath)))
+    .replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")
+    .slice(0, 80) || "media";
+  const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${extension}`);
+  const args = ["-y", "-ss", String(start), "-i", sourcePath, "-t", String(end - start)];
+  if (options.mediaType === "audio") {
+    args.push("-vn", "-acodec", extension === ".mp3" ? "libmp3lame" : "pcm_s16le", targetPath);
+  } else {
+    args.push("-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", targetPath);
+  }
+  await execFileAsync("ffmpeg", args, { timeout: 120000, maxBuffer: 1024 * 1024 * 8 });
+  return { targetPath, clipRange: { start, end, duration: end - start } };
+}
+
 async function createAvatarAssetFromPath(db, sourcePath, options = {}) {
-  const targetPath = uploadCopyPath(sourcePath, options.name || "数字人素材", ".mp4");
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "数字人素材", { ...options, mediaType: "video", extension: ".mp4" });
+  const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
   const qualityReport = await analyzeAvatarQuality(targetPath, "video/mp4");
   const asset = {
     id: `avatar-${randomUUID()}`,
@@ -4114,26 +4176,30 @@ async function createAvatarAssetFromPath(db, sourcePath, options = {}) {
     qualityReport,
     sourceExtractionId: options.extractionId || "",
     sourceLinkId: options.linkId || "",
+    clipRange: typeof prepared === "string" ? undefined : prepared.clipRange,
     createdAt: now()
   };
   db.avatarAssets.unshift(asset);
   return asset;
 }
 
-function createVoiceFromPath(db, sourcePath, options = {}) {
+async function createVoiceFromPath(db, sourcePath, options = {}) {
   const ext = extname(sourcePath).toLowerCase() || ".wav";
-  const targetPath = uploadCopyPath(sourcePath, options.name || "参考音色", ext);
+  const outputExt = shouldClipMedia(options) ? ".wav" : ext;
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "参考音色", { ...options, mediaType: "audio", extension: outputExt });
+  const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
   const voice = {
     id: `voice-${randomUUID()}`,
     name: options.name || basename(sourcePath),
     provider: options.provider || "local",
     path: targetPath,
     uri: publicPath(targetPath),
-    mimeType: ext === ".mp3" ? "audio/mpeg" : "audio/wav",
+    mimeType: outputExt === ".mp3" ? "audio/mpeg" : "audio/wav",
     authScope: options.authScope || "self_authorized",
     cloneStatus: "ready_for_adapter",
     sourceExtractionId: options.extractionId || "",
     sourceLinkId: options.linkId || "",
+    clipRange: typeof prepared === "string" ? undefined : prepared.clipRange,
     createdAt: now()
   };
   db.voices.unshift(voice);
@@ -4429,7 +4495,9 @@ app.post("/api/source-extractions/:id/save-avatar", async (req, res, next) => {
       name,
       tags: ["链接解析导入", sourceTypeLabel(link?.platform || "")].filter(Boolean),
       extractionId: extraction.id,
-      linkId: link?.id || ""
+      linkId: link?.id || "",
+      start: req.body?.start,
+      end: req.body?.end
     });
     writeDb(db);
     res.json(asset);
@@ -4438,14 +4506,16 @@ app.post("/api/source-extractions/:id/save-avatar", async (req, res, next) => {
   }
 });
 
-app.post("/api/source-extractions/:id/save-voice", (req, res, next) => {
+app.post("/api/source-extractions/:id/save-voice", async (req, res, next) => {
   try {
     const { db, extraction, link, sourcePath } = resolveExtractionMedia(req, "audio");
     const name = String(req.body?.name || extraction.title || link?.title || "链接解析音色").trim();
-    const voice = createVoiceFromPath(db, sourcePath, {
+    const voice = await createVoiceFromPath(db, sourcePath, {
       name,
       extractionId: extraction.id,
-      linkId: link?.id || ""
+      linkId: link?.id || "",
+      start: req.body?.start,
+      end: req.body?.end
     });
     writeDb(db);
     res.json(voice);

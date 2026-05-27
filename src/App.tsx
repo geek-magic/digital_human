@@ -199,7 +199,7 @@ type Project = {
   progress?: ProgressState;
   stageState: StageState;
   sourceAnalysis: {
-    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string; videoUri?: string; audioUri?: string; videoPath?: string; audioPath?: string }>;
+    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string; videoUri?: string; audioUri?: string; videoPath?: string; audioPath?: string; duration?: number }>;
     transcripts: Array<{ text: string; status: string }>;
     notes: string[];
   };
@@ -798,7 +798,7 @@ function TaskCenter(props: {
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [draftInputText, setDraftInputText] = useState("");
-  const [activeTab, setActiveTab] = useState<"extract" | "create">("create");
+  const [extractOpen, setExtractOpen] = useState(false);
   const checkedSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const allChecked = props.state.projects.length > 0 && props.state.projects.every((project) => checkedSet.has(project.id));
 
@@ -832,72 +832,63 @@ function TaskCenter(props: {
   return (
     <div className="task-layout">
       <section className="task-main">
-        <div className="task-tabs" role="tablist" aria-label="任务工作区">
-          <button type="button" className={cx(activeTab === "extract" && "active")} role="tab" aria-selected={activeTab === "extract"} onClick={() => setActiveTab("extract")}>
-            链接解析
-          </button>
-          <button type="button" className={cx(activeTab === "create" && "active")} role="tab" aria-selected={activeTab === "create"} onClick={() => setActiveTab("create")}>
-            创建任务
-          </button>
+        <div className="task-create-panel">
+          <div className="section-head">
+            <div><p className="eyebrow">任务</p><h2>创建任务</h2></div>
+            <button type="button" className="ghost-button" onClick={() => setExtractOpen(true)}><Download size={15} />链接解析</button>
+          </div>
+          <TaskComposer
+            state={props.state}
+            action={props.action}
+            onCreated={props.setSelectedProjectId}
+            inputText={draftInputText}
+            setInputText={setDraftInputText}
+            busy={props.busy}
+          />
         </div>
-        {activeTab === "extract" ? (
-          <div className="task-tab-panel extract-tab" role="tabpanel">
-            <SourceExtractionTool action={props.action} />
-          </div>
-        ) : (
-          <div className="task-tab-panel create-tab" role="tabpanel">
-            <TaskComposer
-              state={props.state}
-              action={props.action}
-              onCreated={props.setSelectedProjectId}
-              inputText={draftInputText}
-              setInputText={setDraftInputText}
-              busy={props.busy}
-            />
-            <div className="section-head task-list-head">
-              <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
-              <span className="count-pill">{props.state.projects.length}</span>
-            </div>
-            <div className="bulk-toolbar">
-              <label className="checkbox-pill">
-                <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
-                全选
-              </label>
-              <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
-              {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
-            </div>
-            <div className="task-list">
-              {props.state.projects.map((project) => {
-                const deleteProject = () => {
-                  if (!window.confirm(`删除任务「${project.title}」？`)) return;
-                  if (props.selectedProjectId === project.id) props.setSelectedProjectId("");
-                  props.action("删除任务", () => request(`/api/projects/${project.id}`, { method: "DELETE" }));
-                };
-                return (
-                  <article key={project.id} className={cx("task-row", props.selectedProjectId === project.id && "active")}>
-                    <input
-                      className="task-check"
-                      type="checkbox"
-                      aria-label={`选择任务 ${project.title}`}
-                      checked={checkedSet.has(project.id)}
-                      onChange={(event) => toggleOne(project.id, event.target.checked)}
-                    />
-                    <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
-                      <div>
-                        <strong>{project.title}</strong>
-                        <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
-                      </div>
-                      <StageDots project={project} />
-                    </button>
-                    <button className="task-delete" onClick={deleteProject} aria-label={`删除任务 ${project.title}`}><Trash2 size={15} /></button>
-                  </article>
-                );
-              })}
-              {props.state.projects.length === 0 && <EmptyState text="还没有任务。输入需求后可以直接开始生成。" />}
-            </div>
-          </div>
-        )}
+        <div className="section-head task-list-head">
+          <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
+          <span className="count-pill">{props.state.projects.length}</span>
+        </div>
+        <div className="bulk-toolbar">
+          <label className="checkbox-pill">
+            <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
+            全选
+          </label>
+          <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
+          {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
+        </div>
+        <div className="task-list">
+          {props.state.projects.map((project) => {
+            const deleteProject = () => {
+              if (!window.confirm(`删除任务「${project.title}」？`)) return;
+              if (props.selectedProjectId === project.id) props.setSelectedProjectId("");
+              props.action("删除任务", () => request(`/api/projects/${project.id}`, { method: "DELETE" }));
+            };
+            return (
+              <article key={project.id} className={cx("task-row", props.selectedProjectId === project.id && "active")}>
+                <input
+                  className="task-check"
+                  type="checkbox"
+                  aria-label={`选择任务 ${project.title}`}
+                  checked={checkedSet.has(project.id)}
+                  onChange={(event) => toggleOne(project.id, event.target.checked)}
+                />
+                <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
+                  <div>
+                    <strong>{project.title}</strong>
+                    <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
+                  </div>
+                  <StageDots project={project} />
+                </button>
+                <button className="task-delete" onClick={deleteProject} aria-label={`删除任务 ${project.title}`}><Trash2 size={15} /></button>
+              </article>
+            );
+          })}
+          {props.state.projects.length === 0 && <EmptyState text="还没有任务。输入需求后可以直接开始生成。" />}
+        </div>
       </section>
+      {extractOpen && <SourceExtractionDialog action={props.action} onClose={() => setExtractOpen(false)} />}
       <TaskDetail project={props.selectedProject} state={props.state} busy={props.busy} action={props.action} />
     </div>
   );
@@ -917,6 +908,30 @@ function extractionStepsFor(status: "idle" | "running" | "done" | "failed") {
   return labels.map(([id, label], index) => ({ id, label, status: index < 2 ? "done" as const : index === 2 ? "running" as const : "pending" as const }));
 }
 
+function SourceExtractionDialog({ action, onClose }: { action: AppAction; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="source-modal" role="dialog" aria-modal="true" aria-label="链接解析">
+        <div className="modal-head">
+          <div><p className="eyebrow">链接解析</p><h2>解析链接内容</h2></div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+        </div>
+        <SourceExtractionTool action={action} />
+      </section>
+    </div>
+  );
+}
+
 function SourceExtractionTool({
   action
 }: {
@@ -925,20 +940,12 @@ function SourceExtractionTool({
   const [sourceText, setSourceText] = useState("");
   const [result, setResult] = useState<SourceExtractResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
-  const [expanded, setExpanded] = useState(true);
-  const [mediaName, setMediaName] = useState("");
   const extractedText = result?.extractedText || result?.inputText || "";
   const extractionId = result?.extractionId || result?.id || "";
   const mediaLinks = result?.sourceAnalysis?.links?.filter((link) => link.videoUri || link.audioUri) || [];
   const steps = result?.steps?.length
     ? result.steps.map((step) => ({ id: step.key, label: step.label, status: step.status }))
     : extractionStepsFor(status);
-
-  useEffect(() => {
-    if (!result || mediaName.trim()) return;
-    const firstTitle = result.title || result.sourceAnalysis?.links?.find((link) => link.title)?.title || "";
-    if (firstTitle) setMediaName(compactDisplay(firstTitle, 18));
-  }, [result, mediaName]);
 
   async function waitForExtraction(id: string) {
     let latest: SourceExtractResponse | null = null;
@@ -958,7 +965,6 @@ function SourceExtractionTool({
   async function extract() {
     const source = sourceText.trim();
     if (!source) return;
-    setExpanded(true);
     setStatus("running");
     setResult(null);
     const response = await action("解析链接", async () => {
@@ -985,89 +991,139 @@ function SourceExtractionTool({
     });
   }
 
-  async function saveExtractionMedia(kind: "avatar" | "voice", linkId = "") {
+  async function saveExtractionMedia(kind: "avatar" | "voice", linkId = "", options: { name: string; start?: number; end?: number }) {
     if (!extractionId) return;
-    const fallbackName = result?.title || result?.sourceAnalysis?.links?.find((link) => link.title)?.title || "链接解析媒体";
-    const name = (mediaName || compactDisplay(fallbackName, 18)).trim();
+    const name = options.name.trim();
     await action(kind === "avatar" ? "保存为素材" : "保存为音色", () => request(kind === "avatar"
       ? `/api/source-extractions/${extractionId}/save-avatar`
       : `/api/source-extractions/${extractionId}/save-voice`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, linkId })
+      body: JSON.stringify({ name, linkId, start: options.start, end: options.end })
     }));
   }
 
   return (
-    <section className={cx("source-tool", !expanded && "collapsed")}>
+    <section className="source-tool">
       <div className="section-head">
         <div><p className="eyebrow">链接解析</p><h2>独立解析工具</h2></div>
         <div className="source-head-actions">
           <StatusBadge status={status === "done" ? "done" : status === "failed" ? "failed" : status === "running" ? "running" : "pending"} />
-          <button
-            type="button"
-            className="ghost-button source-toggle"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
-          >
-            <ChevronDown className={cx(expanded && "rotate-180")} size={16} />
-            {expanded ? "折叠" : "展开"}
-          </button>
         </div>
       </div>
-      {expanded && (
-        <>
-          <div className="extract-control">
-            <textarea
-              aria-label="链接解析输入"
-              value={sourceText}
-              onChange={(event) => setSourceText(event.target.value)}
-              placeholder="粘贴抖音分享文本、视频链接或普通文本"
-            />
-            <button type="button" className="secondary-button" disabled={status === "running" || !sourceText.trim()} onClick={extract}>
-              {status === "running" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}提取
-            </button>
-          </div>
-          <ExtractProgress steps={steps} />
-          <SourceExtractionTimeline
-            result={result}
-            fallbackSteps={extractionStepsFor(status)}
-            extractedText={extractedText}
-            canApply={Boolean(extractedText && result?.status === "done")}
-            onApply={copyExtractedText}
-          />
-          {result?.status === "done" && mediaLinks.length > 0 && (
-            <div className="source-save-panel">
-              <div>
-                <strong>保存解析媒体</strong>
-                <small>视频可保存到素材库，音频可保存到音色库。</small>
-              </div>
-              <label><span>名称</span><input value={mediaName} onChange={(event) => setMediaName(event.target.value)} placeholder="素材或音色名称" /></label>
-              <div className="source-save-actions">
-                {mediaLinks.map((link) => (
-                  <div key={link.id} className="source-save-row">
-                    <span>{compactDisplay(link.title || link.url, 28)}</span>
-                    {link.videoUri && <button type="button" className="ghost-button" onClick={() => saveExtractionMedia("avatar", link.id)}><Video size={15} />保存为素材</button>}
-                    {link.audioUri && <button type="button" className="ghost-button" onClick={() => saveExtractionMedia("voice", link.id)}><Mic2 size={15} />保存为音色</button>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-      {!expanded && (
-        <button
-          type="button"
-          className="source-collapsed-summary"
-          onClick={() => setExpanded(true)}
-          aria-label="展开链接解析"
-        >
-          <span>{result?.extractedText ? "已有解析结果，可展开查看。" : "粘贴抖音、小红书或网页链接，提取文本后复制最终文本。"}</span>
-          <ChevronDown size={16} />
+      <div className="extract-control">
+        <textarea
+          aria-label="链接解析输入"
+          value={sourceText}
+          onChange={(event) => setSourceText(event.target.value)}
+          placeholder="粘贴抖音分享文本、视频链接或普通文本"
+        />
+        <button type="button" className="secondary-button" disabled={status === "running" || !sourceText.trim()} onClick={extract}>
+          {status === "running" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}提取
         </button>
+      </div>
+      <ExtractProgress steps={steps} />
+      <SourceExtractionTimeline
+        result={result}
+        fallbackSteps={extractionStepsFor(status)}
+        extractedText={extractedText}
+        canApply={Boolean(extractedText && result?.status === "done")}
+        onApply={copyExtractedText}
+      />
+      {result?.status === "done" && mediaLinks.length > 0 && (
+        <SourceMediaSavePanel links={mediaLinks} onSave={saveExtractionMedia} fallbackTitle={result.title || "链接解析媒体"} />
       )}
     </section>
+  );
+}
+
+function SourceMediaSavePanel({
+  links,
+  fallbackTitle,
+  onSave
+}: {
+  links: Project["sourceAnalysis"]["links"];
+  fallbackTitle: string;
+  onSave: (kind: "avatar" | "voice", linkId: string, options: { name: string; start?: number; end?: number }) => void;
+}) {
+  return (
+    <div className="source-save-panel">
+      <div>
+        <strong>保存解析媒体</strong>
+        <small>可先拖动选择片段，再保存到素材库或音色库。</small>
+      </div>
+      <div className="source-save-actions">
+        {links.map((link) => (
+          <div key={link.id} className="source-save-card">
+            <div className="source-save-title">
+              <strong>{compactDisplay(link.title || fallbackTitle || link.url, 32)}</strong>
+              <small>{link.url}</small>
+            </div>
+            {link.videoUri && (
+              <SourceMediaImportCard
+                kind="avatar"
+                link={link}
+                src={link.videoUri}
+                fallbackName={compactDisplay(link.title || fallbackTitle || "链接解析素材", 18)}
+                onSave={onSave}
+              />
+            )}
+            {link.audioUri && (
+              <SourceMediaImportCard
+                kind="voice"
+                link={link}
+                src={link.audioUri}
+                fallbackName={compactDisplay(link.title || fallbackTitle || "链接解析音色", 18)}
+                onSave={onSave}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SourceMediaImportCard({
+  kind,
+  link,
+  src,
+  fallbackName,
+  onSave
+}: {
+  kind: "avatar" | "voice";
+  link: Project["sourceAnalysis"]["links"][number];
+  src: string;
+  fallbackName: string;
+  onSave: (kind: "avatar" | "voice", linkId: string, options: { name: string; start?: number; end?: number }) => void;
+}) {
+  const [name, setName] = useState(fallbackName);
+  const [start, setStart] = useState("0");
+  const [end, setEnd] = useState(link.duration ? Math.min(5, link.duration).toFixed(1) : "5");
+  const numericStart = Number(start);
+  const numericEnd = Number(end);
+  const isVoice = kind === "voice";
+  return (
+    <div className="source-import-card">
+      <MediaRangeEditor
+        src={src}
+        mediaKind={isVoice ? "audio" : "video"}
+        name={name}
+        setName={setName}
+        nameLabel={isVoice ? "音色名称" : "素材名称"}
+        start={start}
+        setStart={setStart}
+        end={end}
+        setEnd={setEnd}
+        actionLabel={isVoice ? "添加到音色" : "添加到素材"}
+        actionIcon={isVoice ? "voice" : "avatar"}
+        onSubmit={() => onSave(kind, link.id, {
+          name,
+          start: Number.isFinite(numericStart) ? numericStart : undefined,
+          end: Number.isFinite(numericEnd) ? numericEnd : undefined
+        })}
+      />
+    </div>
   );
 }
 
@@ -2571,7 +2627,9 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     const start = Number(clipStart);
     const end = Number(clipEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-    await action("生成素材片段", () => request(`/api/assets/avatar-videos/${item.id}/clip`, {
+    await action(kind === "avatar" ? "生成素材片段" : "生成音色片段", () => request(kind === "avatar"
+      ? `/api/assets/avatar-videos/${item.id}/clip`
+      : `/api/voices/reference-samples/${item.id}/clip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: clipName || `${item.name}-片段`, start, end })
@@ -2615,6 +2673,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           ) : clipAssetId === item.id ? (
             <ClipEditor
               item={item}
+              kind={kind}
               clipName={clipName}
               setClipName={setClipName}
               clipStart={clipStart}
@@ -2631,7 +2690,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           formatDate(item.createdAt),
           <span className="table-actions">
             <button className="text-button" onClick={() => startEdit(item)}><Pencil size={14} />编辑</button>
-            {kind === "avatar" && <button className="text-button" onClick={() => startClip(item)}><Scissors size={14} />剪辑</button>}
+            <button className="text-button" onClick={() => startClip(item)}><Scissors size={14} />剪辑</button>
             <button className="text-button danger-text" onClick={() => deleteItem(item)}><Trash2 size={14} />删除</button>
           </span>
         ])}
@@ -2651,6 +2710,7 @@ function formatClipTime(value: number) {
 
 function ClipEditor({
   item,
+  kind,
   clipName,
   setClipName,
   clipStart,
@@ -2661,6 +2721,7 @@ function ClipEditor({
   onCancel
 }: {
   item: Asset;
+  kind: "avatar" | "voice";
   clipName: string;
   setClipName: (value: string) => void;
   clipStart: string;
@@ -2670,27 +2731,76 @@ function ClipEditor({
   onCreate: () => void;
   onCancel: () => void;
 }) {
+  return (
+    <MediaRangeEditor
+      src={item.uri}
+      mediaKind={kind === "avatar" ? "video" : "audio"}
+      name={clipName}
+      setName={setClipName}
+      nameLabel={kind === "avatar" ? "新素材名称" : "新音色名称"}
+      start={clipStart}
+      setStart={setClipStart}
+      end={clipEnd}
+      setEnd={setClipEnd}
+      actionLabel={kind === "avatar" ? "生成片段" : "生成音色片段"}
+      actionIcon={kind === "avatar" ? "avatar" : "voice"}
+      onSubmit={onCreate}
+      onCancel={onCancel}
+    />
+  );
+}
+
+function MediaRangeEditor({
+  src,
+  mediaKind,
+  name,
+  setName,
+  nameLabel,
+  start,
+  setStart,
+  end,
+  setEnd,
+  actionLabel,
+  actionIcon,
+  onSubmit,
+  onCancel
+}: {
+  src: string;
+  mediaKind: "video" | "audio";
+  name: string;
+  setName: (value: string) => void;
+  nameLabel: string;
+  start: string;
+  setStart: (value: string) => void;
+  end: string;
+  setEnd: (value: string) => void;
+  actionLabel: string;
+  actionIcon: "avatar" | "voice";
+  onSubmit: () => void;
+  onCancel?: () => void;
+}) {
   const [duration, setDuration] = useState(0);
   const [dragging, setDragging] = useState<"start" | "end" | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const start = Math.max(0, Number(clipStart) || 0);
-  const end = Math.max(start + 0.1, Number(clipEnd) || start + 0.1);
-  const maxDuration = Math.max(duration, end, 0.1);
-  const selectedDuration = Math.max(0, end - start);
-  const startPercent = Math.min(100, Math.max(0, (start / maxDuration) * 100));
-  const endPercent = Math.min(100, Math.max(startPercent, (end / maxDuration) * 100));
-  const canCreate = Boolean(clipName.trim() && end > start);
+  const startValue = Math.max(0, Number(start) || 0);
+  const endValue = Math.max(startValue + 0.1, Number(end) || startValue + 0.1);
+  const maxDuration = Math.max(duration, endValue, 0.1);
+  const selectedDuration = Math.max(0, endValue - startValue);
+  const startPercent = Math.min(100, Math.max(0, (startValue / maxDuration) * 100));
+  const endPercent = Math.min(100, Math.max(startPercent, (endValue / maxDuration) * 100));
+  const canSubmit = Boolean(name.trim() && endValue > startValue);
+  const Icon = actionIcon === "voice" ? Mic2 : Scissors;
 
   function syncVideo(time: number) {
-    if (videoRef.current && Number.isFinite(time)) videoRef.current.currentTime = Math.max(0, Math.min(time, maxDuration));
+    if (mediaRef.current && Number.isFinite(time)) mediaRef.current.currentTime = Math.max(0, Math.min(time, maxDuration));
   }
 
   function setRange(nextStart: number, nextEnd: number, focus: "start" | "end") {
     const safeStart = Math.max(0, Math.min(nextStart, maxDuration - 0.1));
     const safeEnd = Math.max(safeStart + 0.1, Math.min(nextEnd, maxDuration));
-    setClipStart(safeStart.toFixed(1));
-    setClipEnd(safeEnd.toFixed(1));
+    setStart(safeStart.toFixed(1));
+    setEnd(safeEnd.toFixed(1));
     syncVideo(focus === "start" ? safeStart : safeEnd);
   }
 
@@ -2710,41 +2820,43 @@ function ClipEditor({
   function moveDrag(event: React.PointerEvent<HTMLDivElement>) {
     if (!dragging) return;
     const time = timeFromPointer(event.clientX);
-    if (dragging === "start") setRange(Math.min(time, end - 0.1), end, "start");
-    if (dragging === "end") setRange(start, Math.max(time, start + 0.1), "end");
+    if (dragging === "start") setRange(Math.min(time, endValue - 0.1), endValue, "start");
+    if (dragging === "end") setRange(startValue, Math.max(time, startValue + 0.1), "end");
   }
 
   function jumpToNearestHandle(event: React.PointerEvent<HTMLDivElement>) {
     if (event.target !== trackRef.current) return;
     const time = timeFromPointer(event.clientX);
-    const nearest = Math.abs(time - start) <= Math.abs(time - end) ? "start" : "end";
-    if (nearest === "start") setRange(Math.min(time, end - 0.1), end, "start");
-    if (nearest === "end") setRange(start, Math.max(time, start + 0.1), "end");
+    const nearest = Math.abs(time - startValue) <= Math.abs(time - endValue) ? "start" : "end";
+    if (nearest === "start") setRange(Math.min(time, endValue - 0.1), endValue, "start");
+    if (nearest === "end") setRange(startValue, Math.max(time, startValue + 0.1), "end");
   }
 
-  function handleMetadata(event: React.SyntheticEvent<HTMLVideoElement>) {
+  function handleMetadata(event: React.SyntheticEvent<HTMLVideoElement | HTMLAudioElement>) {
     const nextDuration = event.currentTarget.duration;
     if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
     setDuration(nextDuration);
-    if (Number(clipEnd) > nextDuration || clipEnd === "5") setClipEnd(Math.min(5, nextDuration).toFixed(1));
+    if (Number(end) > nextDuration || end === "5") setEnd(Math.min(5, nextDuration).toFixed(1));
   }
 
   return (
     <div className="clip-editor-panel">
-      <div className="clip-preview">
-        <video ref={videoRef} src={item.uri} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />
+      <div className={cx("clip-preview", mediaKind === "audio" && "audio")}>
+        {mediaKind === "video"
+          ? <video ref={(node) => { mediaRef.current = node; }} src={src} controls muted preload="metadata" onLoadedMetadata={handleMetadata} />
+          : <audio ref={(node) => { mediaRef.current = node; }} src={src} controls preload="metadata" onLoadedMetadata={handleMetadata} />}
       </div>
       <div className="clip-controls">
         <div className="clip-title-row">
           <label>
-            <span>新素材名称</span>
-            <input value={clipName} onChange={(event) => setClipName(event.target.value)} aria-label="片段名称" placeholder="片段名称" />
+            <span>{nameLabel}</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} aria-label={nameLabel} placeholder={nameLabel} />
           </label>
-          <button className="icon-mini" onClick={onCancel} aria-label="取消"><X size={14} /></button>
+          {onCancel && <button className="icon-mini" onClick={onCancel} aria-label="取消"><X size={14} /></button>}
         </div>
         <div className="clip-time-meta">
-          <span>开始 {formatClipTime(start)}</span>
-          <span>结束 {formatClipTime(end)}</span>
+          <span>开始 {formatClipTime(startValue)}</span>
+          <span>结束 {formatClipTime(endValue)}</span>
           <span>片段 {formatClipTime(selectedDuration)}</span>
           <span>总长 {duration ? formatClipTime(duration) : "读取中"}</span>
         </div>
@@ -2774,9 +2886,9 @@ function ClipEditor({
           />
         </div>
         <div className="clip-time-inputs">
-          <label><span>开始秒</span><input type="number" min="0" step="0.1" value={clipStart} onChange={(event) => setRange(Number(event.target.value), end, "start")} /></label>
-          <label><span>结束秒</span><input type="number" min="0.1" step="0.1" value={clipEnd} onChange={(event) => setRange(start, Number(event.target.value), "end")} /></label>
-          <button className="ghost-button" onClick={onCreate} disabled={!canCreate}><Scissors size={14} />生成片段</button>
+          <label><span>开始秒</span><input type="number" min="0" step="0.1" value={start} onChange={(event) => setRange(Number(event.target.value), endValue, "start")} /></label>
+          <label><span>结束秒</span><input type="number" min="0.1" step="0.1" value={end} onChange={(event) => setRange(startValue, Number(event.target.value), "end")} /></label>
+          <button className="ghost-button" onClick={onSubmit} disabled={!canSubmit}><Icon size={14} />{actionLabel}</button>
         </div>
       </div>
     </div>
