@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -32,7 +32,7 @@ function clampNumber(value, min, max, fallback, integer = false) {
 
 function normalizeSettings(settings = {}) {
   return {
-    cropMode: settings.cropMode === "default" ? "default" : "mediapipe",
+    cropMode: "mediapipe",
     parsingMode: settings.parsingMode === "raw" ? "raw" : "jaw",
     upperBoundaryRatio: clampNumber(settings.upperBoundaryRatio, 0.35, 0.65, 0.5),
     extraMargin: clampNumber(settings.extraMargin, 0, 40, 0, true),
@@ -55,6 +55,80 @@ async function run(command, args, options = {}) {
 function tailText(value = "", max = 6000) {
   const text = String(value || "");
   return text.length > max ? text.slice(-max) : text;
+}
+
+function pngFrameNames(dirPath) {
+  if (!existsSync(dirPath)) return [];
+  return readdirSync(dirPath)
+    .filter((name) => /^\d{8}\.png$/i.test(name))
+    .sort();
+}
+
+async function muxImageSequenceWithAudio(frameDir, audioPath, outputPath, fps = 25) {
+  const tempVideoPath = join(dirname(outputPath), `temp-${basename(outputPath, ".mp4")}.mp4`);
+  await run(ffmpegBin, [
+    "-y",
+    "-v",
+    "warning",
+    "-r",
+    String(fps),
+    "-f",
+    "image2",
+    "-i",
+    join(frameDir, "%08d.png"),
+    "-vcodec",
+    "libx264",
+    "-vf",
+    "format=yuv420p",
+    "-crf",
+    "16",
+    tempVideoPath
+  ]);
+  await run(ffmpegBin, [
+    "-y",
+    "-v",
+    "warning",
+    "-i",
+    tempVideoPath,
+    "-i",
+    audioPath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-shortest",
+    outputPath
+  ]);
+}
+
+async function repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAudio, resultName, fps = 25 }) {
+  const tempDir = join(resultDir, "v15");
+  const inputBasename = basename(preparedVideo, ".mp4");
+  const audioBasename = basename(preparedAudio, ".wav");
+  const originalFrameDir = join(tempDir, inputBasename);
+  const resultFrameDir = join(tempDir, `${inputBasename}_${audioBasename}`);
+  const outputPath = join(tempDir, resultName);
+  const originalFrames = pngFrameNames(originalFrameDir);
+  if (!originalFrames.length || !existsSync(resultFrameDir)) return false;
+  mkdirSync(resultFrameDir, { recursive: true });
+  let generatedCount = 0;
+  for (const name of originalFrames) {
+    const generatedPath = join(resultFrameDir, name);
+    if (existsSync(generatedPath)) {
+      generatedCount += 1;
+      continue;
+    }
+    copyFileSync(join(originalFrameDir, name), generatedPath);
+  }
+  if (!generatedCount) return false;
+  await muxImageSequenceWithAudio(resultFrameDir, preparedAudio, outputPath, fps);
+  return existsSync(outputPath);
 }
 
 async function prepareInputs(payload, workDir) {
@@ -122,7 +196,7 @@ while True:
     h, w = frame.shape[:2]
     result = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     if not result.multi_face_landmarks:
-        coords.append(last if last is not None else (0.0, 0.0, 0.0, 0.0))
+        coords.append((0.0, 0.0, 0.0, 0.0))
         continue
     pts = np.array([(p.x * w, p.y * h) for p in result.multi_face_landmarks[0].landmark])
     oval = pts[oval_idx]
@@ -145,7 +219,8 @@ while True:
         box = alpha * box + (1 - alpha) * last_arr
     box = tuple(int(round(v)) for v in box)
     if box[2] <= box[0] or box[3] <= box[1]:
-        box = last if last is not None else (0.0, 0.0, 0.0, 0.0)
+        coords.append((0.0, 0.0, 0.0, 0.0))
+        continue
     coords.append(box)
     last = box
 cap.release()
@@ -159,21 +234,9 @@ def is_valid_box(item):
         return False
 
 detected_valid = sum(1 for item in coords if is_valid_box(item))
-first_valid = next((item for item in coords if is_valid_box(item)), None)
-if first_valid is not None:
-    filled = []
-    last_valid = first_valid
-    for item in coords:
-        if is_valid_box(item):
-            last_valid = item
-            filled.append(item)
-        else:
-            filled.append(last_valid)
-    coords = filled
-valid = sum(1 for item in coords if is_valid_box(item))
 with open(coord_path, "wb") as f:
     pickle.dump(coords, f)
-print(json.dumps({"frames": len(coords), "detectedValidFrames": detected_valid, "validFrames": valid, "coordPath": coord_path}))
+print(json.dumps({"frames": len(coords), "validFrames": detected_valid, "skippedFrames": max(0, len(coords) - detected_valid), "coordPath": coord_path}))
 `;
   const { stdout } = await run(pythonBin, ["-c", script, videoPath, coordPath, JSON.stringify(settings)], {
     cwd: museTalkHome,
@@ -249,7 +312,7 @@ async function render(payloadPath, outPath) {
     const coordPath = join(workDir, `${basename(preparedVideo, ".mp4")}.pkl`);
     try {
       const coordResult = await createMediapipeCoords(preparedVideo, coordPath, settings);
-      console.log(`MediaPipe 坐标生成完成：frames=${coordResult.frames}, detectedValidFrames=${coordResult.detectedValidFrames || coordResult.validFrames}, validFrames=${coordResult.validFrames}`);
+      console.log(`MediaPipe 坐标生成完成：frames=${coordResult.frames}, validFrames=${coordResult.validFrames}, skippedFrames=${coordResult.skippedFrames || 0}`);
       args.push("--use_saved_coord");
     } catch (error) {
       console.warn(`MediaPipe 坐标生成失败，回退 MuseTalk 默认坐标检测：${error instanceof Error ? error.message : String(error)}`);
@@ -271,6 +334,12 @@ async function render(payloadPath, outPath) {
   });
 
   const generatedPath = join(resultDir, "v15", resultName);
+  if (!existsSync(generatedPath)) {
+    const repaired = await repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAudio, resultName, fps: 25 }).catch(() => false);
+    if (repaired) {
+      console.log("MuseTalk 缺失帧已用原始帧补齐。无人脸帧保留原画面。");
+    }
+  }
   if (!existsSync(generatedPath)) {
     const stdout = tailText(inference.stdout);
     const stderr = tailText(inference.stderr);

@@ -2025,7 +2025,7 @@ function VideoSettingsEditor({ videoSettings, setVideoSettings }: { videoSetting
     <details className="advanced-settings">
       <summary><Settings2 size={15} />高级参数</summary>
       <div className="param-grid">
-        <label><span>裁剪方式</span><select value={videoSettings.cropMode} title={videoSettingTips.cropMode} onChange={(event) => setVideoSettings((current) => ({ ...current, cropMode: event.target.value as VideoSettings["cropMode"] }))}><option value="mediapipe">智能裁剪</option><option value="default">默认</option></select><small className="param-help">{videoSettingTips.cropMode}</small></label>
+        <label><span>裁剪方式</span><input value="MediaPipe 智能裁剪" title={videoSettingTips.cropMode} disabled /><small className="param-help">{videoSettingTips.cropMode}</small></label>
         <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">稳定融合</option><option value="raw">轻量融合</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
         <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
         <label><span>下巴边距</span><input type="number" min="0" max="40" step="1" value={videoSettings.extraMargin} title={videoSettingTips.extraMargin} onChange={(event) => setVideoSettings((current) => ({ ...current, extraMargin: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.extraMargin}</small></label>
@@ -3239,7 +3239,7 @@ function AvatarTypeTestPanel({ models, defaultModelId, assets, action }: { model
         <AudioRecorder label="录制驱动音频" onRecorded={setAudio} />
       </div>
       <div className="param-grid model-test-params">
-        <label><span>裁剪模式</span><select value={settings.cropMode} onChange={(event) => updateSetting("cropMode", event.target.value as VideoSettings["cropMode"])}><option value="mediapipe">MediaPipe</option><option value="default">默认框</option></select></label>
+        <label><span>裁剪模式</span><input value="MediaPipe" disabled /></label>
         <label><span>解析模式</span><select value={settings.parsingMode} onChange={(event) => updateSetting("parsingMode", event.target.value as VideoSettings["parsingMode"])}><option value="jaw">jaw</option><option value="raw">raw</option></select></label>
         <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={settings.upperBoundaryRatio} onChange={(event) => updateSetting("upperBoundaryRatio", Number(event.target.value))} /></label>
         <label><span>脸部扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={settings.facePad} onChange={(event) => updateSetting("facePad", Number(event.target.value))} /></label>

@@ -735,7 +735,7 @@ function normalizeVideoSettings(settings = {}) {
     : defaultVideoSettings.engine;
   return {
     engine,
-    cropMode: ["mediapipe", "default"].includes(settings.cropMode) ? settings.cropMode : defaultVideoSettings.cropMode,
+    cropMode: "mediapipe",
     parsingMode: ["jaw", "raw"].includes(settings.parsingMode) ? settings.parsingMode : defaultVideoSettings.parsingMode,
     upperBoundaryRatio: clampNumber(settings.upperBoundaryRatio, 0.35, 0.65, defaultVideoSettings.upperBoundaryRatio),
     extraMargin: clampNumber(settings.extraMargin, 0, 40, defaultVideoSettings.extraMargin, true),
