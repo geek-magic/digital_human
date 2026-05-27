@@ -1309,7 +1309,7 @@ function TaskComposer({
         <label>
           <span className="label-head">
             <span>输入内容</span>
-            <button type="button" className="text-button" disabled={!inputText.trim() || busy === "AI润色"} onClick={() => setPolishOpen(true)}>
+            <button type="button" className="text-button" disabled={busy === "AI润色"} onClick={() => setPolishOpen(true)}>
               {busy === "AI润色" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
               AI润色
             </button>
@@ -1371,9 +1371,13 @@ function PolishDialog({
   onApply: (result: { text: string; requirements: string; scriptModelId: string }) => void;
   onClose: () => void;
 }) {
+  const [draftInputText, setDraftInputText] = useState(inputText);
   const [draftRequirements, setDraftRequirements] = useState(requirements);
   const [draftModelId, setDraftModelId] = useState(scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
+  const [versions, setVersions] = useState<Array<{ id: string; label: string; text: string; requirements: string; scriptModelId: string; createdAt: string }>>([]);
+  const [activeVersionId, setActiveVersionId] = useState("");
   const polishing = busy === "AI润色";
+  const activeVersion = versions.find((version) => version.id === activeVersionId) || versions[0];
   const applyRequirementTemplate = (templateId: string) => {
     const template = requirementTemplates.find((item) => item.id === templateId);
     if (template) setDraftRequirements(template.value);
@@ -1390,9 +1394,26 @@ function PolishDialog({
     const response = await action("AI润色", () => request<{ text: string }>("/api/text/polish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inputText, requirements: draftRequirements, scriptModelId: draftModelId })
+      body: JSON.stringify({ inputText: draftInputText, requirements: draftRequirements, scriptModelId: draftModelId })
     }));
-    if (response?.text) onApply({ text: response.text, requirements: draftRequirements, scriptModelId: draftModelId });
+    if (response?.text) {
+      setVersions((current) => {
+        const nextVersion = {
+          id: `polish-${Date.now()}`,
+          label: `V${current.length + 1}`,
+          text: response.text,
+          requirements: draftRequirements,
+          scriptModelId: draftModelId,
+          createdAt: new Date().toISOString()
+        };
+        setActiveVersionId(nextVersion.id);
+        return [...current, nextVersion];
+      });
+    }
+  }
+
+  function useVersion(version: { text: string; requirements: string; scriptModelId: string }) {
+    onApply({ text: version.text, requirements: version.requirements, scriptModelId: version.scriptModelId });
   }
 
   return (
@@ -1405,18 +1426,50 @@ function PolishDialog({
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
         </div>
         <div className="polish-body">
+          <label><span>输入内容</span><textarea value={draftInputText} onChange={(event) => setDraftInputText(event.target.value)} placeholder="输入或粘贴需要润色的口播内容" /></label>
           <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
-          <OutputItem title="待润色内容" status="pending" meta={`${inputText.length} 字`}>
-            <p>{inputText}</p>
-          </OutputItem>
+          <section className="polish-result-panel">
+            <div className="section-head">
+              <div><p className="eyebrow">润色结果</p><h3>版本输出</h3></div>
+              <span className="count-pill">{versions.length}</span>
+            </div>
+            {versions.length ? (
+              <>
+                <div className="version-tabs" role="tablist" aria-label="润色结果版本">
+                  {versions.map((version) => (
+                    <button
+                      type="button"
+                      key={version.id}
+                      role="tab"
+                      aria-selected={activeVersion?.id === version.id}
+                      className={cx("version-tab", activeVersion?.id === version.id && "active")}
+                      onClick={() => setActiveVersionId(version.id)}
+                    >
+                      {version.label}
+                    </button>
+                  ))}
+                </div>
+                {activeVersion && (
+                  <article className="polish-version-output">
+                    <div className="section-head compact">
+                      <strong>{activeVersion.label}</strong>
+                      <button type="button" className="primary-button" onClick={() => useVersion(activeVersion)}><CheckCircle2 size={16} />使用</button>
+                    </div>
+                    <textarea readOnly value={activeVersion.text} aria-label={`${activeVersion.label} 润色结果`} />
+                    <small>{formatDate(activeVersion.createdAt)} · {activeVersion.text.length} 字</small>
+                  </article>
+                )}
+              </>
+            ) : <EmptyState text="点击开始润色后，会在这里生成 V1、V2 等多个结果版本。" />}
+          </section>
         </div>
         <div className="modal-actions">
           <button type="button" className="ghost-button" onClick={onClose}>取消</button>
-          <button type="button" className="primary-button" disabled={polishing || !inputText.trim()} onClick={confirm}>
+          <button type="button" className="primary-button" disabled={polishing || !draftInputText.trim()} onClick={confirm}>
             {polishing ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-            确认润色
+            {polishing ? "润色中" : "开始润色"}
           </button>
         </div>
       </section>

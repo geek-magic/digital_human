@@ -446,6 +446,52 @@ small { color: var(--muted); font-size: 12px; }
 .polish-body textarea {
   min-height: 96px;
 }
+.polish-result-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfe;
+}
+.version-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.version-tab {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.version-tab.active {
+  border-color: #9ecdd9;
+  background: #eef8fb;
+  color: var(--primary-strong);
+}
+.polish-version-output {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.section-head.compact {
+  align-items: center;
+  margin: 0;
+}
+.polish-version-output textarea {
+  min-height: 160px;
+  resize: vertical;
+  background: #fff;
+}
 .modal-actions {
   display: flex;
   justify-content: flex-end;
