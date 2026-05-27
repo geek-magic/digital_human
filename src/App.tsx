@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   ChevronDown,
+  ClipboardList,
   Copy,
   Cpu,
   Download,
@@ -392,7 +393,8 @@ const emptyState: State = {
 };
 
 const navItems = [
-  { id: "tasks", label: "任务中心", icon: LayoutDashboard },
+  { id: "tasks", label: "创建任务", icon: LayoutDashboard },
+  { id: "taskList", label: "任务列表", icon: ClipboardList },
   { id: "assets", label: "素材库", icon: Video },
   { id: "voices", label: "音色库", icon: Mic2 },
   { id: "models", label: "模型中心", icon: MonitorCog },
@@ -465,19 +467,6 @@ const requirementTemplates = [
     value: "生成一条本地生活口播，突出地点、体验、价格或服务亮点，语气像真实探店推荐，结尾提示适合什么人去。"
   }
 ] as const;
-const videoSettingTips: Record<keyof VideoSettings, string> = {
-  engine: "MuseTalk 用于当前本地口型生成；失败时会直接标记失败，不生成无效占位视频。",
-  cropMode: "MediaPipe 会按人脸关键点裁下半脸，通常比默认框更稳。",
-  parsingMode: "jaw 会融合下巴和脸颊，raw 改动范围更小但贴片感可能更强。",
-  upperBoundaryRatio: "数值越大，替换区域越靠下；嘴带动太多脸时调高到 0.53-0.56。",
-  extraMargin: "向下增加下巴区域；下巴被切或嘴底部不自然时加到 4-8。",
-  facePad: "左右脸颊扩展；嘴像贴片时加到 0.14-0.16，脸变形时降到 0.10。",
-  lowerPad: "底部扩展；下唇和下巴过渡生硬时加到 0.04-0.06。",
-  batchSize: "Mac 上建议保持 1，调大更快但更容易占内存。",
-  leftCheekWidth: "jaw 模式下左脸保护宽度；脸颊被改坏时适当调大。",
-  rightCheekWidth: "jaw 模式下右脸保护宽度；脸颊被改坏时适当调大。"
-};
-
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -768,14 +757,22 @@ export function App() {
         )}
 
         {view === "tasks" && (
-          <TaskCenter
+          <TaskCreatePage
             state={state}
             selectedProject={selectedProject}
-            setSelectedProjectId={setSelectedProjectId}
-            selectedProjectId={selectedProjectId}
             busy={busy}
             action={action}
-            refresh={refresh}
+            onCreated={setSelectedProjectId}
+          />
+        )}
+        {view === "taskList" && (
+          <TaskListPage
+            state={state}
+            selectedProject={selectedProject}
+            selectedProjectId={selectedProjectId}
+            setSelectedProjectId={setSelectedProjectId}
+            busy={busy}
+            action={action}
           />
         )}
         {view === "assets" && <AssetManager title="数字人素材" kind="avatar" items={state.avatarAssets} refresh={refresh} action={action} />}
@@ -787,18 +784,48 @@ export function App() {
   );
 }
 
-function TaskCenter(props: {
+function TaskCreatePage(props: {
+  state: State;
+  selectedProject?: Project;
+  busy: string;
+  action: <T>(label: string, runner: () => Promise<T>) => Promise<T | undefined>;
+  onCreated: (id: string) => void;
+}) {
+  const [draftInputText, setDraftInputText] = useState("");
+  const [extractOpen, setExtractOpen] = useState(false);
+  return (
+    <div className="task-layout">
+      <section className="task-main create-only">
+        <div className="task-create-panel">
+          <div className="section-head">
+            <div><p className="eyebrow">任务</p><h2>创建任务</h2></div>
+            <button type="button" className="ghost-button" onClick={() => setExtractOpen(true)}><Download size={15} />链接解析</button>
+          </div>
+          <TaskComposer
+            state={props.state}
+            action={props.action}
+            onCreated={props.onCreated}
+            inputText={draftInputText}
+            setInputText={setDraftInputText}
+            busy={props.busy}
+          />
+        </div>
+      </section>
+      {extractOpen && <SourceExtractionDialog action={props.action} onClose={() => setExtractOpen(false)} />}
+      <TaskDetail project={props.selectedProject} state={props.state} busy={props.busy} action={props.action} />
+    </div>
+  );
+}
+
+function TaskListPage(props: {
   state: State;
   selectedProject?: Project;
   selectedProjectId: string;
   setSelectedProjectId: (id: string) => void;
   busy: string;
   action: <T>(label: string, runner: () => Promise<T>) => Promise<T | undefined>;
-  refresh: () => Promise<void>;
 }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
-  const [draftInputText, setDraftInputText] = useState("");
-  const [extractOpen, setExtractOpen] = useState(false);
   const checkedSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const allChecked = props.state.projects.length > 0 && props.state.projects.every((project) => checkedSet.has(project.id));
 
@@ -832,20 +859,6 @@ function TaskCenter(props: {
   return (
     <div className="task-layout">
       <section className="task-main">
-        <div className="task-create-panel">
-          <div className="section-head">
-            <div><p className="eyebrow">任务</p><h2>创建任务</h2></div>
-            <button type="button" className="ghost-button" onClick={() => setExtractOpen(true)}><Download size={15} />链接解析</button>
-          </div>
-          <TaskComposer
-            state={props.state}
-            action={props.action}
-            onCreated={props.setSelectedProjectId}
-            inputText={draftInputText}
-            setInputText={setDraftInputText}
-            busy={props.busy}
-          />
-        </div>
         <div className="section-head task-list-head">
           <div><p className="eyebrow">任务</p><h2>任务列表</h2></div>
           <span className="count-pill">{props.state.projects.length}</span>
@@ -888,7 +901,6 @@ function TaskCenter(props: {
           {props.state.projects.length === 0 && <EmptyState text="还没有任务。输入需求后可以直接开始生成。" />}
         </div>
       </section>
-      {extractOpen && <SourceExtractionDialog action={props.action} onClose={() => setExtractOpen(false)} />}
       <TaskDetail project={props.selectedProject} state={props.state} busy={props.busy} action={props.action} />
     </div>
   );
@@ -1172,7 +1184,8 @@ function SourceStepCard({
   canApply: boolean;
   onApply: () => void;
 }) {
-  const text = isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
+  const text = step.key === "type" ? "" : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
+  const showOutputJson = step.key !== "type" && Boolean(step.outputJson && Object.keys(step.outputJson).length > 0);
   const hasMedia = Boolean(step.mediaUri);
   return (
     <article className={cx("source-step-card", step.status)}>
@@ -1190,9 +1203,9 @@ function SourceStepCard({
           : <audio className="source-audio" controls src={step.mediaUri} />
       )}
       {text && <pre className="source-output">{text}</pre>}
-      {step.outputJson && Object.keys(step.outputJson).length > 0 && (
+      {showOutputJson && (
         <div className="source-kv">
-          {Object.entries(step.outputJson).map(([key, value]) => (
+          {Object.entries(step.outputJson || {}).map(([key, value]) => (
             value === "" || value === null || value === undefined ? null : <span key={key}><b>{key}</b>{String(value)}</span>
           ))}
         </div>
@@ -1926,10 +1939,8 @@ function StageWorkspace({
             </button>
           </div>
           <AvatarSample asset={selectedAsset} />
-          <VideoSettingsEditor videoSettings={videoSettings} setVideoSettings={setVideoSettings} />
           <div className="preset-row">
-            <button className="ghost-button" onClick={() => setVideoSettings(defaultVideoSettings)}>推荐参数</button>
-            <code>智能裁剪 / 稳定融合 / 上边界 0.50</code>
+            <code>最佳参数模式：MediaPipe 智能裁剪 / 稳定融合 / 上边界 0.50</code>
           </div>
           <div className="video-surface">
             {selectedVideoVersion ? <video src={selectedVideoVersion.artifact.video.uri} controls /> : <EmptyState text="视频生成后会显示在这里。" />}
@@ -2017,25 +2028,6 @@ function AvatarSample({ asset }: { asset?: Asset }) {
         {asset.qualityReport && <QualitySummary report={asset.qualityReport} />}
       </div>
     </article>
-  );
-}
-
-function VideoSettingsEditor({ videoSettings, setVideoSettings }: { videoSettings: VideoSettings; setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>> }) {
-  return (
-    <details className="advanced-settings">
-      <summary><Settings2 size={15} />高级参数</summary>
-      <div className="param-grid">
-        <label><span>裁剪方式</span><input value="MediaPipe 智能裁剪" title={videoSettingTips.cropMode} disabled /><small className="param-help">{videoSettingTips.cropMode}</small></label>
-        <label><span>融合模式</span><select value={videoSettings.parsingMode} title={videoSettingTips.parsingMode} onChange={(event) => setVideoSettings((current) => ({ ...current, parsingMode: event.target.value as VideoSettings["parsingMode"] }))}><option value="jaw">稳定融合</option><option value="raw">轻量融合</option></select><small className="param-help">{videoSettingTips.parsingMode}</small></label>
-        <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={videoSettings.upperBoundaryRatio} title={videoSettingTips.upperBoundaryRatio} onChange={(event) => setVideoSettings((current) => ({ ...current, upperBoundaryRatio: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.upperBoundaryRatio}</small></label>
-        <label><span>下巴边距</span><input type="number" min="0" max="40" step="1" value={videoSettings.extraMargin} title={videoSettingTips.extraMargin} onChange={(event) => setVideoSettings((current) => ({ ...current, extraMargin: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.extraMargin}</small></label>
-        <label><span>脸颊扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={videoSettings.facePad} title={videoSettingTips.facePad} onChange={(event) => setVideoSettings((current) => ({ ...current, facePad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.facePad}</small></label>
-        <label><span>底部扩展</span><input type="number" min="0" max="0.12" step="0.01" value={videoSettings.lowerPad} title={videoSettingTips.lowerPad} onChange={(event) => setVideoSettings((current) => ({ ...current, lowerPad: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.lowerPad}</small></label>
-        <label><span>批大小</span><input type="number" min="1" max="4" step="1" value={videoSettings.batchSize} title={videoSettingTips.batchSize} onChange={(event) => setVideoSettings((current) => ({ ...current, batchSize: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.batchSize}</small></label>
-        <label><span>左脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.leftCheekWidth} title={videoSettingTips.leftCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, leftCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.leftCheekWidth}</small></label>
-        <label><span>右脸宽度</span><input type="number" min="40" max="140" step="5" value={videoSettings.rightCheekWidth} title={videoSettingTips.rightCheekWidth} onChange={(event) => setVideoSettings((current) => ({ ...current, rightCheekWidth: Number(event.target.value) }))} /><small className="param-help">{videoSettingTips.rightCheekWidth}</small></label>
-      </div>
-    </details>
   );
 }
 

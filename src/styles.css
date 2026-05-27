@@ -163,6 +163,10 @@ small { color: var(--muted); font-size: 12px; }
   overflow: hidden;
   padding: 14px;
 }
+.task-main.create-only {
+  grid-template-rows: auto;
+  align-content: start;
+}
 .task-detail {
   position: static;
   display: grid;
