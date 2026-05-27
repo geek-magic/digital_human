@@ -3454,6 +3454,64 @@ app.patch("/api/assets/avatar-videos/:id", (req, res) => {
   res.json(asset);
 });
 
+app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const asset = (db.avatarAssets || []).find((item) => item.id === req.params.id && !item.deletedAt);
+    if (!asset?.path || !existsSync(asset.path)) return res.status(404).json({ error: "Avatar asset not found" });
+    const media = await probeMediaInfo(asset.path);
+    if (!media.ok) return res.status(400).json({ error: media.error || "素材视频不可用。" });
+    const start = clampNumber(req.body.start, 0, Math.max(0, media.duration - 0.5), 0);
+    const end = clampNumber(req.body.end, start + 0.5, media.duration || start + 1, Math.min(media.duration || start + 5, start + 5));
+    if (end <= start) return res.status(400).json({ error: "结束时间必须大于开始时间。" });
+    const name = String(req.body.name || `${asset.name}-片段`).trim();
+    const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${name.replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")}.mp4`);
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-ss",
+      String(start),
+      "-i",
+      asset.path,
+      "-t",
+      String(end - start),
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a?",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "20",
+      "-c:a",
+      "aac",
+      "-movflags",
+      "+faststart",
+      targetPath
+    ], { timeout: 120000, maxBuffer: 1024 * 1024 * 8 });
+    const qualityReport = await analyzeAvatarQuality(targetPath, "video/mp4");
+    const clipped = {
+      id: `avatar-${randomUUID()}`,
+      name,
+      tags: Array.from(new Set([...(asset.tags || []), "片段"])),
+      path: targetPath,
+      uri: publicPath(targetPath),
+      mimeType: "video/mp4",
+      authStatus: asset.authStatus || "self_authorized",
+      qualityReport,
+      sourceAssetId: asset.id,
+      clipRange: { start, end, duration: end - start },
+      createdAt: now()
+    };
+    db.avatarAssets.unshift(clipped);
+    writeDb(db);
+    res.json(clipped);
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post("/api/voices/reference-samples", upload.single("file"), (req, res) => {
   const db = readDb();
   const file = req.file;
@@ -4027,6 +4085,61 @@ function setExtractionFailed(id, key, error, patch = {}) {
   });
 }
 
+function uploadCopyPath(sourcePath, fallbackName, extension = "") {
+  if (!sourcePath || !existsSync(sourcePath)) {
+    const err = new Error("解析产物文件不存在。");
+    err.status = 404;
+    throw err;
+  }
+  const sourceExt = extname(sourcePath) || extension;
+  const safeBase = basename(fallbackName || basename(sourcePath), extname(fallbackName || basename(sourcePath)))
+    .replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")
+    .slice(0, 80) || "media";
+  const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${sourceExt}`);
+  copyFileSync(sourcePath, targetPath);
+  return targetPath;
+}
+
+async function createAvatarAssetFromPath(db, sourcePath, options = {}) {
+  const targetPath = uploadCopyPath(sourcePath, options.name || "数字人素材", ".mp4");
+  const qualityReport = await analyzeAvatarQuality(targetPath, "video/mp4");
+  const asset = {
+    id: `avatar-${randomUUID()}`,
+    name: options.name || basename(sourcePath),
+    tags: options.tags || ["链接解析导入"],
+    path: targetPath,
+    uri: publicPath(targetPath),
+    mimeType: "video/mp4",
+    authStatus: options.authStatus || "self_authorized",
+    qualityReport,
+    sourceExtractionId: options.extractionId || "",
+    sourceLinkId: options.linkId || "",
+    createdAt: now()
+  };
+  db.avatarAssets.unshift(asset);
+  return asset;
+}
+
+function createVoiceFromPath(db, sourcePath, options = {}) {
+  const ext = extname(sourcePath).toLowerCase() || ".wav";
+  const targetPath = uploadCopyPath(sourcePath, options.name || "参考音色", ext);
+  const voice = {
+    id: `voice-${randomUUID()}`,
+    name: options.name || basename(sourcePath),
+    provider: options.provider || "local",
+    path: targetPath,
+    uri: publicPath(targetPath),
+    mimeType: ext === ".mp3" ? "audio/mpeg" : "audio/wav",
+    authScope: options.authScope || "self_authorized",
+    cloneStatus: "ready_for_adapter",
+    sourceExtractionId: options.extractionId || "",
+    sourceLinkId: options.linkId || "",
+    createdAt: now()
+  };
+  db.voices.unshift(voice);
+  return voice;
+}
+
 async function extractWebText(link, options = {}) {
   const response = await fetch(link.url, {
     headers: { "User-Agent": browserUserAgent, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
@@ -4285,6 +4398,60 @@ app.get("/api/source-extractions/:id", (req, res) => {
   const extraction = (db.sourceExtractions || []).find((item) => item.id === req.params.id || item.extractionId === req.params.id);
   if (!extraction) return res.status(404).json({ error: "Source extraction not found" });
   res.json({ extractionId: extraction.id, ...extraction });
+});
+
+function resolveExtractionMedia(req, mediaType) {
+  const db = readDb();
+  const extraction = (db.sourceExtractions || []).find((item) => item.id === req.params.id || item.extractionId === req.params.id);
+  if (!extraction) {
+    const err = new Error("Source extraction not found");
+    err.status = 404;
+    throw err;
+  }
+  const links = extraction.sourceAnalysis?.links || [];
+  const requestedLinkId = String(req.body?.linkId || "");
+  const link = links.find((item) => requestedLinkId && item.id === requestedLinkId)
+    || links.find((item) => mediaType === "video" ? item.videoPath : item.audioPath);
+  const sourcePath = mediaType === "video" ? link?.videoPath : link?.audioPath;
+  if (!sourcePath || !existsSync(sourcePath)) {
+    const err = new Error(mediaType === "video" ? "当前解析结果没有可保存的视频文件。" : "当前解析结果没有可保存的音频文件。");
+    err.status = 400;
+    throw err;
+  }
+  return { db, extraction, link, sourcePath };
+}
+
+app.post("/api/source-extractions/:id/save-avatar", async (req, res, next) => {
+  try {
+    const { db, extraction, link, sourcePath } = resolveExtractionMedia(req, "video");
+    const name = String(req.body?.name || extraction.title || link?.title || "链接解析素材").trim();
+    const asset = await createAvatarAssetFromPath(db, sourcePath, {
+      name,
+      tags: ["链接解析导入", sourceTypeLabel(link?.platform || "")].filter(Boolean),
+      extractionId: extraction.id,
+      linkId: link?.id || ""
+    });
+    writeDb(db);
+    res.json(asset);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/source-extractions/:id/save-voice", (req, res, next) => {
+  try {
+    const { db, extraction, link, sourcePath } = resolveExtractionMedia(req, "audio");
+    const name = String(req.body?.name || extraction.title || link?.title || "链接解析音色").trim();
+    const voice = createVoiceFromPath(db, sourcePath, {
+      name,
+      extractionId: extraction.id,
+      linkId: link?.id || ""
+    });
+    writeDb(db);
+    res.json(voice);
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.post("/api/source/extract", async (req, res, next) => {

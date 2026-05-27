@@ -16,6 +16,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Scissors,
   Send,
   Settings2,
   ShieldCheck,
@@ -197,7 +198,7 @@ type Project = {
   progress?: ProgressState;
   stageState: StageState;
   sourceAnalysis: {
-    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string; audioUri?: string }>;
+    links: Array<{ id: string; url: string; platform: string; status: string; title?: string; message?: string; videoUri?: string; audioUri?: string; videoPath?: string; audioPath?: string }>;
     transcripts: Array<{ text: string; status: string }>;
     notes: string[];
   };
@@ -507,6 +508,11 @@ function isSubmittedResponse(value: unknown): value is { submitted: true; queueI
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function compactDisplay(value = "", max = 24) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 function formatDurationMs(value?: number) {
@@ -892,11 +898,19 @@ function SourceExtractionTool({
   const [result, setResult] = useState<SourceExtractResponse | null>(null);
   const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
   const [expanded, setExpanded] = useState(false);
+  const [mediaName, setMediaName] = useState("");
   const extractedText = result?.extractedText || result?.inputText || "";
   const extractionId = result?.extractionId || result?.id || "";
+  const mediaLinks = result?.sourceAnalysis?.links?.filter((link) => link.videoUri || link.audioUri) || [];
   const steps = result?.steps?.length
     ? result.steps.map((step) => ({ id: step.key, label: step.label, status: step.status }))
     : extractionStepsFor(status);
+
+  useEffect(() => {
+    if (!result || mediaName.trim()) return;
+    const firstTitle = result.title || result.sourceAnalysis?.links?.find((link) => link.title)?.title || "";
+    if (firstTitle) setMediaName(compactDisplay(firstTitle, 18));
+  }, [result, mediaName]);
 
   async function waitForExtraction(id: string) {
     let latest: SourceExtractResponse | null = null;
@@ -943,6 +957,19 @@ function SourceExtractionTool({
     });
   }
 
+  async function saveExtractionMedia(kind: "avatar" | "voice", linkId = "") {
+    if (!extractionId) return;
+    const fallbackName = result?.title || result?.sourceAnalysis?.links?.find((link) => link.title)?.title || "链接解析媒体";
+    const name = (mediaName || compactDisplay(fallbackName, 18)).trim();
+    await action(kind === "avatar" ? "保存为素材" : "保存为音色", () => request(kind === "avatar"
+      ? `/api/source-extractions/${extractionId}/save-avatar`
+      : `/api/source-extractions/${extractionId}/save-voice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, linkId })
+    }));
+  }
+
   return (
     <section className={cx("source-tool", !expanded && "collapsed")}>
       <div className="section-head">
@@ -981,6 +1008,24 @@ function SourceExtractionTool({
             canApply={Boolean(extractedText && result?.status === "done")}
             onApply={applyToComposer}
           />
+          {result?.status === "done" && mediaLinks.length > 0 && (
+            <div className="source-save-panel">
+              <div>
+                <strong>保存解析媒体</strong>
+                <small>视频可保存到素材库，音频可保存到音色库。</small>
+              </div>
+              <label><span>名称</span><input value={mediaName} onChange={(event) => setMediaName(event.target.value)} placeholder="素材或音色名称" /></label>
+              <div className="source-save-actions">
+                {mediaLinks.map((link) => (
+                  <div key={link.id} className="source-save-row">
+                    <span>{compactDisplay(link.title || link.url, 28)}</span>
+                    {link.videoUri && <button type="button" className="ghost-button" onClick={() => saveExtractionMedia("avatar", link.id)}><Video size={15} />保存为素材</button>}
+                    {link.audioUri && <button type="button" className="ghost-button" onClick={() => saveExtractionMedia("voice", link.id)}><Mic2 size={15} />保存为音色</button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
       {!expanded && (
@@ -1760,14 +1805,6 @@ function StageWorkspace({
             </button>
           </div>
           <VoiceSample asset={selectedVoice} />
-          <OutputItem title="当前音频预览" status={selectedAudioVersion?.status || project.stageState?.voice?.status} meta={selectedAudioVersion ? `${selectedAudioVersion.label} · ${selectedAudioVersion.duration}s` : "未生成"}>
-            {selectedAudioVersion ? (
-              <>
-                <audio controls src={selectedAudioVersion.audioUri} />
-                {selectedAudioVersion.voiceName && <small>音色：{selectedAudioVersion.voiceName}</small>}
-              </>
-            ) : <p>选择音色后点击生成口播音频。</p>}
-          </OutputItem>
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!selectedScriptVersion} onClick={generateVoice} />
             <button className="ghost-button" disabled={savingSourceAudio || !project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}>
@@ -1980,9 +2017,16 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
 }
 
 function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; action: AppAction }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedIds, setCollapsedIds] = useState<string[]>([]);
   const retryTask = (item: QueueItem) => action("重试执行任务", () => request(`/api/queue/${item.id}/retry`, { method: "POST" }));
   const cancelTask = (item: QueueItem) => action("取消执行任务", () => request(`/api/queue/${item.id}/cancel`, { method: "POST" }));
   const clearableIds = queueItems.filter((item) => ["completed", "cancelled"].includes(item.status)).map((item) => item.id);
+  const collapsedSet = new Set(collapsedIds);
+  const activeCount = queueItems.filter(isActiveQueue).length;
+  const toggleTask = (id: string) => {
+    setCollapsedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
   const clearFinished = () => action("清理执行记录", () => request("/api/queue/clear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1994,30 +2038,45 @@ function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; actio
         <div><p className="eyebrow">任务</p><h3>并行执行任务</h3></div>
         <div className="stage-task-head-actions">
           {clearableIds.length > 0 && <button className="text-button" onClick={clearFinished}>清理已完成</button>}
+          <button className="text-button" onClick={() => setCollapsed((value) => !value)}>{collapsed ? "展开全部" : "收起全部"}</button>
           <span className="count-pill">{queueItems.length}</span>
         </div>
       </div>
-      <div className="stage-task-list">
+      {collapsed ? (
+        <button type="button" className="stage-task-summary" onClick={() => setCollapsed(false)}>
+          <span>{queueItems.length ? `${queueItems.length} 个任务，${activeCount} 个执行中` : "当前阶段还没有执行任务。"}</span>
+          <ChevronDown size={16} />
+        </button>
+      ) : <div className="stage-task-list">
         {queueItems.length ? queueItems.map((item) => {
           const elapsedFrom = item.startedAt || item.createdAt;
           const finishedAt = item.finishedAt ? new Date(item.finishedAt).getTime() : Date.now();
           const elapsed = elapsedFrom ? Math.max(0, finishedAt - new Date(elapsedFrom).getTime()) : 0;
+          const itemCollapsed = collapsedSet.has(item.id);
           return (
-            <article className="stage-task-row" key={item.id}>
+            <article className={cx("stage-task-row", itemCollapsed && "collapsed")} key={item.id}>
               <StatusBadge status={item.status} />
               <div>
-                <strong>{item.label}{item.progress?.resultVersionLabel ? ` · ${item.progress.resultVersionLabel}` : ""}</strong>
+                <button type="button" className="stage-task-title" onClick={() => toggleTask(item.id)} aria-expanded={!itemCollapsed}>
+                  <strong>{item.label}{item.progress?.resultVersionLabel ? ` · ${item.progress.resultVersionLabel}` : ""}</strong>
+                  <ChevronDown className={cx(itemCollapsed && "rotate-180")} size={15} />
+                </button>
                 <small>
                   {statusText(item.status)}
                   {item.attempts ? ` · 第 ${item.attempts} 次执行` : ""}
                   {elapsedFrom ? ` · 耗时 ${formatDurationMs(elapsed)}` : ""}
                   {item.createdAt ? ` · ${formatDate(item.createdAt)}` : ""}
                 </small>
-                <small>{item.lastError || item.progress?.label || "等待执行。"}</small>
-                {item.progress?.artifactUri && item.progress.artifactType === "audio" && <audio controls src={item.progress.artifactUri} />}
-                <div className="progress-track"><span style={{ width: `${item.progress?.percent || 0}%` }} /></div>
+                {!itemCollapsed && (
+                  <>
+                    <small>{item.lastError || item.progress?.label || "等待执行。"}</small>
+                    {item.progress?.artifactUri && item.progress.artifactType === "audio" && <audio controls src={item.progress.artifactUri} />}
+                    <div className="progress-track"><span style={{ width: `${item.progress?.percent || 0}%` }} /></div>
+                  </>
+                )}
               </div>
-              <div className="stage-task-actions">
+              <div className={cx("stage-task-actions", itemCollapsed && "compact")}>
+                <button className="text-button" onClick={() => toggleTask(item.id)}>{itemCollapsed ? "展开" : "收起"}</button>
                 {["failed", "cancelled"].includes(item.status) && <button className="text-button" onClick={() => retryTask(item)}>重试</button>}
                 {item.status === "queued" && <button className="text-button danger-text" onClick={() => cancelTask(item)}>取消</button>}
               </div>
@@ -2026,7 +2085,7 @@ function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; actio
         }) : (
           <EmptyState text="当前阶段还没有执行任务。提交生成后会在这里显示进度、结果和失败原因。" />
         )}
-      </div>
+      </div>}
     </section>
   );
 }
@@ -2387,6 +2446,10 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState("");
   const [editingName, setEditingName] = useState("");
+  const [clipAssetId, setClipAssetId] = useState("");
+  const [clipName, setClipName] = useState("");
+  const [clipStart, setClipStart] = useState("0");
+  const [clipEnd, setClipEnd] = useState("5");
   const [uploading, setUploading] = useState(false);
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
   const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : "/api/voices/reference-samples";
@@ -2451,6 +2514,20 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     setEditingName("");
   }
 
+  function startClip(item: Asset) {
+    setClipAssetId(item.id);
+    setClipName(`${item.name}-片段`);
+    setClipStart("0");
+    setClipEnd("5");
+  }
+
+  function cancelClip() {
+    setClipAssetId("");
+    setClipName("");
+    setClipStart("0");
+    setClipEnd("5");
+  }
+
   async function saveEdit(item: Asset) {
     const nextName = editingName.trim();
     if (!nextName) return;
@@ -2460,6 +2537,18 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
       body: JSON.stringify({ name: nextName })
     }));
     cancelEdit();
+  }
+
+  async function createClip(item: Asset) {
+    const start = Number(clipStart);
+    const end = Number(clipEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    await action("生成素材片段", () => request(`/api/assets/avatar-videos/${item.id}/clip`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: clipName || `${item.name}-片段`, start, end })
+    }));
+    cancelClip();
   }
 
   return (
@@ -2484,15 +2573,28 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
       </div>
       <DataTable
         columns={["", nameLabel, kind === "avatar" ? "预览" : "试听", "创建时间", "操作"]}
-        template="42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 150px"
+        template={kind === "avatar" ? "42px minmax(300px, 1.35fr) minmax(170px, .75fr) 120px 210px" : "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 150px"}
         rows={filtered.map((item) => [
           <input className="table-check" type="checkbox" aria-label={`选择${entityLabel} ${item.name}`} checked={checkedIds.includes(item.id)} onChange={(event) => toggleOne(item.id, event.target.checked)} />,
           editingId === item.id ? (
-            <span className="inline-edit">
-              <input value={editingName} onChange={(event) => setEditingName(event.target.value)} aria-label={`${entityLabel}名称`} />
-              <button className="icon-mini" onClick={() => saveEdit(item)} aria-label="保存" disabled={!editingName.trim()}><Save size={14} /></button>
-              <button className="icon-mini" onClick={cancelEdit} aria-label="取消"><X size={14} /></button>
-            </span>
+            <div className="asset-edit-stack">
+              <span className="inline-edit">
+                <input value={editingName} onChange={(event) => setEditingName(event.target.value)} aria-label={`${entityLabel}名称`} />
+                <button className="icon-mini" onClick={() => saveEdit(item)} aria-label="保存" disabled={!editingName.trim()}><Save size={14} /></button>
+                <button className="icon-mini" onClick={cancelEdit} aria-label="取消"><X size={14} /></button>
+              </span>
+            </div>
+          ) : clipAssetId === item.id ? (
+            <div className="asset-edit-stack">
+              <span className="asset-title"><strong>{item.name}</strong><small>选择片段后生成新素材，原素材保留。</small></span>
+              <div className="clip-editor">
+                <input value={clipName} onChange={(event) => setClipName(event.target.value)} aria-label="片段名称" placeholder="片段名称" />
+                <label><span>开始</span><input type="number" min="0" step="0.1" value={clipStart} onChange={(event) => setClipStart(event.target.value)} /></label>
+                <label><span>结束</span><input type="number" min="0.1" step="0.1" value={clipEnd} onChange={(event) => setClipEnd(event.target.value)} /></label>
+                <button className="ghost-button" onClick={() => createClip(item)} disabled={!clipName.trim() || Number(clipEnd) <= Number(clipStart)}><Scissors size={14} />生成片段</button>
+                <button className="icon-mini" onClick={cancelClip} aria-label="取消"><X size={14} /></button>
+              </div>
+            </div>
           ) : (
             <span className="asset-title"><strong>{item.name}</strong><small>{item.mimeType || item.provider || "local"}</small></span>
           ),
@@ -2500,6 +2602,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           formatDate(item.createdAt),
           <span className="table-actions">
             <button className="text-button" onClick={() => startEdit(item)}><Pencil size={14} />编辑</button>
+            {kind === "avatar" && <button className="text-button" onClick={() => startClip(item)}><Scissors size={14} />剪辑</button>}
             <button className="text-button danger-text" onClick={() => deleteItem(item)}><Trash2 size={14} />删除</button>
           </span>
         ])}
