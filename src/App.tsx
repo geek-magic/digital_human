@@ -22,6 +22,7 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
   UserRound,
@@ -402,12 +403,12 @@ const navItems = [
 ] as const;
 
 const stageOrder: StageKey[] = ["input", "script", "voice", "video", "publish"];
-const visibleStageOrder: StageKey[] = ["script", "voice", "video", "publish"];
+const visibleStageOrder: StageKey[] = ["voice", "video", "publish"];
 const platformLabels: Record<Platform, string> = { douyin: "抖音", xiaohongshu: "小红书", wechat: "公众号" };
 const stageCopy: Record<StageKey, { title: string; description: string }> = {
   input: { title: "输入", description: "确认原始文本和生成要求。" },
   script: { title: "生成口播文案", description: "基于输入生成或保存口播文案版本。" },
-  voice: { title: "生成口播音频", description: "选择文案版本和音色，生成可试听音频版本。" },
+  voice: { title: "生成口播音频", description: "基于输入内容和音色，生成可试听音频版本。" },
   video: { title: "视频合成", description: "选择音频版本和数字人素材，生成可用的视频版本。" },
   publish: { title: "发布", description: "选择视频版本和渠道，打开平台发布入口并复制素材。" }
 };
@@ -532,6 +533,27 @@ function formatDurationMs(value?: number) {
   return `${seconds}秒`;
 }
 
+function metricDisplayEntries(metrics?: Record<string, unknown>) {
+  if (!metrics) return [];
+  const entries: Array<{ key: string; label: string; value: string }> = [];
+  const loadMs = Number(metrics.load_ms);
+  const inferMs = Number(metrics.infer_ms);
+  const totalMs = (Number.isFinite(loadMs) ? loadMs : 0) + (Number.isFinite(inferMs) ? inferMs : 0);
+  if (totalMs > 0) {
+    entries.push({ key: "duration_ms", label: "耗时", value: formatDurationMs(totalMs) });
+  }
+  for (const [key, value] of Object.entries(metrics)) {
+    if (value === "" || value === null || value === undefined) continue;
+    if (key === "load_ms" || key === "infer_ms") continue;
+    if (/_ms$/i.test(key) && Number.isFinite(Number(value))) {
+      entries.push({ key, label: "耗时", value: formatDurationMs(Number(value)) });
+      continue;
+    }
+    entries.push({ key, label: key, value: String(value) });
+  }
+  return entries;
+}
+
 function stageDurationMs(stage?: StageState[StageKey]) {
   if (!stage) return undefined;
   if (typeof stage.durationMs === "number") return stage.durationMs;
@@ -584,7 +606,7 @@ function getCurrentStage(project: Project): StageKey {
 
 function getVisibleStage(project: Project): StageKey {
   const current = getCurrentStage(project);
-  return current === "input" ? "script" : current;
+  return current === "input" || current === "script" ? "voice" : current;
 }
 
 function getNextAction(project: Project, videoSettings: VideoSettings): FlowAction | undefined {
@@ -1175,7 +1197,8 @@ function SourceStepCard({
   onApply: () => void;
 }) {
   const text = step.key === "type" ? "" : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
-  const showOutputJson = step.key !== "type" && Boolean(step.outputJson && Object.keys(step.outputJson).length > 0);
+  const outputMetrics = metricDisplayEntries(step.outputJson as Record<string, unknown> | undefined);
+  const showOutputJson = step.key !== "type" && outputMetrics.length > 0;
   const hasMedia = Boolean(step.mediaUri);
   return (
     <article className={cx("source-step-card", step.status)}>
@@ -1195,8 +1218,8 @@ function SourceStepCard({
       {text && <pre className="source-output">{text}</pre>}
       {showOutputJson && (
         <div className="source-kv">
-          {Object.entries(step.outputJson || {}).map(([key, value]) => (
-            value === "" || value === null || value === undefined ? null : <span key={key}><b>{key}</b>{String(value)}</span>
+          {outputMetrics.map((item) => (
+            <span key={item.key}><b>{item.label}</b>{item.value}</span>
           ))}
         </div>
       )}
@@ -1231,6 +1254,7 @@ function TaskComposer({
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
     setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
   }, [state.settings?.defaultTextModelId, state.models]);
@@ -1248,7 +1272,7 @@ function TaskComposer({
           inputText,
           requirements,
           scriptModelId,
-          manualScript: false,
+          manualScript: true,
           mode,
           reviewEnabled: mode === "manual",
           voiceId: mode === "auto" ? voiceId : "",
@@ -1270,10 +1294,6 @@ function TaskComposer({
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
   const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
-  const applyRequirementTemplate = (templateId: string) => {
-    const template = requirementTemplates.find((item) => item.id === templateId);
-    if (template) setRequirements(template.value);
-  };
 
   return (
     <section className="composer">
@@ -1287,13 +1307,16 @@ function TaskComposer({
           <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选；不填会自动生成短标题" />
         </label>
         <label>
-          <span>输入内容</span>
+          <span className="label-head">
+            <span>输入内容</span>
+            <button type="button" className="text-button" disabled={!inputText.trim() || busy === "AI润色"} onClick={() => setPolishOpen(true)}>
+              {busy === "AI润色" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+              AI润色
+            </button>
+          </span>
           <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
         </label>
         <div className={cx("composer-grid", mode === "manual" && "compact")}>
-          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
-          <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
-          <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
@@ -1308,7 +1331,96 @@ function TaskComposer({
           </button>
         </div>
       </form>
+      {polishOpen && (
+        <PolishDialog
+          state={state}
+          action={action}
+          inputText={inputText}
+          requirements={requirements}
+          scriptModelId={scriptModelId}
+          busy={busy}
+          onClose={() => setPolishOpen(false)}
+          onApply={({ text, requirements: nextRequirements, scriptModelId: nextModelId }) => {
+            setInputText(text);
+            setRequirements(nextRequirements);
+            setScriptModelId(nextModelId);
+            setPolishOpen(false);
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+function PolishDialog({
+  state,
+  action,
+  inputText,
+  requirements,
+  scriptModelId,
+  busy,
+  onApply,
+  onClose
+}: {
+  state: State;
+  action: AppAction;
+  inputText: string;
+  requirements: string;
+  scriptModelId: string;
+  busy: string;
+  onApply: (result: { text: string; requirements: string; scriptModelId: string }) => void;
+  onClose: () => void;
+}) {
+  const [draftRequirements, setDraftRequirements] = useState(requirements);
+  const [draftModelId, setDraftModelId] = useState(scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
+  const polishing = busy === "AI润色";
+  const applyRequirementTemplate = (templateId: string) => {
+    const template = requirementTemplates.find((item) => item.id === templateId);
+    if (template) setDraftRequirements(template.value);
+  };
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  async function confirm() {
+    const response = await action("AI润色", () => request<{ text: string }>("/api/text/polish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inputText, requirements: draftRequirements, scriptModelId: draftModelId })
+    }));
+    if (response?.text) onApply({ text: response.text, requirements: draftRequirements, scriptModelId: draftModelId });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="polish-modal" role="dialog" aria-modal="true" aria-label="AI润色">
+        <div className="modal-head">
+          <h2>AI润色</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+        </div>
+        <div className="polish-body">
+          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+          <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
+          <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
+          <OutputItem title="待润色内容" status="pending" meta={`${inputText.length} 字`}>
+            <p>{inputText}</p>
+          </OutputItem>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="ghost-button" onClick={onClose}>取消</button>
+          <button type="button" className="primary-button" disabled={polishing || !inputText.trim()} onClick={confirm}>
+            {polishing ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+            确认润色
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1832,7 +1944,7 @@ function StageWorkspace({
           </div>
         </div>
       )}
-      {["script", "voice", "video"].includes(activeStage) && <StageTaskPanel queueItems={stageQueues} action={action} />}
+      {["voice", "video"].includes(activeStage) && <StageTaskPanel queueItems={stageQueues} action={action} />}
 
       {activeStage === "input" && (
         <div className="step-body">

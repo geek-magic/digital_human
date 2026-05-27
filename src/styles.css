@@ -139,6 +139,12 @@ textarea { min-height: 112px; resize: vertical; line-height: 1.55; }
 input:focus, textarea:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(23,107,135,.13); }
 label { display: grid; gap: 7px; font-size: 13px; font-weight: 800; color: var(--text); }
 small { color: var(--muted); font-size: 12px; }
+.label-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 
 .task-layout {
   display: grid;
@@ -410,11 +416,40 @@ small { color: var(--muted); font-size: 12px; }
   background: var(--surface);
   box-shadow: 0 20px 60px rgba(15, 23, 42, .24);
 }
+.polish-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, .24);
+}
 .modal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.polish-body {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.polish-body textarea {
+  min-height: 96px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .composer {
@@ -1565,15 +1600,22 @@ small { color: var(--muted); font-size: 12px; }
   background: #111827;
 }
 .clip-preview.audio {
+  position: relative;
   display: grid;
   align-content: center;
   min-height: 104px;
   padding: 14px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #f6f9fc;
 }
+.clip-preview.audio video {
+  display: none;
+}
 .clip-preview.audio audio {
+  position: relative;
+  z-index: 1;
   width: 100%;
 }
 .clip-controls {

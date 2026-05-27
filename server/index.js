@@ -2805,6 +2805,43 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
   return normalizeScriptArtifact({ ...parsed, modelInfo: { ...modelInfo, metrics: result.metrics || {} } }, input);
 }
 
+async function polishTextWithTextModel(db, input = {}) {
+  const modelId = input.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const messages = scriptGenerationMessages({
+    inputText: input.inputText || "",
+    sourceText: input.inputText || "",
+    requirements: input.requirements || ""
+  });
+  let result;
+  let modelInfo;
+  if (String(modelId).startsWith("provider:")) {
+    const providerId = String(modelId).replace("provider:", "");
+    const provider = db.apiProviders.find((item) => item.id === providerId || item.providerId === providerId);
+    if (!provider) throw new Error("未找到已配置的云端 Provider。");
+    result = await callCloudLlm(provider, messages, input);
+    modelInfo = { type: "cloud", providerId: provider.providerId, providerName: provider.name, model: provider.model };
+  } else {
+    const model = db.models.find((item) => item.id === modelId && item.type === "llm");
+    if (!model) throw new Error("未找到本地文本模型。");
+    const detection = detectModel(model);
+    model.status = detection.status;
+    model.resolvedPath = detection.resolvedPath;
+    model.protocolStatus = detection.protocolStatus;
+    model.protocolMessage = detection.protocolMessage;
+    model.healthMessage = detection.message;
+    model.lastCheckedAt = now();
+    if (detection.status === "missing") throw new Error(detection.message);
+    result = await callLocalLlm(messages, input);
+    modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
+  }
+  const artifact = normalizeScriptArtifact(scriptArtifactFromModelText(result.text || "", input), input);
+  return {
+    text: artifact.script,
+    title: artifact.title,
+    modelInfo: { ...modelInfo, metrics: result.metrics || {} }
+  };
+}
+
 function srtTime(seconds) {
   const ms = Math.floor((seconds % 1) * 1000);
   const total = Math.floor(seconds);
@@ -4544,6 +4581,22 @@ app.post("/api/source/extract", async (req, res, next) => {
   }
 });
 
+app.post("/api/text/polish", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const inputText = String(req.body.inputText || req.body.text || "").trim();
+    if (!inputText) return res.status(400).json({ error: "请输入要润色的内容。" });
+    const result = await polishTextWithTextModel(db, {
+      inputText,
+      requirements: req.body.requirements || "",
+      scriptModelId: req.body.scriptModelId || db.settings.defaultTextModelId
+    });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post("/api/projects", async (req, res, next) => {
   try {
   const db = readDb();
@@ -5479,9 +5532,22 @@ app.post("/api/projects/:id/publish-package", async (req, res, next) => {
 async function runAllProject(projectId, options = {}) {
   updateQueueProgress(options.queueId, { percent: 5, label: "开始自动流程。", stage: "input", stageStatus: "running" });
   await processSourceProject(projectId, { queueId: options.queueId });
-  updateQueueProgress(options.queueId, { percent: 26, label: "来源已处理，准备生成口播文案。", stage: "script", stageStatus: "running" });
-  const scripted = await generateScriptProject(projectId, { queueId: options.queueId });
-  updateQueueProgress(options.queueId, { percent: 44, label: "口播文案已就绪，准备生成口播音频。", stage: "voice", stageStatus: "running" });
+  const scriptDb = readDb();
+  const scriptProject = ensureProject(scriptDb, projectId);
+  if (!resolveScriptVersion(scriptProject)) {
+    const scriptArtifact = {
+      ...buildScript(scriptProject),
+      script: scriptProject.inputText || scriptProject.sourceText || ""
+    };
+    createScriptVersion(scriptProject, scriptArtifact, {
+      sourceInputSnapshot: scriptProject.inputText || scriptProject.sourceText || "",
+      requirementsSnapshot: scriptProject.requirements || ""
+    });
+    setStage(scriptProject, "script", "done", "已使用输入内容作为口播文案。");
+    scriptProject.updatedAt = now();
+    writeDb(scriptDb);
+  }
+  updateQueueProgress(options.queueId, { percent: 44, label: "口播内容已就绪，准备生成口播音频。", stage: "voice", stageStatus: "running" });
   await synthesizeProject(projectId, { queueId: options.queueId });
   updateQueueProgress(options.queueId, { percent: 64, label: "口播已就绪，准备生成视频。", stage: "video", stageStatus: "running" });
   await renderProject(projectId, { queueId: options.queueId });
