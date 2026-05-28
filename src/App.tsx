@@ -401,7 +401,7 @@ const navItems = [
   { id: "taskList", label: "任务列表", icon: ClipboardList },
   { id: "assets", label: "素材库", icon: Video },
   { id: "voices", label: "音色库", icon: Mic2 },
-  { id: "models", label: "模型中心", icon: MonitorCog },
+  { id: "models", label: "体验中心", icon: MonitorCog },
   { id: "publish", label: "发布历史", icon: Send }
 ] as const;
 
@@ -421,16 +421,15 @@ const stageActionMap: Partial<Record<StageKey, FlowAction>> = {
   video: { label: "生成视频", path: "render-video" }
 };
 const modelTypeTabs: Array<{ id: ModelTypeKey; label: string }> = [
-  { id: "llm", label: "LLM" },
-  { id: "asr", label: "ASR" },
-  { id: "tts", label: "TTS" },
-  { id: "avatar", label: "数字人" }
+  { id: "llm", label: "AI润色" },
+  { id: "tts", label: "音色试听" },
+  { id: "avatar", label: "视频合成" }
 ];
 const modelTypeLabels: Record<ModelTypeKey, string> = {
-  llm: "文本模型",
+  llm: "AI润色",
   asr: "ASR",
-  tts: "TTS",
-  avatar: "数字人"
+  tts: "音色试听",
+  avatar: "视频合成"
 };
 const defaultVideoSettings: VideoSettings = {
   engine: "musetalk",
@@ -3156,126 +3155,22 @@ function QualitySummary({ report }: { report?: Asset["qualityReport"] }) {
 
 function ModelCenter({ state, action }: { state: State; action: AppAction }) {
   const [activeType, setActiveType] = useState<ModelTypeKey>("llm");
-  const visibleModels = state.models.filter((model) => model.type !== "media");
-  const modelsByType = (type: ModelTypeKey) => visibleModels.filter((model) => model.type === type);
-  const localTextModels = state.models.filter((model) => model.type === "llm");
-  const cloudTextProviders = state.apiProviders.filter((provider) => provider.capabilities?.includes("llm"));
-  const defaultTextModelId = state.settings?.defaultTextModelId || "";
-  const selectedValue = normalizeTextModelValue(state, defaultTextModelId);
-  const activeModels = modelsByType(activeType);
-  const activeDefaultId = defaultModelIdForType(state, activeType);
-  const activeDefaultLabel = defaultModelLabelForType(state, activeType);
   return (
     <section className="manager-page">
       <div className="manager-toolbar">
-        <div><p className="eyebrow">模型中心</p><h2>模型选择与测试</h2></div>
-        <span className="count-pill">{modelTypeLabels[activeType]}默认：{activeDefaultLabel}</span>
+        <div><p className="eyebrow">体验中心</p><h2>内容能力体验</h2></div>
       </div>
-      <div className="model-type-tabs" role="tablist" aria-label="模型分类">
+      <div className="model-type-tabs" role="tablist" aria-label="体验分类">
         {modelTypeTabs.map((tab) => (
           <button key={tab.id} role="tab" className={cx(activeType === tab.id && "active")} onClick={() => setActiveType(tab.id)}>
-            {tab.label}<span>{modelsByType(tab.id).length}</span>
+            {tab.label}
           </button>
         ))}
       </div>
 
-      {activeType === "llm" ? (
-        <div className="model-choice-layout">
-          <section className="model-panel">
-            <div className="model-panel-head">
-              <div><p className="eyebrow">Local</p><h3>本地文本模型</h3></div>
-              <HardDrive size={18} />
-            </div>
-            <ModelInventory
-              models={localTextModels}
-              emptyText="还没有本地文本模型。"
-              renderActions={(model) => {
-                const selected = activeDefaultId === model.id;
-                return (
-                  <>
-                    {selected && <span className="default-pill">默认</span>}
-                    <button className="ghost-button" disabled={selected} onClick={() => action("选择本地模型", () => request("/api/models/select", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ modelId: model.id })
-                    }))}>设为默认</button>
-                  </>
-                );
-              }}
-            />
-          </section>
-
-          <CloudProviderManager
-            state={state}
-            type="llm"
-            providers={cloudTextProviders}
-            selectedValue={selectedValue}
-            action={action}
-          />
-          <LlmTypeTestPanel state={state} action={action} />
-        </div>
-      ) : activeType === "asr" || activeType === "tts" ? (
-        <div className="model-choice-layout">
-          <section className="model-panel">
-            <div className="model-panel-head">
-              <div><p className="eyebrow">Local</p><h3>本地{modelTypeLabels[activeType]}模型</h3></div>
-              <span className="count-pill">{activeModels.length}</span>
-            </div>
-            <ModelInventory
-              models={activeModels}
-              emptyText={`还没有本地${modelTypeLabels[activeType]}模型。`}
-              renderActions={(model) => {
-                const selected = activeDefaultId === model.id;
-                return (
-                  <>
-                    {selected && <span className="default-pill">默认</span>}
-                    <button className="ghost-button" disabled={selected} onClick={() => action(`选择${modelTypeLabels[activeType]}模型`, () => request("/api/models/select", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ modelId: model.id })
-                    }))}>设为默认</button>
-                  </>
-                );
-              }}
-            />
-          </section>
-          <CloudProviderManager
-            state={state}
-            type={activeType}
-            providers={state.apiProviders.filter((provider) => provider.capabilities?.includes(activeType))}
-            selectedValue={activeDefaultId}
-            action={action}
-          />
-          <ModelTypeTestPanel type={activeType} models={activeModels} state={state} action={action} />
-        </div>
-      ) : (
-        <div className="model-type-layout">
-          <section className="model-panel">
-            <div className="model-panel-head">
-              <div><p className="eyebrow">{modelTypeLabels[activeType]}</p><h3>可用模型</h3></div>
-              <span className="count-pill">{activeModels.length}</span>
-            </div>
-            <ModelInventory
-              models={activeModels}
-              emptyText={`还没有${modelTypeLabels[activeType]}模型。`}
-              renderActions={(model) => {
-                const selected = activeDefaultId === model.id;
-                return (
-                  <>
-                    {selected && <span className="default-pill">默认</span>}
-                    <button className="ghost-button" disabled={selected} onClick={() => action(`选择${modelTypeLabels[activeType]}模型`, () => request("/api/models/select", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ modelId: model.id })
-                    }))}>设为默认</button>
-                  </>
-                );
-              }}
-            />
-          </section>
-          <ModelTypeTestPanel type={activeType} models={activeModels} state={state} action={action} />
-        </div>
-      )}
+      {activeType === "llm" && <LlmTypeTestPanel action={action} />}
+      {activeType === "tts" && <TtsTypeTestPanel voices={state.voices} action={action} />}
+      {activeType === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
     </section>
   );
 }
@@ -3304,23 +3199,19 @@ function ModelInventory({
   );
 }
 
-function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }) {
-  const [modelId, setModelId] = useState("");
-  const [prompt, setPrompt] = useState("请用一句话说明你能帮我做什么。");
+function LlmTypeTestPanel({ action }: { action: AppAction }) {
+  const [prompt, setPrompt] = useState("把这段内容润色成适合短视频口播的自然中文：今天店里来了很多老顾客，大家都说环境越来越舒服。");
   const [result, setResult] = useState("");
   const [testing, setTesting] = useState(false);
-  useEffect(() => {
-    setModelId((current) => current || defaultModelIdForType(state, "llm"));
-  }, [state]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
     try {
-      const response = await action("测试文本模型", () => request<{ text: string }>("/api/model-tests/llm", {
+      const response = await action("AI润色", () => request<{ text: string }>("/api/model-tests/llm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId, prompt })
+        body: JSON.stringify({ prompt })
       }));
       if (response?.text) setResult(response.text);
     } finally {
@@ -3330,11 +3221,10 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
 
   return (
     <form className="model-test-panel" onSubmit={submit}>
-      <div><p className="eyebrow">Test</p><h3>文本模型测试</h3></div>
-      <TextModelSelect state={state} value={modelId} onChange={setModelId} />
-      <label><span>输入文本</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
-      <button className="primary-button" disabled={testing || !prompt.trim()}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "测试中" : "发送测试"}</button>
-      {result && <OutputItem title="模型回复" status="done"><p>{result}</p></OutputItem>}
+      <div><p className="eyebrow">体验</p><h3>AI润色</h3></div>
+      <label><span>输入内容</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+      <button className="primary-button" disabled={testing || !prompt.trim()}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "润色中" : "开始润色"}</button>
+      {result && <OutputItem title="润色结果" status="done"><p>{result}</p></OutputItem>}
     </form>
   );
 }
@@ -3342,8 +3232,8 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
 function ModelTypeTestPanel({ type, models, state, action }: { type: Exclude<ModelTypeKey, "llm">; models: ModelRecord[]; state: State; action: AppAction }) {
   const defaultModelId = defaultModelIdForType(state, type);
   if (type === "asr") return <AsrTypeTestPanel state={state} models={models} defaultModelId={defaultModelId} action={action} />;
-  if (type === "tts") return <TtsTypeTestPanel state={state} models={models} defaultModelId={defaultModelId} voices={state.voices} action={action} />;
-  return <AvatarTypeTestPanel models={models} defaultModelId={defaultModelId} assets={state.avatarAssets} action={action} />;
+  if (type === "tts") return <TtsTypeTestPanel voices={state.voices} action={action} />;
+  return <AvatarTypeTestPanel state={state} action={action} />;
 }
 
 function AsrTypeTestPanel({ state, models, defaultModelId, action }: { state: State; models: ModelRecord[]; defaultModelId: string; action: AppAction }) {
@@ -3384,31 +3274,23 @@ function AsrTypeTestPanel({ state, models, defaultModelId, action }: { state: St
   );
 }
 
-function TtsTypeTestPanel({ state, models, defaultModelId, voices, action }: { state: State; models: ModelRecord[]; defaultModelId: string; voices: Asset[]; action: AppAction }) {
-  const [modelId, setModelId] = useState("");
+function TtsTypeTestPanel({ voices, action }: { voices: Asset[]; action: AppAction }) {
   const [voiceId, setVoiceId] = useState("");
-  const [cloudVoice, setCloudVoice] = useState("alloy");
-  const [referenceAudio, setReferenceAudio] = useState<File | null>(null);
   const [text, setText] = useState("这是一次音色克隆测试，请生成自然清晰的中文口播。");
   const [audioUri, setAudioUri] = useState("");
   const [testing, setTesting] = useState(false);
   useEffect(() => {
-    setModelId((current) => current || defaultModelId || models[0]?.id || "");
     setVoiceId((current) => current || voices[0]?.id || "");
-  }, [defaultModelId, models, voices]);
-  const selectedIsCloud = modelId.startsWith("provider:");
+  }, [voices]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
     try {
       const body = new FormData();
-      body.append("modelId", modelId);
       body.append("text", text);
-      if (selectedIsCloud) body.append("cloudVoice", cloudVoice || "alloy");
       if (voiceId) body.append("voiceId", voiceId);
-      if (referenceAudio) body.append("referenceAudio", referenceAudio);
-      const response = await action("测试 TTS", () => request<{ audio?: { uri: string } }>("/api/model-tests/tts", { method: "POST", body }));
+      const response = await action("生成试听", () => request<{ audio?: { uri: string } }>("/api/model-tests/tts", { method: "POST", body }));
       if (response?.audio?.uri) setAudioUri(response.audio.uri);
     } finally {
       setTesting(false);
@@ -3417,53 +3299,41 @@ function TtsTypeTestPanel({ state, models, defaultModelId, voices, action }: { s
 
   return (
     <form className="model-test-panel" onSubmit={submit}>
-      <div><p className="eyebrow">Test</p><h3>TTS 测试</h3></div>
-      <TypedModelSelect state={state} type="tts" models={models} value={modelId} onChange={setModelId} />
-      {selectedIsCloud ? (
-        <label><span>云端音色 ID</span><input value={cloudVoice} onChange={(event) => setCloudVoice(event.target.value)} placeholder="例如 alloy / verse / 自定义 voice id" /></label>
-      ) : (
-        <>
-          <label><span>参考音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">使用上传/录制音频</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-          <div className="test-file-row">
-            <label className="file-chip"><Upload size={16} />{referenceAudio ? referenceAudio.name : "上传参考音频"}<input type="file" accept="audio/*" onChange={(event) => setReferenceAudio(event.target.files?.[0] || null)} /></label>
-            <AudioRecorder label="录制参考音频" onRecorded={setReferenceAudio} />
-          </div>
-        </>
-      )}
+      <div><p className="eyebrow">体验</p><h3>音色试听</h3></div>
+      <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
       <label><span>合成文本</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-      <button className="primary-button" disabled={testing || !text.trim() || !modelId || (!selectedIsCloud && !voiceId && !referenceAudio)}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
+      <button className="primary-button" disabled={testing || !text.trim() || !voiceId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
       {audioUri && <OutputItem title="试听音频" status="done"><audio controls src={audioUri} /></OutputItem>}
     </form>
   );
 }
 
-function AvatarTypeTestPanel({ models, defaultModelId, assets, action }: { models: ModelRecord[]; defaultModelId: string; assets: Asset[]; action: AppAction }) {
-  const [modelId, setModelId] = useState("");
+function AvatarTypeTestPanel({ state, action }: { state: State; action: AppAction }) {
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [audio, setAudio] = useState<File | null>(null);
-  const [settings, setSettings] = useState<VideoSettings>(defaultVideoSettings);
+  const [voiceId, setVoiceId] = useState("");
+  const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
+  const [text, setText] = useState("大家好，欢迎来到今天的视频合成体验。");
   const [videoUri, setVideoUri] = useState("");
   const [testing, setTesting] = useState(false);
   useEffect(() => {
-    setModelId((current) => current || defaultModelId || models[0]?.id || "");
-    setAvatarAssetId((current) => current || assets[0]?.id || "");
-  }, [defaultModelId, models, assets]);
-  function updateSetting<K extends keyof VideoSettings>(key: K, value: VideoSettings[K]) {
-    setSettings((current) => ({ ...current, [key]: value }));
-  }
+    setAvatarAssetId((current) => current || state.avatarAssets[0]?.id || "");
+    setVoiceId((current) => current || state.voices[0]?.id || "");
+  }, [state.avatarAssets, state.voices]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
     try {
       const body = new FormData();
-      body.append("modelId", modelId);
       body.append("avatarAssetId", avatarFile ? "" : avatarAssetId);
-      body.append("videoSettings", JSON.stringify(settings));
+      body.append("voiceId", voiceId);
+      body.append("backgroundMusicAssetId", backgroundMusicAssetId);
+      body.append("text", text);
       if (avatarFile) body.append("avatar", avatarFile);
       if (audio) body.append("audio", audio);
-      const response = await action("测试数字人模型", () => request<{ video?: { uri: string } }>("/api/model-tests/avatar", { method: "POST", body }));
+      const response = await action("生成体验视频", () => request<{ video?: { uri: string } }>("/api/model-tests/avatar", { method: "POST", body }));
       if (response?.video?.uri) setVideoUri(response.video.uri);
     } finally {
       setTesting(false);
@@ -3472,23 +3342,18 @@ function AvatarTypeTestPanel({ models, defaultModelId, assets, action }: { model
 
   return (
     <form className="model-test-panel" onSubmit={submit}>
-      <div><p className="eyebrow">Test</p><h3>数字人模型测试</h3></div>
-      <label><span>模型</span><select value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
-      <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">使用上传素材</option>{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      <div><p className="eyebrow">体验</p><h3>视频合成</h3></div>
+      <label><span>口播内容</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
+      <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+      <label><span>背景音</span><select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}><option value="">不使用背景音</option>{(state.musicAssets || []).map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">使用上传素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <div className="test-file-row">
         <label className="file-chip"><Upload size={16} />{avatarFile ? avatarFile.name : "上传人物视频"}<input type="file" accept="video/*" onChange={(event) => setAvatarFile(event.target.files?.[0] || null)} /></label>
-        <label className="file-chip"><Upload size={16} />{audio ? audio.name : "上传驱动音频"}<input type="file" accept="audio/*" onChange={(event) => setAudio(event.target.files?.[0] || null)} /></label>
-        <AudioRecorder label="录制驱动音频" onRecorded={setAudio} />
+        <label className="file-chip"><Upload size={16} />{audio ? audio.name : "上传口播音频"}<input type="file" accept="audio/*" onChange={(event) => setAudio(event.target.files?.[0] || null)} /></label>
+        <AudioRecorder label="录制口播音频" onRecorded={setAudio} />
       </div>
-      <div className="param-grid model-test-params">
-        <label><span>裁剪模式</span><input value="MediaPipe" disabled /></label>
-        <label><span>解析模式</span><select value={settings.parsingMode} onChange={(event) => updateSetting("parsingMode", event.target.value as VideoSettings["parsingMode"])}><option value="jaw">jaw</option><option value="raw">raw</option></select></label>
-        <label><span>上边界</span><input type="number" min="0.35" max="0.65" step="0.01" value={settings.upperBoundaryRatio} onChange={(event) => updateSetting("upperBoundaryRatio", Number(event.target.value))} /></label>
-        <label><span>脸部扩展</span><input type="number" min="0.04" max="0.24" step="0.01" value={settings.facePad} onChange={(event) => updateSetting("facePad", Number(event.target.value))} /></label>
-        <label><span>下巴扩展</span><input type="number" min="0" max="40" step="1" value={settings.extraMargin} onChange={(event) => updateSetting("extraMargin", Number(event.target.value))} /></label>
-      </div>
-      <button className="primary-button" disabled={testing || !modelId || (!avatarAssetId && !avatarFile) || !audio}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成测试视频"}</button>
-      {videoUri && <OutputItem title="测试视频" status="done"><video className="test-video" controls src={videoUri} /></OutputItem>}
+      <button className="primary-button" disabled={testing || (!avatarAssetId && !avatarFile) || (!audio && (!text.trim() || !voiceId))}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成体验视频"}</button>
+      {videoUri && <OutputItem title="体验视频" status="done"><video className="test-video" controls src={videoUri} /></OutputItem>}
     </form>
   );
 }

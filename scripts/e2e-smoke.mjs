@@ -60,8 +60,8 @@ await page.locator("h1", { hasText: "音色库" }).waitFor();
 await noHorizontalOverflow(page, "voices");
 await screenshot(page, "03-voices.png");
 
-await page.getByRole("button", { name: "模型中心" }).click();
-await page.getByRole("heading", { name: "模型选择", exact: false }).waitFor();
+await page.getByRole("button", { name: "体验中心" }).click();
+await page.getByRole("heading", { name: "内容能力体验" }).waitFor();
 await noHorizontalOverflow(page, "models");
 await screenshot(page, "04-models.png");
 
