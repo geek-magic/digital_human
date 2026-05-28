@@ -5781,6 +5781,11 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
   project.selectedVideoVersionId = videoVersion.id;
   project.artifacts.video = videoArtifactFromVersion(videoVersion);
   if (videoVersion.artifact?.subtitles) project.artifacts.subtitles = videoVersion.artifact.subtitles;
+  const audioVersion = resolveAudioVersion(project, videoVersion.sourceAudioVersionId || project.selectedAudioVersionId || "");
+  if (audioVersion) {
+    project.selectedAudioVersionId = audioVersion.id;
+    project.artifacts.audio = audioArtifactFromVersion(audioVersion);
+  }
   const copy = publishCopyForProject(project, platform);
   const publishPayload = {
     id: `publish-draft-${randomUUID()}`,
@@ -5794,6 +5799,10 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
     videoVersionLabel: videoVersion.label,
     videoUri: project.artifacts.video?.uri || "",
     videoPath: project.artifacts.video?.path || "",
+    audioUri: project.artifacts.audio?.uri || "",
+    audioPath: project.artifacts.audio?.path || "",
+    subtitlesUri: project.artifacts.subtitles?.uri || "",
+    subtitlesPath: project.artifacts.subtitles?.path || "",
     title: copy.title,
     body: copy.body,
     createdAt: now(),

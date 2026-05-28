@@ -342,6 +342,11 @@ type PublishRecord = {
   publishUrl: string;
   videoUri: string;
   videoPath?: string;
+  audioUri?: string;
+  audioPath?: string;
+  subtitlesUri?: string;
+  subtitlesPath?: string;
+  packageText?: string;
   videoVersionLabel?: string;
   title: string;
   body: string;
@@ -522,6 +527,24 @@ async function copyTextToClipboard(text: string) {
   textarea.select();
   document.execCommand("copy");
   document.body.removeChild(textarea);
+}
+
+function publishPackageText(payload: PublishRecord) {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return [
+    `平台：${payload.platformLabel}`,
+    `标题：${payload.title}`,
+    "",
+    "正文：",
+    payload.body,
+    "",
+    `视频地址：${origin}${payload.videoUri}`,
+    payload.videoPath ? `视频文件：${payload.videoPath}` : "",
+    payload.audioUri ? `音频地址：${origin}${payload.audioUri}` : "",
+    payload.audioPath ? `音频文件：${payload.audioPath}` : "",
+    payload.subtitlesUri ? `字幕地址：${origin}${payload.subtitlesUri}` : "",
+    payload.subtitlesPath ? `字幕文件：${payload.subtitlesPath}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 function formatDurationMs(value?: number) {
@@ -1785,7 +1808,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     }));
     if (payload) {
       setPublishDraft(payload);
-      await navigator.clipboard.writeText(`标题：${payload.title}\n\n正文：\n${payload.body}\n\n视频：${window.location.origin}${payload.videoUri}`);
+      await copyTextToClipboard(publishPackageText(payload));
       window.open(payload.publishUrl, "_blank");
     }
   }
@@ -2019,7 +2042,7 @@ function StageWorkspace({
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
   const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
-  const copyPublishField = (value: string) => navigator.clipboard?.writeText(value).catch(() => undefined);
+  const copyPublishField = (value: string) => copyTextToClipboard(value).catch(() => undefined);
   const savingScript = busy === "保存口播文案";
   const savingVideoSetup = busy === "保存视频设置";
   const savingSourceAudio = busy === "保存原始音频";
@@ -2189,6 +2212,10 @@ function StageWorkspace({
                 <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
                 <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
                 {publishDraft.videoPath && <label><span>本地文件</span><input readOnly value={publishDraft.videoPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.videoPath || "")}>复制</button></label>}
+                {publishDraft.audioUri && <label><span>音频地址</span><input readOnly value={`${window.location.origin}${publishDraft.audioUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.audioUri}`)}>复制</button></label>}
+                {publishDraft.audioPath && <label><span>音频文件</span><input readOnly value={publishDraft.audioPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.audioPath || "")}>复制</button></label>}
+                {publishDraft.subtitlesUri && <label><span>字幕地址</span><input readOnly value={`${window.location.origin}${publishDraft.subtitlesUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.subtitlesUri}`)}>复制</button></label>}
+                <label className="publish-package-field"><span>发布包</span><textarea readOnly value={publishPackageText(publishDraft)} /><button className="ghost-button" onClick={() => copyPublishField(publishPackageText(publishDraft))}>复制</button></label>
               </div>
             </OutputItem>
           )}

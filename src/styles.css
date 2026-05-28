@@ -1365,12 +1365,18 @@ small { color: var(--muted); font-size: 12px; }
 }
 .publish-draft-grid label {
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr) auto;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
   align-items: start;
   gap: 8px;
 }
+.publish-draft-grid .publish-package-field {
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+}
 .publish-draft-grid textarea {
   min-height: 96px;
+}
+.publish-draft-grid .publish-package-field textarea {
+  min-height: 180px;
 }
 .publish-draft-grid input,
 .publish-draft-grid textarea {
