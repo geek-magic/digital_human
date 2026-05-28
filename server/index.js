@@ -5323,7 +5323,7 @@ app.post("/api/projects/:id/audio-versions/import", upload.single("audio"), asyn
       || project.sourceAnalysis?.links?.find((link) => link.audioPath)?.audioPath
       || project.artifacts.audio?.path
       || "";
-    if (!sourcePath || !existsSync(sourcePath)) return res.status(400).json({ error: "没有可保存的音频文件，请先上传或录制音频。" });
+    if (!sourcePath || !existsSync(sourcePath)) return res.status(400).json({ error: "没有可使用的原始音频，请先通过链接解析提取音频，或录制口播音频。" });
     const outDir = join(artifactDir, project.id, "audio-versions", `audio-${randomUUID()}`);
     mkdirSync(outDir, { recursive: true });
     const ext = extname(sourcePath) || ".wav";
@@ -5335,17 +5335,17 @@ app.post("/api/projects/:id/audio-versions/import", upload.single("audio"), asyn
       path: audioPath,
       duration,
       adapter: req.file ? "uploaded-audio" : "source-audio",
-      note: req.file ? "用户上传或录制的口播音频。" : "已将原始来源音频保存为口播音频版本。",
-      voiceId: "",
-      voiceName: req.body.voiceName || (req.file ? "自定义音频" : "原始音频"),
+      note: req.file ? "用户录制的口播音频。" : "已将原始来源音频作为新的口播音频版本。",
+      voiceId: project.voiceId || "",
+      voiceName: req.body.voiceName || (req.file ? "录制音频" : "原始音频"),
       metrics: {}
     };
     const version = createAudioVersion(project, audioArtifact, { sourceScriptVersionId: req.body.scriptVersionId || project.selectedScriptVersionId || "" });
     project.status = "voice_ready";
-    setStage(project, "voice", "done", `${version.label} 口播音频已保存。`);
+    setStage(project, "voice", "done", `${version.label} 口播音频已生成。`);
     resetStagesAfter(project, "voice");
     project.updatedAt = now();
-    pushJob(db, project.id, "import_audio_version", "completed", `${version.label} 口播音频已保存。`, version);
+    pushJob(db, project.id, "import_audio_version", "completed", `${version.label} 口播音频已生成。`, version);
     writeDb(db);
     res.json({ audioVersion: version, project });
   } catch (err) {

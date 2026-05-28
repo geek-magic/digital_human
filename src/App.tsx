@@ -1761,7 +1761,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     });
 
   const importAudioVersion = (file?: File, voiceName?: string) =>
-    action(file ? "录制口播音频" : "保存原始音频", async () => {
+    action(file ? "录制口播音频" : "使用原始音频", async () => {
       const body = new FormData();
       if (file) body.append("audio", file);
       if (voiceName) body.append("voiceName", voiceName);
@@ -2045,7 +2045,7 @@ function StageWorkspace({
   const copyPublishField = (value: string) => copyTextToClipboard(value).catch(() => undefined);
   const savingScript = busy === "保存口播文案";
   const savingVideoSetup = busy === "保存视频设置";
-  const savingSourceAudio = busy === "保存原始音频";
+  const savingSourceAudio = busy === "使用原始音频";
   const openingPublish = busy === "打开发布入口";
   const recordingPublish = busy === "记录发布结果";
   const applyRequirementTemplate = (templateId: string) => {
@@ -2133,7 +2133,7 @@ function StageWorkspace({
             <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />
             <button className="ghost-button" disabled={savingSourceAudio || !project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}>
               {savingSourceAudio ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
-              {savingSourceAudio ? "保存中" : "保存原始音频"}
+              {savingSourceAudio ? "保存中" : "使用原始音频"}
             </button>
             <AudioRecorder label="录制口播音频" onRecorded={(file) => importAudioVersion(file, "录制音频")} />
           </div>
