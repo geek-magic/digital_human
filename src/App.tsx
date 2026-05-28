@@ -2794,7 +2794,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const [clipAssetId, setClipAssetId] = useState("");
   const [clipName, setClipName] = useState("");
   const [clipStart, setClipStart] = useState("0");
-  const [clipEnd, setClipEnd] = useState("5");
+  const [clipEnd, setClipEnd] = useState("");
   const [uploading, setUploading] = useState(false);
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
   const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : kind === "music" ? "/api/assets/music" : "/api/voices/reference-samples";
@@ -2863,14 +2863,14 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     setClipAssetId(item.id);
     setClipName(`${item.name}-片段`);
     setClipStart("0");
-    setClipEnd("5");
+    setClipEnd("");
   }
 
   function cancelClip() {
     setClipAssetId("");
     setClipName("");
     setClipStart("0");
-    setClipEnd("5");
+    setClipEnd("");
   }
 
   async function saveEdit(item: Asset) {
@@ -3101,7 +3101,7 @@ function MediaRangeEditor({
     if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
     setDuration(nextDuration);
     if (!end) setEnd(nextDuration.toFixed(1));
-    else if (Number(end) > nextDuration || end === "5") setEnd(Math.min(5, nextDuration).toFixed(1));
+    else if (Number(end) > nextDuration) setEnd(nextDuration.toFixed(1));
   }
 
   return (
