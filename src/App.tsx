@@ -1197,7 +1197,7 @@ function SourceStepCard({
   const text = step.key === "type" ? "" : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
   const outputMetrics = metricDisplayEntries(step.outputJson as Record<string, unknown> | undefined);
   const showOutputJson = step.key !== "type" && outputMetrics.length > 0;
-  const hasMedia = Boolean(step.mediaUri) && step.key !== "extract";
+  const hasMedia = Boolean(step.mediaUri) && !["extract", "asr"].includes(step.key || "");
   return (
     <article className={cx("source-step-card", step.status)}>
       <div className="source-step-head">
