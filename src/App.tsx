@@ -948,7 +948,7 @@ function extractionStepsFor(status: "idle" | "running" | "done" | "failed") {
     ["link", "提取链接"],
     ["type", "识别类型"],
     ["extract", "提取/下载"],
-    ["asr", "ASR 转写"],
+    ["asr", "文案识别"],
     ["result", "解析结果"]
   ] as const;
   if (status === "idle") return labels.map(([id, label]) => ({ id, label, status: "pending" as const }));
@@ -993,7 +993,7 @@ function SourceExtractionTool({
   const extractionId = result?.extractionId || result?.id || "";
   const mediaLinks = result?.sourceAnalysis?.links?.filter((link) => link.videoUri || link.audioUri) || [];
   const steps = result?.steps?.length
-    ? result.steps.map((step) => ({ id: step.key, label: step.label, status: step.status }))
+    ? result.steps.map((step) => ({ id: step.key, label: step.key === "asr" ? "文案识别" : displaySourceStepText(step.label), status: step.status }))
     : extractionStepsFor(status);
 
   async function waitForExtraction(id: string) {
@@ -1142,7 +1142,7 @@ function SourceMediaImportCard({
 }) {
   const [name, setName] = useState(fallbackName);
   const [start, setStart] = useState("0");
-  const [end, setEnd] = useState(link.duration ? Math.min(5, link.duration).toFixed(1) : "5");
+  const [end, setEnd] = useState(link.duration ? Number(link.duration).toFixed(1) : "");
   const numericStart = Number(start);
   const numericEnd = Number(end);
   const isVoice = kind === "voice";
@@ -1202,6 +1202,12 @@ function SourceExtractionTimeline({
   );
 }
 
+function displaySourceStepText(value = "") {
+  return String(value)
+    .replace(/ASR 转写/g, "文案识别")
+    .replace(/ASR转写/g, "文案识别");
+}
+
 function SourceStepCard({
   step,
   isFinal,
@@ -1215,26 +1221,31 @@ function SourceStepCard({
   canApply: boolean;
   onApply: () => void;
 }) {
-  const text = step.key === "type" ? "" : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
+  const text = ["type", "asr"].includes(step.key || "") || (step.key === "extract" && Boolean(step.mediaUri))
+    ? ""
+    : isFinal ? (finalText || step.outputText || "") : (step.outputText || "");
+  const displayLabel = step.key === "asr" ? "文案识别" : displaySourceStepText(step.label);
+  const displayMessage = displaySourceStepText(step.message || statusText(step.status));
+  const displayText = displaySourceStepText(text);
   const outputMetrics = metricDisplayEntries(step.outputJson as Record<string, unknown> | undefined);
-  const showOutputJson = step.key !== "type" && outputMetrics.length > 0;
+  const showOutputJson = !["type", "extract"].includes(step.key || "") && outputMetrics.length > 0;
   const hasMedia = Boolean(step.mediaUri) && !["extract", "asr"].includes(step.key || "");
   return (
     <article className={cx("source-step-card", step.status)}>
       <div className="source-step-head">
         <span className="source-step-index">{step.status === "running" ? <Loader2 className="spin" size={14} /> : step.status === "failed" ? <XCircle size={14} /> : step.status === "done" ? <CheckCircle2 size={14} /> : "•"}</span>
         <div>
-          <strong>{step.label}</strong>
-          <small>{step.message || statusText(step.status)}</small>
+          <strong>{displayLabel}</strong>
+          <small>{displayMessage}</small>
         </div>
       </div>
-      {step.url && <a className="source-url" href={step.url} target="_blank" rel="noreferrer"><ExternalLink size={13} />{step.url}</a>}
+      {step.url && step.key !== "extract" && <a className="source-url" href={step.url} target="_blank" rel="noreferrer"><ExternalLink size={13} />{step.url}</a>}
       {hasMedia && (
         step.mediaType === "video"
           ? <video className="source-media" controls src={step.mediaUri} />
           : <audio className="source-audio" controls src={step.mediaUri} />
       )}
-      {text && <pre className="source-output">{text}</pre>}
+      {displayText && <pre className="source-output">{displayText}</pre>}
       {showOutputJson && (
         <div className="source-kv">
           {outputMetrics.map((item) => (
@@ -3086,7 +3097,8 @@ function MediaRangeEditor({
     const nextDuration = event.currentTarget.duration;
     if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
     setDuration(nextDuration);
-    if (Number(end) > nextDuration || end === "5") setEnd(Math.min(5, nextDuration).toFixed(1));
+    if (!end) setEnd(nextDuration.toFixed(1));
+    else if (Number(end) > nextDuration || end === "5") setEnd(Math.min(5, nextDuration).toFixed(1));
   }
 
   return (

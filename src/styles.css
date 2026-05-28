@@ -543,9 +543,9 @@ small { color: var(--muted); font-size: 12px; }
 }
 .extract-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  align-items: center;
+  align-items: end;
 }
 .extract-control textarea {
   min-height: 72px;
@@ -553,6 +553,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 .extract-control .secondary-button {
   min-width: 86px;
+  justify-self: start;
 }
 .extract-note {
   line-height: 1.45;

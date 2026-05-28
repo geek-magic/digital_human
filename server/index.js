@@ -2149,7 +2149,7 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
       message: transcriptText
         ? "已从抖音字幕提取文本。"
         : audioPath
-          ? "已下载抖音视频并提取音频，正在启动本地 ASR 转写。"
+          ? "已下载抖音视频并提取音频，正在启动文案识别。"
           : videoCandidates.length
             ? `已找到 ${videoCandidates.length} 个视频候选地址，但下载或抽音频失败：${downloadMessage || "未知错误"}。`
           : detail.detailFallback
@@ -2271,7 +2271,7 @@ async function transcribeSourceAudio(link, options = {}) {
       linkId: link.id,
       text: link.title || "",
       status: "local_asr_failed",
-      message: error instanceof Error ? error.message : "本地 ASR 转写失败。"
+      message: error instanceof Error ? error.message : "本地文案识别失败。"
     };
   }
 }
@@ -2354,7 +2354,7 @@ function sourceExtractionNotes(source = "", sourceAnalysis = {}) {
     if (link.message) notes.push(`${link.platform}：${link.message}`);
   }
   for (const transcript of sourceAnalysis.transcripts || []) {
-    if (transcript.message) notes.push(`ASR：${transcript.message}`);
+    if (transcript.message) notes.push(`文案识别：${transcript.message}`);
   }
   if (!links.length) {
     notes.push("已识别为文本内容，直接填入输入内容。");
@@ -4151,7 +4151,7 @@ const extractionStepDefinitions = [
   ["link", "提取链接"],
   ["type", "识别类型"],
   ["extract", "提取/下载"],
-  ["asr", "ASR 转写"],
+  ["asr", "文案识别"],
   ["result", "解析结果"]
 ];
 
@@ -4391,7 +4391,7 @@ async function runSourceExtraction(id) {
       setExtractionStep(id, "link", { status: "skipped", outputText: "未识别到 URL，按纯文本处理。", message: "未识别到 URL。" });
       setExtractionStep(id, "type", { status: "done", outputText: "纯文本", outputJson: { type: "text" }, message: "输入内容不是链接。" });
       setExtractionStep(id, "extract", { status: "done", outputText: text, message: "已直接提取文本内容。" });
-      setExtractionStep(id, "asr", { status: "skipped", outputText: "当前来源不是视频，跳过 ASR。", message: "已跳过。" });
+      setExtractionStep(id, "asr", { status: "skipped", outputText: "当前来源不是视频，跳过文案识别。", message: "已跳过。" });
       setExtractionStep(id, "result", { status: "done", outputText: text, message: "最终文本已生成。" });
       updateSourceExtraction(id, (extraction) => {
         extraction.status = "done";
@@ -4429,19 +4429,9 @@ async function runSourceExtraction(id) {
       const mediaUri = extractedLink.videoUri || extractedLink.audioUri || "";
       setExtractionStep(id, "extract", {
         status: ["download_failed"].includes(extractedLink.status) ? "failed" : "done",
-        outputText: [
-          extractedLink.title ? `标题：${extractedLink.title}` : "",
-          extractedLink.author ? `作者：${extractedLink.author}` : "",
-          extractedLink.message || ""
-        ].filter(Boolean).join("\n"),
-        outputJson: {
-          title: extractedLink.title || "",
-          author: extractedLink.author || "",
-          status: extractedLink.status || "",
-          duration: extractedLink.duration || 0,
-          webpageUrl: extractedLink.webpageUrl || ""
-        },
-        url: extractedLink.webpageUrl || link.url,
+        outputText: extractedLink.message || "媒体提取完成。",
+        outputJson: null,
+        url: "",
         mediaUri,
         mediaType: extractedLink.videoUri ? "video" : extractedLink.audioUri ? "audio" : "",
         message: extractedLink.message || "提取完成。"
@@ -4452,8 +4442,8 @@ async function runSourceExtraction(id) {
       setExtractionStep(id, "extract", {
         status: extractedLink.audioPath ? "done" : "failed",
         outputText: extractedLink.audioPath ? `已提取媒体音频：${extractedLink.title || mediaTitleFromUrl(link.url)}` : extractedLink.message || "媒体下载失败。",
-        outputJson: { title: extractedLink.title || "", status: extractedLink.status || "" },
-        url: link.url,
+        outputJson: null,
+        url: "",
         mediaUri: extractedLink.audioUri || link.url,
         mediaType: "audio",
         message: extractedLink.audioPath ? "媒体音频已提取。" : extractedLink.message || "媒体下载失败。"
@@ -4466,8 +4456,8 @@ async function runSourceExtraction(id) {
         setExtractionStep(id, "extract", {
           status: "done",
           outputText: extractedText,
-          outputJson: { title: extractedLink.title, status: extractedLink.status },
-          url: link.url,
+          outputJson: null,
+          url: "",
           message: "已提取网页文本。"
         });
       } catch (error) {
@@ -4475,9 +4465,9 @@ async function runSourceExtraction(id) {
         sourceAnalysis.links.push(extractedLink);
         setExtractionStep(id, "extract", {
           status: extractedLink.audioPath ? "done" : "failed",
-          outputText: extractedLink.title ? `标题：${extractedLink.title}` : extractedLink.message || "未提取到可用内容。",
-          outputJson: { title: extractedLink.title || "", status: extractedLink.status || "" },
-          url: extractedLink.webpageUrl || link.url,
+          outputText: extractedLink.message || (extractedLink.audioPath ? "音频已提取。" : "未提取到可用内容。"),
+          outputJson: null,
+          url: "",
           mediaUri: extractedLink.audioUri || "",
           mediaType: extractedLink.audioUri ? "audio" : "",
           message: extractedLink.message || (extractedLink.audioPath ? "音频已提取。" : "提取失败。")
@@ -4490,12 +4480,12 @@ async function runSourceExtraction(id) {
       setExtractionStep(id, "asr", {
         status: "running",
         outputText: extractedLink.audioPath
-          ? `已获得音频文件，正在转写。${extractedLink.duration ? `视频时长约 ${Math.round(extractedLink.duration)} 秒，长视频会耗时较久。` : ""}`
+          ? `已获得音频文件，正在识别文案。${extractedLink.duration ? `视频时长约 ${Math.round(extractedLink.duration)} 秒，长视频会耗时较久。` : ""}`
           : "",
         mediaUri: extractedLink.audioUri || "",
         mediaType: extractedLink.audioUri ? "audio" : "",
         outputJson: extractedLink.duration ? { duration: Math.round(extractedLink.duration) } : null,
-        message: extractedLink.transcriptText ? "已找到平台字幕，整理为转写结果。" : "正在临时启动 ASR 转写音频。"
+        message: extractedLink.transcriptText ? "已找到平台字幕，整理为文案结果。" : "正在临时启动 ASR 识别文案。"
       });
       if (extractedLink.transcriptText) {
         sourceAnalysis.transcripts.push({
@@ -4505,9 +4495,9 @@ async function runSourceExtraction(id) {
         });
         setExtractionStep(id, "asr", {
           status: "done",
-          outputText: extractedLink.transcriptText,
+          outputText: "文案识别完成，完整内容见解析结果。",
           outputJson: { source: extractedLink.transcriptStatus || "subtitle" },
-          message: "已使用平台字幕作为转写结果。"
+          message: "已使用平台字幕作为文案结果。"
         });
       } else if (extractedLink.audioPath) {
         try {
@@ -4522,17 +4512,17 @@ async function runSourceExtraction(id) {
           });
           setExtractionStep(id, "asr", {
             status: "done",
-            outputText: text,
+            outputText: "文案识别完成，完整内容见解析结果。",
             outputJson: result.metrics || {},
-            message: "ASR 转写完成。"
+            message: "文案识别完成。"
           });
         } catch (error) {
           setExtractionStep(id, "asr", {
             status: "failed",
-            outputText: error instanceof Error ? error.message : "ASR 转写失败。",
-            message: error instanceof Error ? error.message : "ASR 转写失败。"
+            outputText: error instanceof Error ? error.message : "文案识别失败。",
+            message: error instanceof Error ? error.message : "文案识别失败。"
           });
-          sourceAnalysis.notes.push(`ASR：${error instanceof Error ? error.message : "转写失败。"}`);
+          sourceAnalysis.notes.push(`文案识别：${error instanceof Error ? error.message : "识别失败。"}`);
         }
       } else {
         setExtractionStep(id, "asr", {
@@ -4540,12 +4530,12 @@ async function runSourceExtraction(id) {
           outputText: "未获得可转写的音频文件。",
           message: "平台未返回可下载音频或视频。"
         });
-        sourceAnalysis.notes.push("ASR：未获得可转写的音频文件。");
+        sourceAnalysis.notes.push("文案识别：未获得可识别的音频文件。");
       }
     } else {
       setExtractionStep(id, "asr", {
         status: "skipped",
-        outputText: "当前来源不是视频，跳过 ASR。",
+        outputText: "当前来源不是视频，跳过文案识别。",
         message: "已跳过。"
       });
     }
