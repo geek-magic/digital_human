@@ -203,7 +203,7 @@ small { color: var(--muted); font-size: 12px; }
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 4px;
+  padding: 0 4px 40px 0;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
 }
@@ -301,9 +301,12 @@ small { color: var(--muted); font-size: 12px; }
   text-decoration: none;
 }
 .source-output {
-  max-height: 160px;
+  max-height: 280px;
   margin: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text);

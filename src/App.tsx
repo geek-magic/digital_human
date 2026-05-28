@@ -1045,6 +1045,9 @@ function SourceExtractionTool({
         </button>
       </div>
       <ExtractProgress steps={steps} />
+      {mediaLinks.length > 0 && (
+        <SourceMediaSavePanel links={mediaLinks} onSave={saveExtractionMedia} fallbackTitle={result?.title || "链接解析媒体"} />
+      )}
       <SourceExtractionTimeline
         result={result}
         fallbackSteps={extractionStepsFor(status)}
@@ -1052,9 +1055,6 @@ function SourceExtractionTool({
         canApply={Boolean(extractedText && result?.status === "done")}
         onApply={copyExtractedText}
       />
-      {mediaLinks.length > 0 && (
-        <SourceMediaSavePanel links={mediaLinks} onSave={saveExtractionMedia} fallbackTitle={result?.title || "链接解析媒体"} />
-      )}
     </section>
   );
 }
