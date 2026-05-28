@@ -281,6 +281,34 @@ const platformLabels = {
   wechat: "公众号"
 };
 
+const defaultRequirementTemplates = [
+  {
+    id: "douyin-knowledge",
+    label: "抖音知识口播",
+    value: "生成一条抖音知识分享口播，开头要有强钩子，语言直接、有节奏，控制在30-45秒，结尾引导评论或收藏。"
+  },
+  {
+    id: "xiaohongshu-planting",
+    label: "小红书种草",
+    value: "生成一条小红书种草风格口播，语气真实、有体验感，先讲痛点再讲解决方案，避免硬广，结尾给出适用人群。"
+  },
+  {
+    id: "product-intro",
+    label: "产品介绍",
+    value: "生成一条产品介绍口播，突出核心卖点、适用场景和具体收益，表达克制可信，不夸张承诺，控制在45秒以内。"
+  },
+  {
+    id: "course-lead",
+    label: "课程引流",
+    value: "生成一条课程引流口播，先指出目标用户常见误区，再给出方法框架，最后自然引导用户了解课程或私信咨询。"
+  },
+  {
+    id: "local-life",
+    label: "本地生活",
+    value: "生成一条本地生活口播，突出地点、体验、价格或服务亮点，语气像真实探店推荐，结尾提示适合什么人去。"
+  }
+];
+
 for (const dir of [storageDir, uploadDir, artifactDir, packageDir]) {
   mkdirSync(dir, { recursive: true });
 }
@@ -297,6 +325,7 @@ const defaultDb = {
   sourceExtractions: [],
   publishPackages: [],
   publishRecords: [],
+  requirementTemplates: defaultRequirementTemplates,
   settings: {
     defaultTextModelId: "model-qwen2-5-7b-instruct-4bit-mlx",
     defaultModelIds: {
@@ -343,6 +372,18 @@ function normalizeDb(db) {
   db.sourceExtractions ||= [];
   db.publishPackages ||= [];
   db.publishRecords ||= [];
+  if (!Array.isArray(db.requirementTemplates)) {
+    db.requirementTemplates = defaultRequirementTemplates.map((template) => ({ ...template }));
+  }
+  db.requirementTemplates = db.requirementTemplates
+    .filter((item) => item && !item.deletedAt)
+    .map((item) => ({
+      id: item.id || `requirement-template-${randomUUID()}`,
+      label: String(item.label || item.name || "未命名模板").trim() || "未命名模板",
+      value: String(item.value || item.content || "").trim(),
+      createdAt: item.createdAt || now(),
+      updatedAt: item.updatedAt || item.createdAt || now()
+    }));
   db.settings ||= {};
   db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
   if (db.settings.defaultTextModelId === "model-qwen3-5-27b-4bit-mlx") {
@@ -3344,9 +3385,52 @@ app.get("/api/state", (_req, res) => {
       adapterProtocol: adapterProtocols[item.protocolId]
     })),
     apiProviderCatalog,
+    requirementTemplates: db.requirementTemplates || [],
     settings: db.settings,
     modelHome: MODEL_HOME
   });
+});
+
+app.post("/api/requirement-templates", (req, res) => {
+  const db = readDb();
+  const label = String(req.body?.label || "").trim();
+  const value = String(req.body?.value || "").trim();
+  if (!label) return res.status(400).json({ error: "请输入模板名称。" });
+  if (!value) return res.status(400).json({ error: "请输入生成要求。" });
+  const template = {
+    id: `requirement-template-${randomUUID()}`,
+    label,
+    value,
+    createdAt: now(),
+    updatedAt: now()
+  };
+  db.requirementTemplates.unshift(template);
+  writeDb(db);
+  res.json(template);
+});
+
+app.patch("/api/requirement-templates/:id", (req, res) => {
+  const db = readDb();
+  const template = db.requirementTemplates.find((item) => item.id === req.params.id);
+  if (!template) return res.status(404).json({ error: "模板不存在。" });
+  const label = String(req.body?.label ?? template.label).trim();
+  const value = String(req.body?.value ?? template.value).trim();
+  if (!label) return res.status(400).json({ error: "请输入模板名称。" });
+  if (!value) return res.status(400).json({ error: "请输入生成要求。" });
+  template.label = label;
+  template.value = value;
+  template.updatedAt = now();
+  writeDb(db);
+  res.json(template);
+});
+
+app.delete("/api/requirement-templates/:id", (req, res) => {
+  const db = readDb();
+  const before = db.requirementTemplates.length;
+  db.requirementTemplates = db.requirementTemplates.filter((item) => item.id !== req.params.id);
+  if (db.requirementTemplates.length === before) return res.status(404).json({ error: "模板不存在。" });
+  writeDb(db);
+  res.json({ ok: true });
 });
 
 function parseFps(value = "") {
@@ -5771,7 +5855,122 @@ app.post("/api/projects/:id/ab-render", (req, res, next) => {
   enqueueAndRespond(req, res, next, "ab_render", { videoSettings: req.body?.videoSettings || null });
 });
 
-app.post("/api/projects/:id/publish/:platform", (req, res) => {
+const activePublishContexts = new Map();
+
+async function fillFirstMatchingField(page, selectors, value, steps, label) {
+  if (!value) {
+    steps.push(`${label}为空，跳过填写。`);
+    return false;
+  }
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if (await locator.count()) {
+        await locator.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => undefined);
+        await locator.click({ timeout: 1500 }).catch(() => undefined);
+        await locator.fill(value, { timeout: 2500 }).catch(async () => {
+          await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
+          await locator.type(value, { delay: 1, timeout: 5000 });
+        });
+        steps.push(`已尝试填写${label}。`);
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  steps.push(`未找到${label}输入框，可能需要登录后手动补填。`);
+  return false;
+}
+
+async function automatePublishPlatform(platform, payload) {
+  const steps = [];
+  const profileDir = join(storageDir, "playwright-profiles", platform);
+  mkdirSync(profileDir, { recursive: true });
+  const { chromium } = await import("playwright");
+  const previous = activePublishContexts.get(platform);
+  if (previous) {
+    await previous.close().catch(() => undefined);
+    activePublishContexts.delete(platform);
+  }
+  const launchOptions = {
+    headless: process.env.DH_PUBLISH_HEADLESS === "1",
+    viewport: null,
+    args: ["--start-maximized"]
+  };
+  if (process.env.DH_PLAYWRIGHT_CHANNEL || process.platform === "darwin") {
+    launchOptions.channel = process.env.DH_PLAYWRIGHT_CHANNEL || "chrome";
+  }
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, launchOptions);
+  } catch (error) {
+    if (!launchOptions.channel) throw error;
+    steps.push(`未能启动 ${launchOptions.channel}，改用 Playwright Chromium。`);
+    const fallbackOptions = { ...launchOptions };
+    delete fallbackOptions.channel;
+    context = await chromium.launchPersistentContext(profileDir, fallbackOptions);
+  }
+  activePublishContexts.set(platform, context);
+  const page = context.pages()[0] || await context.newPage();
+  page.setDefaultTimeout(8000);
+  await page.goto(payload.publishUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  steps.push(`已打开${payload.platformLabel}创作者后台。`);
+
+  if (payload.videoPath && existsSync(payload.videoPath)) {
+    const fileInputs = page.locator("input[type='file']");
+    const count = await fileInputs.count().catch(() => 0);
+    if (count > 0) {
+      await fileInputs.first().setInputFiles(payload.videoPath, { timeout: 15000 });
+      steps.push("已尝试上传视频文件。");
+    } else {
+      steps.push("未找到视频上传控件，可能需要登录或切换到发布页后再上传。");
+    }
+  } else {
+    steps.push("未找到本地视频文件，跳过上传。");
+  }
+
+  const titleSelectors = platform === "douyin"
+    ? [
+        "input[placeholder*='标题']",
+        "textarea[placeholder*='标题']",
+        "[contenteditable='true'][data-placeholder*='标题']",
+        "[contenteditable='true']:near(:text('标题'))"
+      ]
+    : [
+        "input[placeholder*='标题']",
+        "textarea[placeholder*='标题']",
+        "[contenteditable='true'][data-placeholder*='标题']",
+        "[contenteditable='true']"
+      ];
+  const bodySelectors = platform === "douyin"
+    ? [
+        "textarea[placeholder*='描述']",
+        "textarea[placeholder*='简介']",
+        "textarea[placeholder*='正文']",
+        "[contenteditable='true'][data-placeholder*='描述']",
+        "[contenteditable='true'][data-placeholder*='正文']",
+        "[contenteditable='true']"
+      ]
+    : [
+        "textarea[placeholder*='正文']",
+        "textarea[placeholder*='描述']",
+        "textarea[placeholder*='内容']",
+        "[contenteditable='true'][data-placeholder*='正文']",
+        "[contenteditable='true'][data-placeholder*='内容']",
+        "[contenteditable='true']"
+      ];
+  await fillFirstMatchingField(page, titleSelectors, payload.title, steps, "标题");
+  await fillFirstMatchingField(page, bodySelectors, payload.body, steps, "正文");
+  steps.push("未点击最终发布，请在平台页面确认封面、合规项和账号状态后手动发布。");
+  return {
+    status: "automation_attempted",
+    message: "已打开平台并尝试回填视频、标题和正文。",
+    steps
+  };
+}
+
+app.post("/api/projects/:id/publish/:platform", async (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const platform = req.params.platform;
@@ -5807,10 +6006,25 @@ app.post("/api/projects/:id/publish/:platform", (req, res) => {
     body: copy.body,
     createdAt: now(),
     publishedAt: "",
-    workUrl: ""
+    workUrl: "",
+    automationStatus: "pending",
+    automationMessage: "",
+    automationSteps: []
   };
-  setStage(project, "publish", "ready", `${platformLabels[platform]} 发布素材已复制，可前往平台发布。`);
-  pushJob(db, project.id, "prepare_publish", "completed", `${platformLabels[platform]} 发布素材已准备，未写入发布记录。`, publishPayload);
+  try {
+    const automation = await automatePublishPlatform(platform, publishPayload);
+    publishPayload.automationStatus = automation.status;
+    publishPayload.automationMessage = automation.message;
+    publishPayload.automationSteps = automation.steps;
+    setStage(project, "publish", "ready", `${platformLabels[platform]} 已打开并尝试自动回填发布信息。`);
+    pushJob(db, project.id, "publish_automation", "completed", `${platformLabels[platform]} 已尝试自动回填。`, publishPayload);
+  } catch (error) {
+    publishPayload.automationStatus = "automation_failed";
+    publishPayload.automationMessage = error instanceof Error ? error.message : "自动回填失败。";
+    publishPayload.automationSteps = ["自动打开或回填失败，可检查平台登录状态后重试。"];
+    setStage(project, "publish", "ready", `${platformLabels[platform]} 自动回填失败，可重试。`);
+    pushJob(db, project.id, "publish_automation", "failed", publishPayload.automationMessage, publishPayload);
+  }
   writeDb(db);
   res.json(publishPayload);
 });
@@ -6034,8 +6248,8 @@ app.get("/api/projects/:id", (req, res) => {
   res.json(ensureProject(db, req.params.id));
 });
 
-if (process.env.NODE_ENV === "production") {
-  const distDir = join(rootDir, "dist");
+const distDir = join(rootDir, "dist");
+if (existsSync(join(distDir, "index.html"))) {
   app.use(express.static(distDir));
   app.get(/.*/, (_req, res) => res.sendFile(join(distDir, "index.html")));
 }

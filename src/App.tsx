@@ -350,9 +350,20 @@ type PublishRecord = {
   videoVersionLabel?: string;
   title: string;
   body: string;
+  automationStatus?: string;
+  automationMessage?: string;
+  automationSteps?: string[];
   createdAt: string;
   publishedAt?: string;
   workUrl?: string;
+};
+
+type RequirementTemplate = {
+  id: string;
+  label: string;
+  value: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type JobRecord = {
@@ -380,6 +391,7 @@ type State = {
   queueItems: QueueItem[];
   resource?: ResourceSnapshot;
   publishRecords: PublishRecord[];
+  requirementTemplates: RequirementTemplate[];
   modelHome: string;
   settings?: { defaultTextModelId?: string; defaultModelIds?: Partial<Record<ModelTypeKey, string>> };
 };
@@ -397,6 +409,7 @@ const emptyState: State = {
   queueItems: [],
   resource: undefined,
   publishRecords: [],
+  requirementTemplates: [],
   modelHome: "",
   settings: {}
 };
@@ -448,7 +461,7 @@ const defaultVideoSettings: VideoSettings = {
   leftCheekWidth: 90,
   rightCheekWidth: 90
 };
-const requirementTemplates = [
+const defaultRequirementTemplates: RequirementTemplate[] = [
   {
     id: "douyin-knowledge",
     label: "抖音知识口播",
@@ -474,7 +487,11 @@ const requirementTemplates = [
     label: "本地生活",
     value: "生成一条本地生活口播，突出地点、体验、价格或服务亮点，语气像真实探店推荐，结尾提示适合什么人去。"
   }
-] as const;
+];
+
+function getRequirementTemplates(state: State) {
+  return state.requirementTemplates?.length ? state.requirementTemplates : defaultRequirementTemplates;
+}
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -1357,7 +1374,7 @@ function TaskComposer({
           <button type="button" className={cx(mode === "auto" && "active")} onClick={() => setMode("auto")}>全自动模式</button>
         </div>
         <div className="task-create-toolbar">
-          <button type="button" className="ghost-button" onClick={onOpenExtraction}><Download size={15} />链接解析</button>
+          <button type="button" className="ghost-button extraction-entry-button" onClick={onOpenExtraction}><Download size={15} />链接解析</button>
         </div>
         <label>
           <span>任务标题</span>
@@ -1436,9 +1453,10 @@ function PolishDialog({
   const [activeVersionId, setActiveVersionId] = useState("");
   const polishing = busy === "AI润色";
   const activeVersion = versions.find((version) => version.id === activeVersionId) || versions[0];
+  const templates = getRequirementTemplates(state);
   const applyRequirementTemplate = (templateId: string) => {
     setDraftTemplateId(templateId);
-    const template = requirementTemplates.find((item) => item.id === templateId);
+    const template = templates.find((item) => item.id === templateId);
     setDraftRequirements(template?.value || "");
   };
   useEffect(() => {
@@ -1486,7 +1504,7 @@ function PolishDialog({
         </div>
         <div className="polish-body">
           <label><span>输入内容</span><textarea value={draftInputText} onChange={(event) => setDraftInputText(event.target.value)} placeholder="输入或粘贴需要润色的口播内容" /></label>
-          <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不使用</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+          <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不使用</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
           <section className="polish-result-panel">
@@ -1808,8 +1826,6 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     }));
     if (payload) {
       setPublishDraft(payload);
-      await copyTextToClipboard(publishPackageText(payload));
-      window.open(payload.publishUrl, "_blank");
     }
   }
 
@@ -2048,8 +2064,9 @@ function StageWorkspace({
   const savingSourceAudio = busy === "使用原始音频";
   const openingPublish = busy === "打开发布入口";
   const recordingPublish = busy === "记录发布结果";
+  const templates = getRequirementTemplates(state);
   const applyRequirementTemplate = (templateId: string) => {
-    const template = requirementTemplates.find((item) => item.id === templateId);
+    const template = templates.find((item) => item.id === templateId);
     if (template) setRequirements(template.value);
   };
 
@@ -2093,7 +2110,7 @@ function StageWorkspace({
       {activeStage === "script" && (
         <div className="step-body">
           <label><span>输入内容</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
-          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{requirementTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+          <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
           <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
           {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
@@ -2204,10 +2221,13 @@ function StageWorkspace({
             ))}
             {selectedVideoVersion && <a className="secondary-button" href={selectedVideoVersion.artifact.video.uri} download><Download size={16} />下载视频</a>}
           </div>
-          <small>点击平台会生成该平台发布草稿、复制完整发布素材并打开创作者后台；平台表单仍需用户确认后粘贴或上传。</small>
+          <small>点击平台会打开创作者后台，并使用 Playwright 尝试上传视频、填写标题和正文；最终发布仍需用户在平台页面确认。</small>
           {publishDraft && (
-            <OutputItem title={`${publishDraft.platformLabel}发布草稿`} status={publishDraft.status} meta={publishDraft.videoVersionLabel || "当前视频版本"}>
+            <OutputItem title={`${publishDraft.platformLabel}自动发布结果`} status={publishDraft.automationStatus || publishDraft.status} meta={publishDraft.automationMessage || publishDraft.videoVersionLabel || "当前视频版本"}>
               <div className="publish-draft-grid">
+                {publishDraft.automationSteps?.length ? (
+                  <label className="publish-package-field"><span>自动化步骤</span><textarea readOnly value={publishDraft.automationSteps.join("\n")} /></label>
+                ) : null}
                 <label><span>标题</span><input readOnly value={publishDraft.title} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.title)}>复制</button></label>
                 <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
                 <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
@@ -2768,18 +2788,97 @@ function AudioRecorder({ onRecorded, label = "录制音频" }: { onRecorded: (fi
 }
 
 function AssetLibrary({ state, refresh, action }: { state: State; refresh: () => Promise<void>; action: AppAction }) {
-  const [activeTab, setActiveTab] = useState<"avatar" | "music">("avatar");
+  const [activeTab, setActiveTab] = useState<"avatar" | "music" | "requirements">("avatar");
   const avatarAssets = state.avatarAssets || [];
   const musicAssets = state.musicAssets || [];
+  const templates = getRequirementTemplates(state);
   return (
     <section className="manager-page asset-library">
       <div className="library-tabs" role="tablist" aria-label="素材类型">
         <button type="button" role="tab" className={cx(activeTab === "avatar" && "active")} onClick={() => setActiveTab("avatar")}>视频素材<span>{avatarAssets.length}</span></button>
         <button type="button" role="tab" className={cx(activeTab === "music" && "active")} onClick={() => setActiveTab("music")}>背景音素材<span>{musicAssets.length}</span></button>
+        <button type="button" role="tab" className={cx(activeTab === "requirements" && "active")} onClick={() => setActiveTab("requirements")}>生成要求模板<span>{templates.length}</span></button>
       </div>
-      {activeTab === "avatar"
-        ? <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} refresh={refresh} action={action} />
-        : <AssetManager title="背景音素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
+      {activeTab === "avatar" && <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} refresh={refresh} action={action} />}
+      {activeTab === "music" && <AssetManager title="背景音素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
+      {activeTab === "requirements" && <RequirementTemplateManager items={templates} action={action} />}
+    </section>
+  );
+}
+
+function RequirementTemplateManager({ items, action }: { items: RequirementTemplate[]; action: AppAction }) {
+  const [label, setLabel] = useState("");
+  const [value, setValue] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editingLabel, setEditingLabel] = useState("");
+  const [editingValue, setEditingValue] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    await action("新增生成要求模板", () => request("/api/requirement-templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, value })
+    }));
+    setLabel("");
+    setValue("");
+  }
+
+  function startEdit(item: RequirementTemplate) {
+    setEditingId(item.id);
+    setEditingLabel(item.label);
+    setEditingValue(item.value);
+  }
+
+  async function saveEdit() {
+    if (!editingId) return;
+    await action("编辑生成要求模板", () => request(`/api/requirement-templates/${editingId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: editingLabel, value: editingValue })
+    }));
+    setEditingId("");
+    setEditingLabel("");
+    setEditingValue("");
+  }
+
+  function deleteTemplate(item: RequirementTemplate) {
+    if (!window.confirm(`删除生成要求模板「${item.label}」？`)) return;
+    action("删除生成要求模板", () => request(`/api/requirement-templates/${item.id}`, { method: "DELETE" }));
+  }
+
+  return (
+    <section className="manager-page">
+      <div className="manager-toolbar">
+        <div><p className="eyebrow">提示词资产</p><h2>生成要求模板</h2><small>创建任务、任务步骤和体验中心 AI 润色会共用这里的模板。</small></div>
+      </div>
+      <form className="template-editor" onSubmit={submit}>
+        <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="模板名称" />
+        <textarea value={value} onChange={(event) => setValue(event.target.value)} placeholder="生成要求内容" />
+        <button className="primary-button" disabled={!label.trim() || !value.trim()}><Plus size={16} />新增模板</button>
+      </form>
+      <DataTable
+        columns={["模板名称", "生成要求", "更新时间", "操作"]}
+        template="minmax(160px, .55fr) minmax(320px, 1.4fr) 130px 160px"
+        rows={items.map((item) => [
+          editingId === item.id ? <input value={editingLabel} onChange={(event) => setEditingLabel(event.target.value)} /> : <strong>{item.label}</strong>,
+          editingId === item.id ? <textarea className="table-textarea" value={editingValue} onChange={(event) => setEditingValue(event.target.value)} /> : <span className="table-long-text">{item.value}</span>,
+          formatDate(item.updatedAt || item.createdAt || new Date().toISOString()),
+          <span className="table-actions">
+            {editingId === item.id ? (
+              <>
+                <button className="text-button" onClick={saveEdit} disabled={!editingLabel.trim() || !editingValue.trim()}><Save size={14} />保存</button>
+                <button className="text-button" onClick={() => setEditingId("")}><X size={14} />取消</button>
+              </>
+            ) : (
+              <>
+                <button className="text-button" onClick={() => startEdit(item)}><Pencil size={14} />编辑</button>
+                <button className="text-button danger-text" onClick={() => deleteTemplate(item)}><Trash2 size={14} />删除</button>
+              </>
+            )}
+          </span>
+        ])}
+      />
     </section>
   );
 }
@@ -3195,7 +3294,7 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
         ))}
       </div>
 
-      {activeType === "llm" && <LlmTypeTestPanel action={action} />}
+      {activeType === "llm" && <LlmTypeTestPanel state={state} action={action} />}
       {activeType === "tts" && <TtsTypeTestPanel voices={state.voices} action={action} />}
       {activeType === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
     </section>
@@ -3226,19 +3325,31 @@ function ModelInventory({
   );
 }
 
-function LlmTypeTestPanel({ action }: { action: AppAction }) {
+function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }) {
   const [prompt, setPrompt] = useState("把这段内容润色成适合短视频口播的自然中文：今天店里来了很多老顾客，大家都说环境越来越舒服。");
+  const [requirements, setRequirements] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [scriptModelId, setScriptModelId] = useState(state.settings?.defaultTextModelId || "");
   const [result, setResult] = useState("");
   const [testing, setTesting] = useState(false);
+  const templates = getRequirementTemplates(state);
+  const applyTemplate = (nextTemplateId: string) => {
+    setTemplateId(nextTemplateId);
+    const template = templates.find((item) => item.id === nextTemplateId);
+    setRequirements(template?.value || "");
+  };
+  useEffect(() => {
+    setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
+  }, [state.settings?.defaultTextModelId, state.models]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
     try {
-      const response = await action("AI润色", () => request<{ text: string }>("/api/model-tests/llm", {
+      const response = await action("AI润色", () => request<{ text: string }>("/api/text/polish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ inputText: prompt, requirements, scriptModelId })
       }));
       if (response?.text) setResult(response.text);
     } finally {
@@ -3250,6 +3361,9 @@ function LlmTypeTestPanel({ action }: { action: AppAction }) {
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>AI润色</h3></div>
       <label><span>输入内容</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+      <label><span>生成要求模板</span><select value={templateId} onChange={(event) => applyTemplate(event.target.value)}><option value="">不使用</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
+      <label><span>生成要求</span><textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
+      <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
       <button className="primary-button" disabled={testing || !prompt.trim()}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "润色中" : "开始润色"}</button>
       {result && <OutputItem title="润色结果" status="done"><p>{result}</p></OutputItem>}
     </form>

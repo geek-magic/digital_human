@@ -194,6 +194,16 @@ small { color: var(--muted); font-size: 12px; }
   display: flex;
   justify-content: flex-start;
 }
+.extraction-entry-button {
+  border-color: #a9d8de;
+  background: linear-gradient(180deg, #effbfc, #e7f6f4);
+  color: #176b73;
+  box-shadow: 0 6px 16px rgba(23, 107, 115, 0.10);
+}
+.extraction-entry-button:hover {
+  border-color: #72bdc7;
+  background: #e0f5f4;
+}
 
 .source-tool {
   display: grid;
@@ -1594,6 +1604,29 @@ small { color: var(--muted); font-size: 12px; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fbfcfe;
+}
+.template-editor {
+  display: grid;
+  grid-template-columns: minmax(160px, .5fr) minmax(280px, 1.3fr) auto;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfe;
+}
+.template-editor textarea,
+.table-textarea {
+  min-height: 84px;
+}
+.table-long-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  line-height: 1.45;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 .file-chip {
   position: relative;
