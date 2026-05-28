@@ -1710,17 +1710,6 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
     }));
 
-  const saveVoice = () =>
-    action("保存音色", async () => {
-      const updated = await request<Project>(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, changedStage: "voice" })
-      });
-      voiceDirtyRef.current = false;
-      return updated;
-    });
-
   const saveVideoSetup = () =>
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
@@ -1749,10 +1738,11 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       });
     });
 
-  const importAudioVersion = (file?: File) =>
-    action(file ? "保存音频版本" : "保存原始音频", async () => {
+  const importAudioVersion = (file?: File, voiceName?: string) =>
+    action(file ? "录制口播音频" : "保存原始音频", async () => {
       const body = new FormData();
       if (file) body.append("audio", file);
+      if (voiceName) body.append("voiceName", voiceName);
       if (selectedScriptVersionId) body.append("scriptVersionId", selectedScriptVersionId);
       return request(`/api/projects/${project.id}/audio-versions/import`, {
         method: "POST",
@@ -1869,7 +1859,6 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
           setVoiceId(value);
         }}
         selectedVoice={selectedVoice}
-        saveVoice={saveVoice}
         generateVoice={generateVoice}
         importAudioVersion={importAudioVersion}
         selectedAudioVersionId={selectedAudioVersionId}
@@ -1948,7 +1937,6 @@ function StageWorkspace({
   voiceId,
   setVoiceId,
   selectedVoice,
-  saveVoice,
   generateVoice,
   importAudioVersion,
   selectedAudioVersionId,
@@ -1992,9 +1980,8 @@ function StageWorkspace({
   voiceId: string;
   setVoiceId: (value: string) => void;
   selectedVoice?: Asset;
-  saveVoice: () => Promise<Project | undefined>;
   generateVoice: () => Promise<unknown>;
-  importAudioVersion: (file?: File) => Promise<unknown>;
+  importAudioVersion: (file?: File, voiceName?: string) => Promise<unknown>;
   selectedAudioVersionId: string;
   setSelectedAudioVersionId: (value: string) => void;
   avatarAssetId: string;
@@ -2035,7 +2022,6 @@ function StageWorkspace({
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
   const copyPublishField = (value: string) => navigator.clipboard?.writeText(value).catch(() => undefined);
   const savingScript = busy === "保存口播文案";
-  const savingVoice = busy === "保存音色";
   const savingVideoSetup = busy === "保存视频设置";
   const savingSourceAudio = busy === "保存原始音频";
   const openingPublish = busy === "打开发布入口";
@@ -2119,10 +2105,6 @@ function StageWorkspace({
           </label>
           <div className="field-row">
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-            <button className="secondary-button align-end" disabled={savingVoice} onClick={saveVoice}>
-              {savingVoice ? <Loader2 className="spin" size={16} /> : <Mic2 size={16} />}
-              {savingVoice ? "保存中" : "保存音色"}
-            </button>
           </div>
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
@@ -2131,12 +2113,7 @@ function StageWorkspace({
               {savingSourceAudio ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
               {savingSourceAudio ? "保存中" : "保存原始音频"}
             </button>
-            <label className="file-chip"><Upload size={16} />上传音频保存<input type="file" accept="audio/*" onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) importAudioVersion(file);
-              event.currentTarget.value = "";
-            }} /></label>
-            <AudioRecorder label="录制并保存" onRecorded={(file) => importAudioVersion(file)} />
+            <AudioRecorder label="录制口播音频" onRecorded={(file) => importAudioVersion(file, "录制音频")} />
           </div>
           <AudioVersionList project={project} versions={audioVersions} selectedId={selectedAudioVersionId} onSelect={setSelectedAudioVersionId} action={action} />
         </div>
