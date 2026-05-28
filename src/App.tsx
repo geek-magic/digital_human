@@ -784,7 +784,6 @@ export function App() {
         {view === "tasks" && (
           <TaskCreatePage
             state={state}
-            selectedProject={selectedProject}
             busy={busy}
             action={action}
             onCreated={setSelectedProjectId}
@@ -811,13 +810,26 @@ export function App() {
 
 function TaskCreatePage(props: {
   state: State;
-  selectedProject?: Project;
   busy: string;
   action: <T>(label: string, runner: () => Promise<T>) => Promise<T | undefined>;
   onCreated: (id: string) => void;
 }) {
   const [draftInputText, setDraftInputText] = useState("");
   const [extractOpen, setExtractOpen] = useState(false);
+  const [createdProjectId, setCreatedProjectId] = useState("");
+  const createdProject = props.state.projects.find((project) => project.id === createdProjectId);
+
+  useEffect(() => {
+    if (createdProjectId && !props.state.projects.some((project) => project.id === createdProjectId)) {
+      setCreatedProjectId("");
+    }
+  }, [createdProjectId, props.state.projects]);
+
+  const handleCreated = (id: string) => {
+    setCreatedProjectId(id);
+    props.onCreated(id);
+  };
+
   return (
     <div className="task-layout">
       <section className="task-main create-only">
@@ -825,7 +837,7 @@ function TaskCreatePage(props: {
           <TaskComposer
             state={props.state}
             action={props.action}
-            onCreated={props.onCreated}
+            onCreated={handleCreated}
             inputText={draftInputText}
             setInputText={setDraftInputText}
             busy={props.busy}
@@ -834,7 +846,13 @@ function TaskCreatePage(props: {
         </div>
       </section>
       {extractOpen && <SourceExtractionDialog action={props.action} onClose={() => setExtractOpen(false)} />}
-      <TaskDetail project={props.selectedProject} state={props.state} busy={props.busy} action={props.action} />
+      {createdProject ? (
+        <TaskDetail project={createdProject} state={props.state} busy={props.busy} action={props.action} />
+      ) : (
+        <aside className="task-detail">
+          <EmptyState text="创建任务后，右侧会显示当前创建任务的详情。" />
+        </aside>
+      )}
     </div>
   );
 }
