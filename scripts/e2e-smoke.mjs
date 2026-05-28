@@ -35,6 +35,7 @@ page.on("console", (msg) => {
 page.on("pageerror", (error) => errors.push(error.message));
 
 await page.goto(baseUrl, { waitUntil: "networkidle" });
+await page.getByRole("button", { name: /创建任务/ }).click();
 await page.getByRole("heading", { name: "创建任务" }).waitFor();
 await noHorizontalOverflow(page, "tasks");
 await screenshot(page, "01-tasks.png");
@@ -48,8 +49,9 @@ await page.locator(".detail-title h2").filter({ hasText: marker }).waitFor({ tim
 
 const navTexts = await page.locator(".step-nav .step-tab strong").allTextContents();
 assert(navTexts.join(" > ") === "生成口播音频 > 视频合成 > 发布", `流程节点错误：${navTexts.join(" / ")}`);
-const scriptOptionCount = await page.locator("select option").filter({ hasText: "V1" }).count();
-assert(scriptOptionCount > 0, "创建任务后没有自动生成 V1 口播内容版本");
+await page.getByRole("textbox", { name: "口播内容" }).waitFor();
+const scriptVersionSelectorCount = await page.locator("text=口播文案版本").count();
+assert(scriptVersionSelectorCount === 0, "口播音频步骤不应再展示口播文案版本选择");
 await noHorizontalOverflow(page, "task detail");
 await screenshot(page, "02-task-detail.png");
 

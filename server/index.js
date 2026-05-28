@@ -288,6 +288,7 @@ for (const dir of [storageDir, uploadDir, artifactDir, packageDir]) {
 const defaultDb = {
   projects: [],
   avatarAssets: [],
+  musicAssets: [],
   voices: [],
   models: modelCatalog.map(modelFromCatalog),
   apiProviders: [],
@@ -333,6 +334,7 @@ function modelFromCatalog(item) {
 function normalizeDb(db) {
   db.projects ||= [];
   db.avatarAssets ||= [];
+  db.musicAssets ||= [];
   db.voices ||= [];
   db.models ||= [];
   db.apiProviders ||= [];
@@ -576,6 +578,7 @@ function normalizeProject(project) {
   project.mode = project.reviewEnabled ? "manual" : "auto";
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
+  project.backgroundMusicAssetId ||= "";
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
   project.artifacts ||= {};
   project.scriptVersions = (project.scriptVersions || []).map((version, index) => normalizeScriptVersion(project, version, index));
@@ -1198,6 +1201,7 @@ function queueSignature(project, type, payload = {}) {
       type,
       audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "",
       avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "",
+      backgroundMusicAssetId: payload.backgroundMusicAssetId || project.backgroundMusicAssetId || "",
       previewDuration: Number(payload.previewDuration || 0),
       variantLabel: payload.variantLabel || "",
       videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
@@ -1516,6 +1520,7 @@ async function executeQueueItem(item) {
     videoSettings: item.payload?.videoSettings,
     audioVersionId: item.payload?.audioVersionId,
     avatarAssetId: item.payload?.avatarAssetId,
+    backgroundMusicAssetId: item.payload?.backgroundMusicAssetId,
     previewDuration: item.payload?.previewDuration,
     variantLabel: item.payload?.variantLabel
   });
@@ -3239,6 +3244,34 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
   return true;
 }
 
+async function mixBackgroundMusic(videoPath, musicPath, duration) {
+  if (!commandExists("ffmpeg") || !videoPath || !musicPath || !existsSync(videoPath) || !existsSync(musicPath)) return false;
+  const tmpPath = videoPath.replace(/\.mp4$/i, `-bgm-${randomUUID().slice(0, 8)}.mp4`);
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    videoPath,
+    "-stream_loop",
+    "-1",
+    "-i",
+    musicPath,
+    "-filter_complex",
+    `[1:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+    "-map",
+    "0:v:0",
+    "-map",
+    "[a]",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-shortest",
+    tmpPath
+  ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 8 });
+  copyFileSync(tmpPath, videoPath);
+  return true;
+}
+
 async function embedSubtitlesInMp4(videoPath, subtitlesPath) {
   if (!videoPath || !subtitlesPath || !existsSync(videoPath) || !existsSync(subtitlesPath)) return false;
   const outPath = videoPath.replace(/\.mp4$/i, ".with-subtitles.mp4");
@@ -3298,6 +3331,7 @@ app.get("/api/state", (_req, res) => {
     models: db.models.filter((model) => !model.hidden && model.type !== "media"),
     projects: visibleProjects(db),
     avatarAssets: (db.avatarAssets || []).filter((asset) => !asset.deletedAt),
+    musicAssets: (db.musicAssets || []).filter((asset) => !asset.deletedAt),
     voices: (db.voices || []).filter((voice) => !voice.deletedAt),
     queueItems: (db.queueItems || []).map((item) => publicQueueItem(item, db)),
     resource: resourceSnapshot(db),
@@ -3548,6 +3582,61 @@ app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+app.post("/api/assets/music", upload.single("file"), async (req, res, next) => {
+  try {
+    const db = readDb();
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "Missing file" });
+    const asset = await createMusicFromPath(db, file.path, {
+      name: req.body.name || basename(file.originalname),
+      mimeType: file.mimetype
+    });
+    writeDb(db);
+    res.json(asset);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch("/api/assets/music/:id", (req, res) => {
+  const db = readDb();
+  const asset = (db.musicAssets || []).find((item) => item.id === req.params.id && !item.deletedAt);
+  if (!asset) return res.status(404).json({ error: "Music asset not found" });
+  if (req.body.name !== undefined) asset.name = String(req.body.name || "").trim() || asset.name;
+  asset.updatedAt = now();
+  writeDb(db);
+  res.json(asset);
+});
+
+app.post("/api/assets/music/:id/clip", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const asset = (db.musicAssets || []).find((item) => item.id === req.params.id && !item.deletedAt);
+    if (!asset?.path || !existsSync(asset.path)) return res.status(404).json({ error: "Music asset not found" });
+    const clipped = await createMusicFromPath(db, asset.path, {
+      name: String(req.body.name || `${asset.name}-片段`).trim(),
+      start: req.body.start,
+      end: req.body.end,
+      sourceMusicAssetId: asset.id
+    });
+    writeDb(db);
+    res.json(clipped);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/assets/music/:id", (req, res) => {
+  const db = readDb();
+  const asset = (db.musicAssets || []).find((item) => item.id === req.params.id);
+  if (!asset) return res.status(404).json({ error: "Music asset not found" });
+  asset.deletedAt = now();
+  asset.updatedAt = now();
+  asset.status = "deleted";
+  writeDb(db);
+  res.json({ ok: true });
 });
 
 app.post("/api/voices/reference-samples", upload.single("file"), (req, res) => {
@@ -4244,6 +4333,29 @@ async function createVoiceFromPath(db, sourcePath, options = {}) {
   return voice;
 }
 
+async function createMusicFromPath(db, sourcePath, options = {}) {
+  const ext = extname(sourcePath).toLowerCase() || ".mp3";
+  const outputExt = shouldClipMedia(options) ? ".mp3" : ext;
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "背景音乐", { ...options, mediaType: "audio", extension: outputExt });
+  const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
+  const duration = await probeMediaDuration(targetPath);
+  const asset = {
+    id: `music-${randomUUID()}`,
+    name: options.name || basename(sourcePath),
+    provider: "local",
+    path: targetPath,
+    uri: publicPath(targetPath),
+    mimeType: options.mimeType || (outputExt === ".wav" ? "audio/wav" : "audio/mpeg"),
+    duration,
+    sourceMusicAssetId: options.sourceMusicAssetId || "",
+    clipRange: typeof prepared === "string" ? undefined : prepared.clipRange,
+    createdAt: now()
+  };
+  db.musicAssets ||= [];
+  db.musicAssets.unshift(asset);
+  return asset;
+}
+
 async function extractWebText(link, options = {}) {
   const response = await fetch(link.url, {
     headers: { "User-Agent": browserUserAgent, Accept: "text/html,application/xhtml+xml,text/plain,*/*" },
@@ -4633,6 +4745,7 @@ app.post("/api/projects", async (req, res, next) => {
     platforms: req.body.platforms?.length ? req.body.platforms : ["douyin", "xiaohongshu", "wechat"],
     scriptModelId,
     avatarAssetId: req.body.avatarAssetId || "",
+    backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
     voiceId: req.body.voiceId || "",
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
     status: "created",
@@ -4725,7 +4838,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "voiceId", "avatarAssetId", "scriptModelId", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.videoSettings !== undefined) {
@@ -5291,6 +5404,9 @@ async function renderProject(projectId, options = {}) {
       throw err;
     }
     project.avatarAssetId = avatarAssetId || project.avatarAssetId;
+    const backgroundMusicAssetId = options.backgroundMusicAssetId || project.backgroundMusicAssetId || "";
+    const backgroundMusic = (db.musicAssets || []).find((item) => item.id === backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
+    project.backgroundMusicAssetId = backgroundMusic?.id || "";
     project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...(options.videoSettings || {}) });
     project.status = "running";
     setStage(project, "video", "running", "正在生成数字人视频。");
@@ -5354,6 +5470,9 @@ async function renderProject(projectId, options = {}) {
       copyFileSync(avatarRenderPath, videoPath);
       rendered = true;
     }
+    const backgroundMusicMixed = rendered && backgroundMusic?.path
+      ? await mixBackgroundMusic(videoPath, backgroundMusic.path, duration).catch(() => false)
+      : false;
     const subtitlesEmbedded = rendered ? await embedSubtitlesInMp4(videoPath, srtPath) : false;
     const videoArtifact = {
       uri: publicPath(videoPath),
@@ -5367,6 +5486,7 @@ async function renderProject(projectId, options = {}) {
         notes: [
           `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
+          backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}。` : "未使用背景音乐。",
           subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频轨。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
         ]
@@ -5384,6 +5504,7 @@ async function renderProject(projectId, options = {}) {
     latestProject.selectedScriptVersionId = scriptVersion.id;
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.avatarAssetId = avatarAssetId || latestProject.avatarAssetId;
+    latestProject.backgroundMusicAssetId = backgroundMusic?.id || "";
     latestProject.videoSettings = project.videoSettings;
     latestProject.artifacts.video = videoArtifact;
     latestProject.artifacts.subtitles = subtitlesArtifact;
@@ -5420,7 +5541,8 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
   enqueueAndRespond(req, res, next, "render_video", {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
-    avatarAssetId: req.body?.avatarAssetId || ""
+    avatarAssetId: req.body?.avatarAssetId || "",
+    backgroundMusicAssetId: req.body?.backgroundMusicAssetId || ""
   });
 });
 
@@ -5429,6 +5551,7 @@ app.post("/api/projects/:id/render-preview", async (req, res, next) => {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
+    backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
     previewDuration: 3,
     variantLabel: "3秒预览"
   });

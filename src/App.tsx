@@ -184,6 +184,7 @@ type Project = {
   mode?: WorkMode;
   platforms: Platform[];
   avatarAssetId: string;
+  backgroundMusicAssetId?: string;
   voiceId: string;
   scriptModelId?: string;
   selectedScriptVersionId?: string;
@@ -364,6 +365,7 @@ type FlowAction = { label: string; path: string; body?: unknown };
 type State = {
   projects: Project[];
   avatarAssets: Asset[];
+  musicAssets: Asset[];
   voices: Asset[];
   models: ModelRecord[];
   modelCatalog: ModelCatalogItem[];
@@ -380,6 +382,7 @@ type State = {
 const emptyState: State = {
   projects: [],
   avatarAssets: [],
+  musicAssets: [],
   voices: [],
   models: [],
   modelCatalog: [],
@@ -797,7 +800,7 @@ export function App() {
             action={action}
           />
         )}
-        {view === "assets" && <AssetManager title="数字人素材" kind="avatar" items={state.avatarAssets} refresh={refresh} action={action} />}
+        {view === "assets" && <AssetLibrary state={state} refresh={refresh} action={action} />}
         {view === "voices" && <AssetManager title="音色库" kind="voice" items={state.voices} refresh={refresh} action={action} />}
         {view === "models" && <ModelCenter state={state} action={action} />}
         {view === "publish" && <PublishHistory records={state.publishRecords} projects={state.projects} action={action} />}
@@ -1385,7 +1388,7 @@ function PolishDialog({
   const applyRequirementTemplate = (templateId: string) => {
     setDraftTemplateId(templateId);
     const template = requirementTemplates.find((item) => item.id === templateId);
-    if (template) setDraftRequirements(template.value);
+    setDraftRequirements(template?.value || "");
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -1459,7 +1462,6 @@ function PolishDialog({
                 {activeVersion && (
                   <article className="polish-version-output">
                     <div className="section-head compact">
-                      <strong>{activeVersion.label}</strong>
                       <button type="button" className="primary-button" onClick={() => useVersion(activeVersion)}><CheckCircle2 size={16} />使用</button>
                     </div>
                     <textarea readOnly value={activeVersion.text} aria-label={`${activeVersion.label} 润色结果`} />
@@ -1590,6 +1592,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
   const [activeStage, setActiveStage] = useState<StageKey>(currentStage);
@@ -1598,6 +1601,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [selectedVideoVersionId, setSelectedVideoVersionId] = useState("");
   const [publishDraft, setPublishDraft] = useState<PublishRecord | null>(null);
   const lastAutoStageRef = useRef<StageKey>(currentStage);
+  const voiceDirtyRef = useRef(false);
   const currentVersionId = (project?.videoVersions || project?.versions || []).find((version) => version.isCurrent)?.id || "";
 
   useEffect(() => {
@@ -1605,8 +1609,15 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setRequirements(project?.requirements || "");
     setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
     setVoiceId(project?.voiceId || "");
+    voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
-  }, [project?.id, project?.scriptModelId, project?.voiceId, project?.avatarAssetId, project?.inputText, project?.requirements, state.settings?.defaultTextModelId, state.models]);
+    setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!project || voiceDirtyRef.current) return;
+    setVoiceId(project.voiceId || "");
+  }, [project?.voiceId]);
 
   useEffect(() => {
     setActiveStage(currentStage);
@@ -1671,30 +1682,41 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     }));
 
   const saveVoice = () =>
-    action("保存音色", () => request<Project>(`/api/projects/${project.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voiceId, changedStage: "voice" })
-    }));
+    action("保存音色", async () => {
+      const updated = await request<Project>(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voiceId, changedStage: "voice" })
+      });
+      voiceDirtyRef.current = false;
+      return updated;
+    });
 
   const saveVideoSetup = () =>
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ avatarAssetId, videoSettings, changedStage: "video" })
-    }));
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, videoSettings, changedStage: "video" })
+      }));
 
   const generateVoice = () =>
     action("生成口播音频", async () => {
+      const updated = await request<Project>(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
+      });
+      const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, selectedScriptVersionId, changedStage: "voice" })
+        body: JSON.stringify({ voiceId, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
       });
+      voiceDirtyRef.current = false;
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptVersionId: selectedScriptVersionId, voiceId })
+        body: JSON.stringify({ scriptVersionId, voiceId })
       });
     });
 
@@ -1714,12 +1736,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId })
+        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
       });
     });
 
@@ -1728,12 +1750,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId })
+        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
       });
     });
 
@@ -1770,6 +1792,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const taskBusy = Boolean(activeQueue);
   const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
   const selectedAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
+  const musicAssets = state.musicAssets || [];
+  const selectedMusic = musicAssets.find((asset) => asset.id === backgroundMusicAssetId);
   const goNextStage = () => {
     const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
     if (nextStage && canEnterStage(project, nextStage)) setActiveStage(nextStage);
@@ -1811,7 +1835,10 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         selectedScriptVersionId={selectedScriptVersionId}
         setSelectedScriptVersionId={setSelectedScriptVersionId}
         voiceId={voiceId}
-        setVoiceId={setVoiceId}
+        setVoiceId={(value) => {
+          voiceDirtyRef.current = true;
+          setVoiceId(value);
+        }}
         selectedVoice={selectedVoice}
         saveVoice={saveVoice}
         generateVoice={generateVoice}
@@ -1821,6 +1848,9 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         avatarAssetId={avatarAssetId}
         setAvatarAssetId={setAvatarAssetId}
         selectedAsset={selectedAsset}
+        backgroundMusicAssetId={backgroundMusicAssetId}
+        setBackgroundMusicAssetId={setBackgroundMusicAssetId}
+        selectedMusic={selectedMusic}
         videoSettings={videoSettings}
         setVideoSettings={setVideoSettings}
         saveVideoSetup={saveVideoSetup}
@@ -1897,6 +1927,9 @@ function StageWorkspace({
   avatarAssetId,
   setAvatarAssetId,
   selectedAsset,
+  backgroundMusicAssetId,
+  setBackgroundMusicAssetId,
+  selectedMusic,
   videoSettings,
   setVideoSettings,
   saveVideoSetup,
@@ -1938,6 +1971,9 @@ function StageWorkspace({
   avatarAssetId: string;
   setAvatarAssetId: (value: string) => void;
   selectedAsset?: Asset;
+  backgroundMusicAssetId: string;
+  setBackgroundMusicAssetId: (value: string) => void;
+  selectedMusic?: Asset;
   videoSettings: VideoSettings;
   setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>>;
   saveVideoSetup: () => Promise<Project | undefined>;
@@ -1963,7 +1999,7 @@ function StageWorkspace({
   const scriptVersions = project.scriptVersions || [];
   const audioVersions = project.audioVersions || [];
   const videoVersions = project.videoVersions || project.versions || [];
-  const selectedScriptVersion = scriptVersions.find((version) => version.id === selectedScriptVersionId) || scriptVersions[0];
+  const musicAssets = state.musicAssets || [];
   const selectedAudioVersion = audioVersions.find((version) => version.id === selectedAudioVersionId) || audioVersions[0];
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
   const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
@@ -2044,16 +2080,14 @@ function StageWorkspace({
 
       {activeStage === "voice" && (
         <div className="step-body">
-          <VersionSelect
-            label="口播文案版本"
-            value={selectedScriptVersionId}
-            onChange={setSelectedScriptVersionId}
-            versions={scriptVersions}
-            getMeta={(version) => version.title || formatDate(version.createdAt)}
-          />
-          <OutputItem title="当前文案输入" status={selectedScriptVersion?.status || "pending"} meta={selectedScriptVersion?.label || "未选择"}>
-            <p>{selectedScriptVersion?.scriptText || "请先生成口播文案版本。"}</p>
-          </OutputItem>
+          <label>
+            <span>口播内容</span>
+            <textarea
+              value={inputText}
+              onChange={(event) => setInputText(event.target.value)}
+              placeholder="输入或粘贴需要合成语音的口播内容"
+            />
+          </label>
           <div className="field-row">
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
             <button className="secondary-button align-end" disabled={savingVoice} onClick={saveVoice}>
@@ -2063,7 +2097,7 @@ function StageWorkspace({
           </div>
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
-            <ActionButton label="生成口播音频" busy={busy} disabled={!selectedScriptVersion} onClick={generateVoice} />
+            <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />
             <button className="ghost-button" disabled={savingSourceAudio || !project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}>
               {savingSourceAudio ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
               {savingSourceAudio ? "保存中" : "保存原始音频"}
@@ -2075,7 +2109,7 @@ function StageWorkspace({
             }} /></label>
             <AudioRecorder label="录制并保存" onRecorded={(file) => importAudioVersion(file)} />
           </div>
-          <AudioVersionList project={project} versions={audioVersions} scriptVersions={scriptVersions} selectedId={selectedAudioVersionId} onSelect={setSelectedAudioVersionId} action={action} />
+          <AudioVersionList project={project} versions={audioVersions} selectedId={selectedAudioVersionId} onSelect={setSelectedAudioVersionId} action={action} />
         </div>
       )}
 
@@ -2099,6 +2133,14 @@ function StageWorkspace({
             </button>
           </div>
           <AvatarSample asset={selectedAsset} />
+          <label>
+            <span>背景音乐</span>
+            <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
+              <option value="">不使用背景音乐</option>
+              {musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+            </select>
+          </label>
+          {selectedMusic && <audio className="inline-audio" controls src={selectedMusic.uri} />}
           <div className="preset-row">
             <code>最佳参数模式：MediaPipe 智能裁剪 / 稳定融合 / 上边界 0.50</code>
           </div>
@@ -2171,7 +2213,6 @@ function VoiceSample({ asset }: { asset?: Asset }) {
   if (!asset) return <EmptyState text="未选择音色，生成时会使用默认音色。" />;
   return (
     <article className="media-sample compact">
-      <div><strong>{asset.name}</strong><small>{asset.mimeType || asset.provider || "local"} · {formatDate(asset.createdAt)}</small></div>
       <audio controls src={asset.uri} />
     </article>
   );
@@ -2411,33 +2452,52 @@ function ScriptVersionList({ project, versions, onSelect, action }: { project: P
   );
 }
 
-function AudioVersionList({ project, versions, scriptVersions, selectedId, onSelect, action }: { project: Project; versions: AudioVersion[]; scriptVersions: ScriptVersion[]; selectedId: string; onSelect: (id: string) => void; action: AppAction }) {
-  const scriptLabel = (id: string) => scriptVersions.find((version) => version.id === id)?.label || "未关联文案";
+function AudioVersionList({ project, versions, selectedId, onSelect, action }: { project: Project; versions: AudioVersion[]; selectedId: string; onSelect: (id: string) => void; action: AppAction }) {
+  const activeVersion = versions.find((version) => version.id === selectedId) || versions[0];
   const deleteVersion = (version: AudioVersion) => {
     if (!window.confirm(`删除口播音频版本「${version.label}」？`)) return;
     action("删除口播音频版本", () => request(`/api/projects/${project.id}/audio-versions/${version.id}`, { method: "DELETE" }));
   };
+  useEffect(() => {
+    if (!selectedId && versions[0]) onSelect(versions[0].id);
+  }, [selectedId, versions, onSelect]);
   return (
     <section className="version-panel">
       <div className="section-head">
         <div><p className="eyebrow">输出版本</p><h3>口播音频版本</h3></div>
         <span className="count-pill">{versions.length}</span>
       </div>
-      <div className="version-list">
-        {versions.length ? versions.map((version) => (
-          <article className={cx("version-row", version.id === selectedId && "current")} key={version.id}>
-            <div>
-              <strong>{version.label} · {version.voiceName || "默认音色"}</strong>
-              <small>{formatDate(version.createdAt)} · 来自 {scriptLabel(version.sourceScriptVersionId)} · {version.duration}s</small>
-              <audio controls src={version.audioUri} />
-            </div>
-            <div className="version-actions">
-              <button className="text-button" onClick={() => onSelect(version.id)}>{version.id === selectedId ? "已选择" : "选择"}</button>
-              <button className="text-button danger-text" onClick={() => deleteVersion(version)}>删除</button>
-            </div>
-          </article>
-        )) : <EmptyState text="还没有口播音频版本。" />}
-      </div>
+      {versions.length ? (
+        <div className="audio-version-tabs">
+          <div className="version-tabs" role="tablist" aria-label="口播音频版本">
+            {versions.map((version) => (
+              <button
+                key={version.id}
+                type="button"
+                role="tab"
+                aria-selected={version.id === activeVersion?.id}
+                className={cx("version-tab", version.id === activeVersion?.id && "active")}
+                onClick={() => onSelect(version.id)}
+              >
+                {version.label}
+              </button>
+            ))}
+          </div>
+          {activeVersion && (
+            <article className="audio-version-detail" role="tabpanel">
+              <div>
+                <strong>{activeVersion.voiceName || "默认音色"}</strong>
+                <small>{formatDate(activeVersion.createdAt)} · {formatDurationMs(Number(activeVersion.duration || 0) * 1000)}</small>
+              </div>
+              <audio controls src={activeVersion.audioUri} />
+              {activeVersion.transcriptText && <p>{activeVersion.transcriptText}</p>}
+              <div className="version-actions">
+                <button className="text-button danger-text" onClick={() => deleteVersion(activeVersion)}>删除当前版本</button>
+              </div>
+            </article>
+          )}
+        </div>
+      ) : <EmptyState text="还没有口播音频版本。" />}
     </section>
   );
 }
@@ -2675,7 +2735,24 @@ function AudioRecorder({ onRecorded, label = "录制音频" }: { onRecorded: (fi
   );
 }
 
-function AssetManager({ title, kind, items, refresh, action }: { title: string; kind: "avatar" | "voice"; items: Asset[]; refresh: () => Promise<void>; action: AppAction }) {
+function AssetLibrary({ state, refresh, action }: { state: State; refresh: () => Promise<void>; action: AppAction }) {
+  const [activeTab, setActiveTab] = useState<"avatar" | "music">("avatar");
+  const avatarAssets = state.avatarAssets || [];
+  const musicAssets = state.musicAssets || [];
+  return (
+    <section className="manager-page asset-library">
+      <div className="library-tabs" role="tablist" aria-label="素材类型">
+        <button type="button" role="tab" className={cx(activeTab === "avatar" && "active")} onClick={() => setActiveTab("avatar")}>视频素材<span>{avatarAssets.length}</span></button>
+        <button type="button" role="tab" className={cx(activeTab === "music" && "active")} onClick={() => setActiveTab("music")}>音乐素材<span>{musicAssets.length}</span></button>
+      </div>
+      {activeTab === "avatar"
+        ? <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} refresh={refresh} action={action} />
+        : <AssetManager title="背景音乐素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
+    </section>
+  );
+}
+
+function AssetManager({ title, kind, items, refresh, action }: { title: string; kind: "avatar" | "voice" | "music"; items: Asset[]; refresh: () => Promise<void>; action: AppAction }) {
   const [query, setQuery] = useState("");
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -2688,13 +2765,13 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const [clipEnd, setClipEnd] = useState("5");
   const [uploading, setUploading] = useState(false);
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
-  const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : "/api/voices/reference-samples";
-  const endpointFor = (id: string) => kind === "avatar" ? `/api/assets/avatar-videos/${id}` : `/api/voices/reference-samples/${id}`;
-  const entityLabel = kind === "avatar" ? "数字人素材" : "参考音色";
-  const managerEyebrow = kind === "avatar" ? "素材管理" : "克隆参考音色";
-  const nameLabel = kind === "avatar" ? "素材名称" : "音色名称";
-  const fileLabel = kind === "avatar" ? "选择视频" : "选择参考音频";
-  const uploadLabel = kind === "avatar" ? "上传素材" : "上传参考音色";
+  const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : kind === "music" ? "/api/assets/music" : "/api/voices/reference-samples";
+  const endpointFor = (id: string) => kind === "avatar" ? `/api/assets/avatar-videos/${id}` : kind === "music" ? `/api/assets/music/${id}` : `/api/voices/reference-samples/${id}`;
+  const entityLabel = kind === "avatar" ? "数字人素材" : kind === "music" ? "音乐素材" : "参考音色";
+  const managerEyebrow = kind === "avatar" ? "视频素材管理" : kind === "music" ? "背景音乐管理" : "克隆参考音色";
+  const nameLabel = kind === "avatar" ? "素材名称" : kind === "music" ? "音乐名称" : "音色名称";
+  const fileLabel = kind === "avatar" ? "选择视频" : kind === "music" ? "选择音乐" : "选择参考音频";
+  const uploadLabel = kind === "avatar" ? "上传素材" : kind === "music" ? "上传音乐" : "上传参考音色";
   const allChecked = filtered.length > 0 && filtered.every((item) => checkedIds.includes(item.id));
 
   useEffect(() => {
@@ -2779,9 +2856,11 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     const start = Number(clipStart);
     const end = Number(clipEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-    await action(kind === "avatar" ? "生成素材片段" : "生成音色片段", () => request(kind === "avatar"
+    await action(kind === "avatar" ? "生成素材片段" : kind === "music" ? "生成音乐片段" : "生成音色片段", () => request(kind === "avatar"
       ? `/api/assets/avatar-videos/${item.id}/clip`
-      : `/api/voices/reference-samples/${item.id}/clip`, {
+      : kind === "music"
+        ? `/api/assets/music/${item.id}/clip`
+        : `/api/voices/reference-samples/${item.id}/clip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: clipName || `${item.name}-片段`, start, end })
@@ -2811,7 +2890,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
       </div>
       <DataTable
         columns={["", nameLabel, kind === "avatar" ? "预览" : "试听", "创建时间", "操作"]}
-        template={kind === "avatar" ? "42px minmax(300px, 1.35fr) minmax(170px, .75fr) 120px 210px" : "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 150px"}
+        template={kind === "avatar" ? "42px minmax(300px, 1.35fr) minmax(170px, .75fr) 120px 210px" : "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 190px"}
         rows={filtered.map((item) => [
           <input className="table-check" type="checkbox" aria-label={`选择${entityLabel} ${item.name}`} checked={checkedIds.includes(item.id)} onChange={(event) => toggleOne(item.id, event.target.checked)} />,
           editingId === item.id ? (
@@ -2825,7 +2904,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           ) : clipAssetId === item.id ? (
             <ClipEditor
               item={item}
-              kind={kind}
+              kind={kind === "music" ? "voice" : kind}
               clipName={clipName}
               setClipName={setClipName}
               clipStart={clipStart}
@@ -2838,7 +2917,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           ) : (
             <span className="asset-title"><strong>{item.name}</strong><small>{item.mimeType || item.provider || "local"}</small></span>
           ),
-          <MediaPreview item={item} kind={kind} />,
+          <MediaPreview item={item} kind={kind === "music" ? "voice" : kind} />,
           formatDate(item.createdAt),
           <span className="table-actions">
             <button className="text-button" onClick={() => startEdit(item)}><Pencil size={14} />编辑</button>

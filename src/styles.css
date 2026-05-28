@@ -142,7 +142,7 @@ small { color: var(--muted); font-size: 12px; }
 .label-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -423,8 +423,8 @@ small { color: var(--muted); font-size: 12px; }
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
-  width: min(720px, calc(100vw - 32px));
-  max-height: min(760px, calc(100dvh - 32px));
+  width: min(860px, calc(100vw - 32px));
+  height: min(900px, calc(100dvh - 32px));
   min-height: 0;
   padding: 14px;
   border: 1px solid var(--border);
@@ -491,7 +491,7 @@ small { color: var(--muted); font-size: 12px; }
   margin: 0;
 }
 .polish-version-output textarea {
-  min-height: 160px;
+  min-height: 280px;
   resize: vertical;
   background: #fff;
 }
@@ -608,6 +608,39 @@ small { color: var(--muted); font-size: 12px; }
 }
 .toggle input, .checkbox-pill input { width: auto; }
 .platform-select { display: flex; flex-wrap: wrap; gap: 8px; }
+.library-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f6f9fc;
+}
+.library-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 900;
+}
+.library-tabs button.active {
+  background: #fff;
+  color: var(--primary-strong);
+  box-shadow: inset 0 0 0 1px #c9dce6;
+}
+.library-tabs span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.inline-audio {
+  width: 100%;
+}
 
 .resource-strip {
   display: grid;
@@ -1184,6 +1217,35 @@ small { color: var(--muted); font-size: 12px; }
 .version-list {
   display: grid;
   gap: 8px;
+}
+.audio-version-tabs {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.audio-version-detail {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfe;
+}
+.audio-version-detail strong,
+.audio-version-detail small {
+  display: block;
+}
+.audio-version-detail audio {
+  width: 100%;
+}
+.audio-version-detail p {
+  max-height: 96px;
+  margin: 0;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .ab-compare-grid {
   display: grid;
