@@ -2743,11 +2743,11 @@ function AssetLibrary({ state, refresh, action }: { state: State; refresh: () =>
     <section className="manager-page asset-library">
       <div className="library-tabs" role="tablist" aria-label="素材类型">
         <button type="button" role="tab" className={cx(activeTab === "avatar" && "active")} onClick={() => setActiveTab("avatar")}>视频素材<span>{avatarAssets.length}</span></button>
-        <button type="button" role="tab" className={cx(activeTab === "music" && "active")} onClick={() => setActiveTab("music")}>音乐素材<span>{musicAssets.length}</span></button>
+        <button type="button" role="tab" className={cx(activeTab === "music" && "active")} onClick={() => setActiveTab("music")}>背景音素材<span>{musicAssets.length}</span></button>
       </div>
       {activeTab === "avatar"
         ? <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} refresh={refresh} action={action} />
-        : <AssetManager title="背景音乐素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
+        : <AssetManager title="背景音素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
     </section>
   );
 }
@@ -2767,11 +2767,11 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
   const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : kind === "music" ? "/api/assets/music" : "/api/voices/reference-samples";
   const endpointFor = (id: string) => kind === "avatar" ? `/api/assets/avatar-videos/${id}` : kind === "music" ? `/api/assets/music/${id}` : `/api/voices/reference-samples/${id}`;
-  const entityLabel = kind === "avatar" ? "数字人素材" : kind === "music" ? "音乐素材" : "参考音色";
-  const managerEyebrow = kind === "avatar" ? "视频素材管理" : kind === "music" ? "背景音乐管理" : "克隆参考音色";
-  const nameLabel = kind === "avatar" ? "素材名称" : kind === "music" ? "音乐名称" : "音色名称";
-  const fileLabel = kind === "avatar" ? "选择视频" : kind === "music" ? "选择音乐" : "选择参考音频";
-  const uploadLabel = kind === "avatar" ? "上传素材" : kind === "music" ? "上传音乐" : "上传参考音色";
+  const entityLabel = kind === "avatar" ? "数字人素材" : kind === "music" ? "背景音素材" : "参考音色";
+  const managerEyebrow = kind === "avatar" ? "视频素材管理" : kind === "music" ? "背景音管理" : "克隆参考音色";
+  const nameLabel = kind === "avatar" ? "素材名称" : kind === "music" ? "背景音名称" : "音色名称";
+  const fileLabel = kind === "avatar" ? "选择视频" : kind === "music" ? "选择背景音" : "选择参考音频";
+  const uploadLabel = kind === "avatar" ? "上传素材" : kind === "music" ? "上传背景音" : "上传参考音色";
   const allChecked = filtered.length > 0 && filtered.every((item) => checkedIds.includes(item.id));
 
   useEffect(() => {
@@ -2856,7 +2856,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     const start = Number(clipStart);
     const end = Number(clipEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
-    await action(kind === "avatar" ? "生成素材片段" : kind === "music" ? "生成音乐片段" : "生成音色片段", () => request(kind === "avatar"
+    await action(kind === "avatar" ? "生成素材片段" : kind === "music" ? "生成背景音片段" : "生成音色片段", () => request(kind === "avatar"
       ? `/api/assets/avatar-videos/${item.id}/clip`
       : kind === "music"
         ? `/api/assets/music/${item.id}/clip`
@@ -2878,6 +2878,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder={nameLabel} />
         <label className="file-chip"><Upload size={16} />{file ? file.name : fileLabel}<input type="file" accept={kind === "avatar" ? "video/*" : "audio/*"} onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
         {kind === "voice" && <AudioRecorder label="录制参考音色" onRecorded={setFile} />}
+        {kind === "music" && <AudioRecorder label="录制背景音" onRecorded={setFile} />}
         <button className="primary-button" disabled={uploading || !file}>{uploading ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}{uploading ? "上传中" : uploadLabel}</button>
       </form>
       <div className="bulk-toolbar manager-bulk-toolbar">
