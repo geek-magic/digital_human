@@ -100,11 +100,6 @@ h3 { font-size: 15px; line-height: 1.35; }
   justify-content: space-between;
   margin-bottom: 16px;
 }
-.topbar-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
 .eyebrow {
   margin-bottom: 5px;
   color: var(--muted);
@@ -1623,9 +1618,47 @@ small { color: var(--muted); font-size: 12px; }
 .runtime-settings label {
   min-width: 0;
 }
+.runtime-switch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+}
+.runtime-switch-row strong,
+.runtime-switch-row small {
+  display: block;
+}
+.runtime-switch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 76px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #b9d5e2;
+  border-radius: var(--radius);
+  background: #eaf6fb;
+  color: var(--primary-strong);
+  font-weight: 800;
+  cursor: pointer;
+}
+.runtime-switch-button.enabled {
+  border-color: #efc8c5;
+  background: #fff5f4;
+  color: var(--red);
+}
+.runtime-switch-button:disabled {
+  cursor: wait;
+  opacity: .78;
+}
 .settings-fab {
   position: fixed;
-  right: max(18px, env(safe-area-inset-right));
+  left: max(18px, env(safe-area-inset-left));
   bottom: max(18px, env(safe-area-inset-bottom));
   z-index: 90;
   display: inline-flex;

@@ -816,14 +816,9 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div><p className="eyebrow">手动流 · 自动流 · 阶段产物可回看</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div>
-          <div className="topbar-actions">
-            <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
-              <Settings2 size={17} />配置
-            </button>
-            <button className="icon-button" onClick={() => refresh(true)} aria-label="刷新">
-              {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-            </button>
-          </div>
+          <button className="icon-button" onClick={() => refresh(true)} aria-label="刷新">
+            {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          </button>
         </header>
 
         {toast && (
@@ -3371,6 +3366,8 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
 
 function RuntimeSettingsPanel({ state, action }: { state: State; action: AppAction }) {
   const settings = state.settings || {};
+  const [pendingKey, setPendingKey] = useState("");
+  const [pendingLabel, setPendingLabel] = useState("");
   const [draft, setDraft] = useState({
     keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
     keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
@@ -3386,14 +3383,21 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
     });
   }, [settings.keepAsrModelWarm, settings.keepTtsModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
 
-  function update(next: Partial<typeof draft>) {
+  async function update(next: Partial<typeof draft>, key = "runtime", label = "保存中") {
     const payload = { ...draft, ...next };
     setDraft(payload);
-    action("保存运行配置", () => request("/api/settings/runtime", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    }));
+    setPendingKey(key);
+    setPendingLabel(label);
+    try {
+      await action("保存运行配置", () => request("/api/settings/runtime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }));
+    } finally {
+      setPendingKey("");
+      setPendingLabel("");
+    }
   }
 
   return (
@@ -3402,11 +3406,50 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
         <strong>运行配置</strong>
         <small>未预启动时，ASR/TTS 会在使用时临时启动，完成后释放。</small>
       </div>
-      <Toggle checked={draft.keepAsrModelWarm} onChange={(checked) => update({ keepAsrModelWarm: checked })} label="启动语音识别模型" />
-      <Toggle checked={draft.keepTtsModelWarm} onChange={(checked) => update({ keepTtsModelWarm: checked })} label="启动音频合成模型" />
-      <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) })} /></label>
-      <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) })} /></label>
+      <RuntimeModelSwitch
+        label="语音识别模型"
+        enabled={draft.keepAsrModelWarm}
+        pending={pendingKey === "asr"}
+        pendingLabel={pendingKey === "asr" ? pendingLabel : ""}
+        onClick={() => update({ keepAsrModelWarm: !draft.keepAsrModelWarm }, "asr", draft.keepAsrModelWarm ? "关闭中" : "启动中")}
+      />
+      <RuntimeModelSwitch
+        label="音频合成模型"
+        enabled={draft.keepTtsModelWarm}
+        pending={pendingKey === "tts"}
+        pendingLabel={pendingKey === "tts" ? pendingLabel : ""}
+        onClick={() => update({ keepTtsModelWarm: !draft.keepTtsModelWarm }, "tts", draft.keepTtsModelWarm ? "关闭中" : "启动中")}
+      />
+      <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) }, "videoConcurrency")} /></label>
+      <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} /></label>
     </section>
+  );
+}
+
+function RuntimeModelSwitch({
+  label,
+  enabled,
+  pending,
+  pendingLabel,
+  onClick
+}: {
+  label: string;
+  enabled: boolean;
+  pending: boolean;
+  pendingLabel: string;
+  onClick: () => void;
+}) {
+  return (
+    <div className="runtime-switch-row">
+      <div>
+        <strong>{label}</strong>
+        <small>{enabled ? "已设置为提前启动" : "使用时临时启动"}</small>
+      </div>
+      <button type="button" className={cx("runtime-switch-button", enabled && "enabled")} disabled={pending} onClick={onClick}>
+        {pending && <Loader2 className="spin" size={15} />}
+        {pending ? pendingLabel : enabled ? "关闭" : "开启"}
+      </button>
+    </div>
   );
 }
 
