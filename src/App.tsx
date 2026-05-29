@@ -3453,15 +3453,12 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [audio, setAudio] = useState<File | null>(null);
-  const [voiceId, setVoiceId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
-  const [text, setText] = useState("大家好，欢迎来到今天的视频合成体验。");
   const [videoUri, setVideoUri] = useState("");
   const [testing, setTesting] = useState(false);
   useEffect(() => {
     setAvatarAssetId((current) => current || state.avatarAssets[0]?.id || "");
-    setVoiceId((current) => current || state.voices[0]?.id || "");
-  }, [state.avatarAssets, state.voices]);
+  }, [state.avatarAssets]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -3469,9 +3466,7 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
     try {
       const body = new FormData();
       body.append("avatarAssetId", avatarFile ? "" : avatarAssetId);
-      body.append("voiceId", voiceId);
       body.append("backgroundMusicAssetId", backgroundMusicAssetId);
-      body.append("text", text);
       if (avatarFile) body.append("avatar", avatarFile);
       if (audio) body.append("audio", audio);
       const response = await action("生成体验视频", () => request<{ video?: { uri: string } }>("/api/model-tests/avatar", { method: "POST", body }));
@@ -3484,16 +3479,14 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   return (
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>视频合成</h3></div>
-      <label><span>口播内容</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-      <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-      <label><span>背景音</span><select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}><option value="">不使用背景音</option>{(state.musicAssets || []).map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">使用上传素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      <label><span>背景音</span><select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}><option value="">不使用背景音</option>{(state.musicAssets || []).map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <div className="test-file-row">
         <label className="file-chip"><Upload size={16} />{avatarFile ? avatarFile.name : "上传人物视频"}<input type="file" accept="video/*" onChange={(event) => setAvatarFile(event.target.files?.[0] || null)} /></label>
         <label className="file-chip"><Upload size={16} />{audio ? audio.name : "上传口播音频"}<input type="file" accept="audio/*" onChange={(event) => setAudio(event.target.files?.[0] || null)} /></label>
         <AudioRecorder label="录制口播音频" onRecorded={setAudio} />
       </div>
-      <button className="primary-button" disabled={testing || (!avatarAssetId && !avatarFile) || (!audio && (!text.trim() || !voiceId))}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成体验视频"}</button>
+      <button className="primary-button" disabled={testing || (!avatarAssetId && !avatarFile) || !audio}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成体验视频"}</button>
       {videoUri && <OutputItem title="体验视频" status="done"><video className="test-video" controls src={videoUri} /></OutputItem>}
     </form>
   );

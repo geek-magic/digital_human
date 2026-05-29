@@ -4272,18 +4272,9 @@ app.post("/api/model-tests/avatar", upload.fields([
     const uploadedAudio = Array.isArray(files.audio) ? files.audio[0] : null;
     const savedAvatar = (db.avatarAssets || []).find((item) => item.id === body.avatarAssetId && !item.deletedAt);
     const avatarPath = uploadedAvatar?.path || savedAvatar?.path || "";
-    let audioPath = uploadedAudio?.path || "";
     if (!avatarPath) return res.status(400).json({ error: "请上传或选择数字人素材。" });
-    if (!audioPath) {
-      const text = String(body.text || "").trim();
-      const voice = (db.voices || []).find((item) => item.id === body.voiceId && !item.deletedAt && item.path && existsSync(item.path));
-      if (!text) return res.status(400).json({ error: "请输入口播内容，或上传/录制一段口播音频。" });
-      if (!voice) return res.status(400).json({ error: "请选择可用音色，或上传/录制一段口播音频。" });
-      const ttsDir = join(artifactDir, "model-tests", `avatar-audio-${randomUUID()}`);
-      mkdirSync(ttsDir, { recursive: true });
-      audioPath = join(ttsDir, "voiceover.wav");
-      await createLocalTtsAudio(text, voice, audioPath, { ttsTimeout: Number(body.timeout || 1200000) });
-    }
+    const audioPath = uploadedAudio?.path || "";
+    if (!audioPath) return res.status(400).json({ error: "请上传或录制一段口播音频。" });
     const modelId = String(body.modelId || "");
     const model = db.models.find((item) => item.id === modelId && item.type === "avatar" && !item.hidden);
     if (modelId && !model) return res.status(404).json({ error: "数字人模型不存在。" });
