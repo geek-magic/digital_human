@@ -1416,7 +1416,7 @@ function TaskComposer({
           reviewEnabled: mode === "manual",
           generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
-          ttsModelId: mode === "auto" ? ttsModelId : defaultModelIdForType(state, "tts"),
+          ttsModelId: ttsModelId || defaultModelIdForType(state, "tts"),
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           backgroundMusicAssetId,
           platforms: Object.keys(platformLabels)
@@ -1474,10 +1474,10 @@ function TaskComposer({
               {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
             </select>
           </label>
+          <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
               <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
             </>

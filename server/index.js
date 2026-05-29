@@ -125,7 +125,7 @@ const modelCatalog = [
   },
   {
     id: "qwen3-tts-1-7b-base",
-    name: "Qwen3-TTS 1.7B Base",
+    name: "Qwen3-TTS",
     type: "tts",
     runtime: "内置 TTS Adapter",
     defaultPath: "tts/qwen3-tts-12hz-1.7b-base",
