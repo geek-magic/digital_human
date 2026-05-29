@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 
@@ -21,6 +21,8 @@ const MODEL_HOME = process.env.MODEL_HOME || join(rootDir, "models");
 const LLM_TOOL_PATH = process.env.DH_LLM_TOOL_PATH || join(rootDir, "scripts", "llm-tool.mjs");
 const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "asr-tool.mjs");
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
+const ASR_WORKER_PATH = join(rootDir, "scripts", "qwen-asr-worker.py");
+const TTS_WORKER_PATH = join(rootDir, "scripts", "qwen-tts-worker.py");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
 const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
@@ -2013,7 +2015,233 @@ function parseJsonFromStdout(stdout = "") {
   }
 }
 
+const runtimeWorkers = {
+  asr: createRuntimeWorker("asr"),
+  tts: createRuntimeWorker("tts")
+};
+
+function appendTail(current = "", chunk = "", max = 6000) {
+  const next = `${current}${chunk}`;
+  return next.length > max ? next.slice(-max) : next;
+}
+
+async function inspectLocalRuntime(kind) {
+  const toolPath = kind === "asr" ? ASR_TOOL_PATH : TTS_TOOL_PATH;
+  if (!existsSync(toolPath)) throw new Error(kind === "asr" ? "缺少本地 ASR CLI 工具。" : "缺少本地 TTS CLI 工具。");
+  const { stdout } = await execFileAsync(process.execPath, [toolPath, "doctor"], {
+    timeout: 120000,
+    maxBuffer: 1024 * 1024 * 4,
+    env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
+  });
+  const runtime = parseJsonFromStdout(stdout);
+  if (!runtime.ready) throw new Error(`${kind === "asr" ? "ASR" : "TTS"} 运行环境未就绪：${(runtime.missing || []).join(", ")}`);
+  return runtime;
+}
+
+function createRuntimeWorker(kind) {
+  const label = kind === "asr" ? "语音识别模型" : "音频合成模型";
+  const workerPath = kind === "asr" ? ASR_WORKER_PATH : TTS_WORKER_PATH;
+  const defaults = kind === "asr"
+    ? {
+        language: process.env.DH_ASR_LANGUAGE || "Chinese",
+        deviceMap: process.env.DH_ASR_DEVICE_MAP || "mps",
+        dtype: process.env.DH_ASR_DTYPE || "float16",
+        maxNewTokens: process.env.DH_ASR_MAX_NEW_TOKENS || "1024"
+      }
+    : {
+        language: process.env.DH_TTS_LANGUAGE || "Chinese",
+        deviceMap: process.env.DH_TTS_DEVICE_MAP || "mps",
+        dtype: process.env.DH_TTS_DTYPE || "float16"
+      };
+  return {
+    kind,
+    label,
+    process: null,
+    status: "stopped",
+    startedAt: "",
+    readyAt: "",
+    loadMs: 0,
+    error: "",
+    stderr: "",
+    stdoutBuffer: "",
+    pending: new Map(),
+    startPromise: null,
+    async start() {
+      if (this.status === "running") return this.publicStatus();
+      if (this.status === "starting" && this.startPromise) return this.startPromise;
+      if (!existsSync(workerPath)) throw new Error(`缺少 ${label} worker：${workerPath}`);
+      const runtime = await inspectLocalRuntime(kind);
+      const args = [
+        workerPath,
+        "--model",
+        runtime.model,
+        "--language",
+        defaults.language,
+        "--device-map",
+        defaults.deviceMap,
+        "--dtype",
+        defaults.dtype
+      ];
+      if (kind === "asr") args.push("--max-new-tokens", String(defaults.maxNewTokens));
+      this.stop(false);
+      this.status = "starting";
+      this.error = "";
+      this.stderr = "";
+      this.stdoutBuffer = "";
+      this.startedAt = now();
+      this.readyAt = "";
+      this.loadMs = 0;
+      const child = spawn(runtime.python, args, {
+        cwd: rootDir,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
+      });
+      this.process = child;
+      child.stderr.on("data", (chunk) => {
+        this.stderr = appendTail(this.stderr, chunk.toString());
+      });
+      child.stdout.on("data", (chunk) => {
+        this.stdoutBuffer += chunk.toString();
+        let index = this.stdoutBuffer.indexOf("\n");
+        while (index !== -1) {
+          const line = this.stdoutBuffer.slice(0, index).trim();
+          this.stdoutBuffer = this.stdoutBuffer.slice(index + 1);
+          if (line) this.handleLine(line);
+          index = this.stdoutBuffer.indexOf("\n");
+        }
+      });
+      child.on("exit", (code, signal) => {
+        for (const pending of this.pending.values()) pending.reject(new Error(`${label} worker 已退出。code=${code ?? ""} signal=${signal ?? ""}`));
+        this.pending.clear();
+        if (this.process === child) {
+          this.process = null;
+          this.status = "stopped";
+        }
+      });
+      this.startPromise = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`${label} 启动超时。${this.stderr ? `stderr: ${this.stderr}` : ""}`));
+        }, Number(process.env.DH_MODEL_WARM_TIMEOUT_MS || 1200000));
+        this.pending.set("__ready__", {
+          resolve: (payload) => {
+            clearTimeout(timer);
+            this.startPromise = null;
+            resolve(payload);
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            this.startPromise = null;
+            reject(error);
+          }
+        });
+      });
+      return this.startPromise;
+    },
+    handleLine(line) {
+      let payload;
+      try {
+        payload = JSON.parse(line);
+      } catch {
+        this.stderr = appendTail(this.stderr, `${line}\n`);
+        return;
+      }
+      if (payload.event === "ready") {
+        const pending = this.pending.get("__ready__");
+        this.pending.delete("__ready__");
+        if (payload.ok) {
+          this.status = "running";
+          this.readyAt = now();
+          this.loadMs = Number(payload.load_ms || 0);
+          pending?.resolve(this.publicStatus());
+        } else {
+          this.status = "failed";
+          this.error = payload.error || `${label} 启动失败。`;
+          pending?.reject(new Error(this.error));
+        }
+        return;
+      }
+      const pending = this.pending.get(payload.id);
+      if (!pending) return;
+      this.pending.delete(payload.id);
+      if (payload.ok) pending.resolve(payload);
+      else pending.reject(new Error(payload.error || `${label} 执行失败。`));
+    },
+    async request(payload, timeout = 1200000) {
+      await this.start();
+      if (!this.process?.stdin?.writable) throw new Error(`${label} worker 未运行。`);
+      const id = `runtime-${randomUUID()}`;
+      const command = { ...payload, id };
+      const response = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          reject(new Error(`${label} 执行超时。`));
+        }, timeout);
+        this.pending.set(id, {
+          resolve: (result) => {
+            clearTimeout(timer);
+            resolve(result);
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            reject(error);
+          }
+        });
+      });
+      this.process.stdin.write(`${JSON.stringify(command)}\n`);
+      return response;
+    },
+    stop(markStopped = true) {
+      if (this.process) {
+        try {
+          if (this.process.stdin?.writable) this.process.stdin.write(`${JSON.stringify({ id: `shutdown-${randomUUID()}`, command: "shutdown" })}\n`);
+        } catch {
+          // Ignore shutdown pipe errors.
+        }
+        this.process.kill("SIGTERM");
+      }
+      this.process = null;
+      this.startPromise = null;
+      for (const pending of this.pending.values()) pending.reject(new Error(`${label} worker 已停止。`));
+      this.pending.clear();
+      if (markStopped) {
+        this.status = "stopped";
+        this.readyAt = "";
+        this.error = "";
+      }
+      return this.publicStatus();
+    },
+    publicStatus() {
+      return {
+        kind,
+        label,
+        status: this.status,
+        startedAt: this.startedAt,
+        readyAt: this.readyAt,
+        loadMs: this.loadMs,
+        error: this.error,
+        pid: this.process?.pid || null
+      };
+    }
+  };
+}
+
+function runtimeWorkerStatus() {
+  return {
+    asr: runtimeWorkers.asr.publicStatus(),
+    tts: runtimeWorkers.tts.publicStatus()
+  };
+}
+
 async function transcribeWithLocalAsr(audioPath, options = {}) {
+  if (runtimeWorkers.asr.status === "running" || runtimeWorkers.asr.status === "starting") {
+    const result = await runtimeWorkers.asr.request({
+      command: "transcribe",
+      audio: audioPath,
+      language: options.language || "Chinese"
+    }, options.asrTimeout || 1200000);
+    if (!result.ok) throw new Error(result.error || "本地 ASR 转写失败。");
+    return result;
+  }
   const args = [
     ASR_TOOL_PATH,
     "transcribe",
@@ -3026,6 +3254,18 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (!voice?.path || !existsSync(voice.path)) {
     throw new Error("缺少可用参考音色。请先在音色库上传一个参考音频，或在任务中选择音色。");
   }
+  if (runtimeWorkers.tts.status === "running" || runtimeWorkers.tts.status === "starting") {
+    const result = await runtimeWorkers.tts.request({
+      command: "synthesize",
+      text: script,
+      ref_audio: voice.path,
+      output: outPath,
+      ref_text: voice.referenceText || "",
+      language: options.language || "Chinese"
+    }, options.ttsTimeout || 1200000);
+    if (!result.ok || !existsSync(outPath)) throw new Error(result.error || "本地 TTS 未生成音频。");
+    return result;
+  }
   const args = [
     TTS_TOOL_PATH,
     "synthesize",
@@ -3688,6 +3928,7 @@ app.get("/api/state", (_req, res) => {
     })),
     apiProviderCatalog,
     requirementTemplates: db.requirementTemplates || [],
+    runtimeModels: runtimeWorkerStatus(),
     settings: db.settings,
     modelHome: MODEL_HOME
   });
@@ -3735,7 +3976,38 @@ app.delete("/api/requirement-templates/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-app.patch("/api/settings/runtime", (req, res) => {
+app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
+  try {
+    const kind = req.params.kind;
+    if (!["asr", "tts"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+    const status = await runtimeWorkers[kind].start();
+    const db = readDb();
+    if (kind === "asr") db.settings.keepAsrModelWarm = true;
+    if (kind === "tts") db.settings.keepTtsModelWarm = true;
+    writeDb(db);
+    res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/runtime-models/:kind/stop", (req, res) => {
+  const kind = req.params.kind;
+  if (!["asr", "tts"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+  const status = runtimeWorkers[kind].stop();
+  const db = readDb();
+  if (kind === "asr") db.settings.keepAsrModelWarm = false;
+  if (kind === "tts") db.settings.keepTtsModelWarm = false;
+  writeDb(db);
+  res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
+});
+
+app.get("/api/runtime-models", (_req, res) => {
+  res.json({ ok: true, runtimeModels: runtimeWorkerStatus() });
+});
+
+app.patch("/api/settings/runtime", async (req, res, next) => {
+  try {
   const db = readDb();
   const body = req.body || {};
   if (body.keepAsrModelWarm !== undefined) db.settings.keepAsrModelWarm = Boolean(body.keepAsrModelWarm);
@@ -3743,7 +4015,14 @@ app.patch("/api/settings/runtime", (req, res) => {
   if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
   writeDb(db);
-  res.json({ ok: true, settings: db.settings });
+  if (body.keepAsrModelWarm === true) await runtimeWorkers.asr.start();
+  if (body.keepAsrModelWarm === false) runtimeWorkers.asr.stop();
+  if (body.keepTtsModelWarm === true) await runtimeWorkers.tts.start();
+  if (body.keepTtsModelWarm === false) runtimeWorkers.tts.stop();
+  res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
+  } catch (err) {
+    next(err);
+  }
 });
 
 function parseFps(value = "") {
@@ -6591,4 +6870,11 @@ recoverQueueOnBoot();
 
 app.listen(PORT, () => {
   console.log(`Digital human API listening on http://127.0.0.1:${PORT}`);
+  const db = readDb();
+  if (db.settings.keepAsrModelWarm) {
+    runtimeWorkers.asr.start().catch((error) => console.error(`[runtime-models] ASR 启动失败：${error.message}`));
+  }
+  if (db.settings.keepTtsModelWarm) {
+    runtimeWorkers.tts.start().catch((error) => console.error(`[runtime-models] TTS 启动失败：${error.message}`));
+  }
 });
