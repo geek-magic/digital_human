@@ -394,7 +394,7 @@ function normalizeDb(db) {
     }));
   db.settings ||= {};
   db.settings.keepAsrModelWarm = Boolean(db.settings.keepAsrModelWarm);
-  db.settings.keepTtsModelWarm = Boolean(db.settings.keepTtsModelWarm);
+  db.settings.keepTtsModelWarm = false;
   db.settings.keepAvatarModelWarm = Boolean(db.settings.keepAvatarModelWarm);
   db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
@@ -2020,7 +2020,6 @@ function parseJsonFromStdout(stdout = "") {
 
 const runtimeWorkers = {
   asr: createRuntimeWorker("asr"),
-  tts: createRuntimeWorker("tts"),
   avatar: createRuntimeWorker("avatar")
 };
 
@@ -2238,7 +2237,6 @@ function createRuntimeWorker(kind) {
 function runtimeWorkerStatus() {
   return {
     asr: runtimeWorkers.asr.publicStatus(),
-    tts: runtimeWorkers.tts.publicStatus(),
     avatar: runtimeWorkers.avatar.publicStatus()
   };
 }
@@ -3265,18 +3263,6 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (!voice?.path || !existsSync(voice.path)) {
     throw new Error("缺少可用参考音色。请先在音色库上传一个参考音频，或在任务中选择音色。");
   }
-  if (runtimeWorkers.tts.status === "running" || runtimeWorkers.tts.status === "starting") {
-    const result = await runtimeWorkers.tts.request({
-      command: "synthesize",
-      text: script,
-      ref_audio: voice.path,
-      output: outPath,
-      ref_text: voice.referenceText || "",
-      language: options.language || "Chinese"
-    }, options.ttsTimeout || 1200000);
-    if (!result.ok || !existsSync(outPath)) throw new Error(result.error || "本地 TTS 未生成音频。");
-    return result;
-  }
   const args = [
     TTS_TOOL_PATH,
     "synthesize",
@@ -3999,12 +3985,12 @@ app.delete("/api/requirement-templates/:id", (req, res) => {
 app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
   try {
     const kind = req.params.kind;
-    if (!["asr", "tts", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+    if (!["asr", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
     const status = await runtimeWorkers[kind].start();
     const db = readDb();
     if (kind === "asr") db.settings.keepAsrModelWarm = true;
-    if (kind === "tts") db.settings.keepTtsModelWarm = true;
     if (kind === "avatar") db.settings.keepAvatarModelWarm = true;
+    db.settings.keepTtsModelWarm = false;
     writeDb(db);
     res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
   } catch (err) {
@@ -4014,12 +4000,12 @@ app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
 
 app.post("/api/runtime-models/:kind/stop", (req, res) => {
   const kind = req.params.kind;
-  if (!["asr", "tts", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+  if (!["asr", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
   const status = runtimeWorkers[kind].stop();
   const db = readDb();
   if (kind === "asr") db.settings.keepAsrModelWarm = false;
-  if (kind === "tts") db.settings.keepTtsModelWarm = false;
   if (kind === "avatar") db.settings.keepAvatarModelWarm = false;
+  db.settings.keepTtsModelWarm = false;
   writeDb(db);
   res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
 });
@@ -4033,15 +4019,13 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   const db = readDb();
   const body = req.body || {};
   if (body.keepAsrModelWarm !== undefined) db.settings.keepAsrModelWarm = Boolean(body.keepAsrModelWarm);
-  if (body.keepTtsModelWarm !== undefined) db.settings.keepTtsModelWarm = Boolean(body.keepTtsModelWarm);
+  db.settings.keepTtsModelWarm = false;
   if (body.keepAvatarModelWarm !== undefined) db.settings.keepAvatarModelWarm = Boolean(body.keepAvatarModelWarm);
   if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
   writeDb(db);
   if (body.keepAsrModelWarm === true) await runtimeWorkers.asr.start();
   if (body.keepAsrModelWarm === false) runtimeWorkers.asr.stop();
-  if (body.keepTtsModelWarm === true) await runtimeWorkers.tts.start();
-  if (body.keepTtsModelWarm === false) runtimeWorkers.tts.stop();
   if (body.keepAvatarModelWarm === true) await runtimeWorkers.avatar.start();
   if (body.keepAvatarModelWarm === false) runtimeWorkers.avatar.stop();
   res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
@@ -5930,8 +5914,7 @@ async function synthesizeProject(projectId, options = {}) {
     });
     pushJob(db, project.id, "synthesize_speech", "running", "开始生成口播音频。");
     writeDb(db);
-    const usingWarmTts = runtimeWorkers.tts.status === "running" || runtimeWorkers.tts.status === "starting";
-    const ttsProgressLabel = usingWarmTts ? "正在使用已启动的音频合成模型。" : "正在临时启动本地 TTS。";
+    const ttsProgressLabel = "正在生成口播音频。";
     updateQueueProgress(options.queueId, { percent: 50, label: ttsProgressLabel, stage: "voice", stageStatus: "running" });
     setStage(project, "voice", "running", ttsProgressLabel);
     project.updatedAt = now();
@@ -5962,13 +5945,12 @@ async function synthesizeProject(projectId, options = {}) {
     const audioPath = modelAudioPath;
     const actualDuration = await probeMediaDuration(audioPath);
     const duration = Math.min(120, Math.max(estimatedDuration, Math.ceil(actualDuration || estimatedDuration)));
-    const usedWarmTts = Boolean(ttsResult?.metrics?.worker_warm);
     const audioArtifact = {
       uri: publicPath(audioPath),
       path: audioPath,
       duration,
-      adapter: usedWarmTts ? "local-qwen3-tts-worker" : "local-qwen3-tts-cli",
-      note: `${usedWarmTts ? "已使用提前启动的音频合成模型" : "已临时启动本地 TTS"}生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
+      adapter: "local-qwen3-tts-cli",
+      note: `已生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
       voiceId: voice?.id || "",
       voiceName: voice?.name || "",
       metrics: ttsResult?.metrics || {}
@@ -6904,9 +6886,6 @@ app.listen(PORT, () => {
   const db = readDb();
   if (db.settings.keepAsrModelWarm) {
     runtimeWorkers.asr.start().catch((error) => console.error(`[runtime-models] ASR 启动失败：${error.message}`));
-  }
-  if (db.settings.keepTtsModelWarm) {
-    runtimeWorkers.tts.start().catch((error) => console.error(`[runtime-models] TTS 启动失败：${error.message}`));
   }
   if (db.settings.keepAvatarModelWarm) {
     runtimeWorkers.avatar.start().catch((error) => console.error(`[runtime-models] MuseTalk 启动失败：${error.message}`));

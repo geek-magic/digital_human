@@ -3387,7 +3387,6 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   const [pendingLabel, setPendingLabel] = useState("");
   const [draft, setDraft] = useState({
     keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
-    keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
     keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
     videoConcurrency: settings.videoConcurrency || 1,
     avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
@@ -3395,12 +3394,11 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   useEffect(() => {
     setDraft({
       keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
-      keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
       keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
       videoConcurrency: settings.videoConcurrency || 1,
       avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
     });
-  }, [settings.keepAsrModelWarm, settings.keepTtsModelWarm, settings.keepAvatarModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
+  }, [settings.keepAsrModelWarm, settings.keepAvatarModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
 
   async function update(next: Partial<typeof draft>, key = "runtime", label = "保存中") {
     const payload = { ...draft, ...next };
@@ -3419,11 +3417,11 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
     }
   }
 
-  async function toggleRuntimeModel(kind: "asr" | "tts" | "avatar", enabled: boolean) {
+  async function toggleRuntimeModel(kind: "asr" | "avatar", enabled: boolean) {
     const nextEnabled = !enabled;
     setDraft((current) => ({
       ...current,
-      ...(kind === "asr" ? { keepAsrModelWarm: nextEnabled } : kind === "tts" ? { keepTtsModelWarm: nextEnabled } : { keepAvatarModelWarm: nextEnabled })
+      ...(kind === "asr" ? { keepAsrModelWarm: nextEnabled } : { keepAvatarModelWarm: nextEnabled })
     }));
     setPendingKey(kind);
     setPendingLabel(nextEnabled ? "启动中" : "关闭中");
@@ -3438,17 +3436,15 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   }
 
   const asrRuntime = state.runtimeModels?.asr;
-  const ttsRuntime = state.runtimeModels?.tts;
   const avatarRuntime = state.runtimeModels?.avatar;
   const asrEnabled = asrRuntime?.status === "running" || asrRuntime?.status === "starting";
-  const ttsEnabled = ttsRuntime?.status === "running" || ttsRuntime?.status === "starting";
   const avatarEnabled = avatarRuntime?.status === "running" || avatarRuntime?.status === "starting";
 
   return (
     <section className="runtime-settings">
       <div>
         <strong>运行配置</strong>
-        <small>未预启动时，模型会在使用时临时启动，完成后释放。</small>
+        <small>语音识别和视频合成可提前启动；音频合成按需运行，完成后释放。</small>
       </div>
       <RuntimeModelSwitch
         label="语音识别模型"
@@ -3457,14 +3453,6 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
         pending={pendingKey === "asr" || asrRuntime?.status === "starting"}
         pendingLabel={pendingKey === "asr" ? pendingLabel : ""}
         onClick={() => toggleRuntimeModel("asr", asrEnabled)}
-      />
-      <RuntimeModelSwitch
-        label="音频合成模型"
-        enabled={ttsEnabled}
-        status={ttsRuntime}
-        pending={pendingKey === "tts" || ttsRuntime?.status === "starting"}
-        pendingLabel={pendingKey === "tts" ? pendingLabel : ""}
-        onClick={() => toggleRuntimeModel("tts", ttsEnabled)}
       />
       <RuntimeModelSwitch
         label="视频合成模型"
