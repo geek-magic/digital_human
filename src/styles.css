@@ -553,7 +553,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 .extract-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: end;
 }
@@ -563,7 +563,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 .extract-control .secondary-button {
   min-width: 86px;
-  justify-self: start;
+  align-self: end;
 }
 .extract-note {
   line-height: 1.45;
@@ -2245,7 +2245,7 @@ small { color: var(--muted); font-size: 12px; }
   .media-sample video {
     width: 100%;
   }
-  .composer-grid, .param-grid, .field-row, .extract-control {
+  .composer-grid, .param-grid, .field-row {
     grid-template-columns: 1fr;
   }
   .source-apply-row {
