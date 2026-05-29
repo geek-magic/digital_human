@@ -174,6 +174,7 @@ type AudioVersion = {
   voiceName: string;
   ttsModelId?: string;
   ttsModelName?: string;
+  audioPlaybackSpeed?: number;
   audioUri: string;
   audioPath?: string;
   duration: number;
@@ -199,9 +200,11 @@ type Project = {
   platforms: Platform[];
   avatarAssetId: string;
   backgroundMusicAssetId?: string;
+  backgroundMusicVolume?: number;
   voiceId: string;
   scriptModelId?: string;
   ttsModelId?: string;
+  audioPlaybackSpeed?: number;
   selectedScriptVersionId?: string;
   selectedAudioVersionId?: string;
   selectedVideoVersionId?: string;
@@ -1387,8 +1390,10 @@ function TaskComposer({
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [ttsModelId, setTtsModelId] = useState("");
+  const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.16);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
@@ -1417,8 +1422,10 @@ function TaskComposer({
           generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
           ttsModelId: ttsModelId || defaultModelIdForType(state, "tts"),
+          audioPlaybackSpeed,
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           backgroundMusicAssetId,
+          backgroundMusicVolume,
           platforms: Object.keys(platformLabels)
         })
       });
@@ -1435,8 +1442,10 @@ function TaskComposer({
     setScriptModelId(state.settings?.defaultTextModelId || "");
     setVoiceId("");
     setTtsModelId(defaultModelIdForType(state, "tts"));
+    setAudioPlaybackSpeed(1);
     setAvatarAssetId("");
     setBackgroundMusicAssetId("");
+    setBackgroundMusicVolume(0.16);
     setGenerateSubtitles(false);
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
@@ -1475,6 +1484,8 @@ function TaskComposer({
             </select>
           </label>
           <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
+          <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
+          {backgroundMusicAssetId && <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />}
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
@@ -1712,6 +1723,34 @@ function TtsModelSelect({ state, value, onChange }: { state: State; value: strin
   );
 }
 
+function RangeField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit = "",
+  format,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  format?: (value: number) => string;
+  onChange: (value: number) => void;
+}) {
+  const display = format ? format(value) : `${Number(value).toFixed(step < 0.1 ? 2 : 1)}${unit}`;
+  return (
+    <label className="range-field">
+      <span>{label}<strong>{display}</strong></span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
 function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "llm" | "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
   const providers = providersForType(state, type);
   const selected = value || defaultModelIdForType(state, type);
@@ -1758,8 +1797,10 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [ttsModelId, setTtsModelId] = useState("");
+  const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.16);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
@@ -1778,9 +1819,11 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
     setVoiceId(project?.voiceId || "");
     setTtsModelId(project?.ttsModelId || defaultModelIdForType(state, "tts"));
+    setAudioPlaybackSpeed(project?.audioPlaybackSpeed || 1);
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
+    setBackgroundMusicVolume(project?.backgroundMusicVolume ?? 0.16);
     setGenerateSubtitles(Boolean(project?.generateSubtitles));
   }, [project?.id]);
 
@@ -1853,14 +1896,14 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存口播文案", () => request<Project>(`/api/projects/${project.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, scriptModelId, changedStage: "script" })
+      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, scriptModelId, changedStage: "script" })
     }));
 
   const saveVideoSetup = () =>
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, videoSettings, changedStage: "video" })
+      body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, videoSettings, changedStage: "video" })
       }));
 
   const generateVoice = () =>
@@ -1868,19 +1911,19 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       const updated = await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, scriptModelId, changedStage: "script" })
+        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, scriptModelId, changedStage: "script" })
       });
       const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, ttsModelId, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
+        body: JSON.stringify({ voiceId, ttsModelId, audioPlaybackSpeed, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
       });
       voiceDirtyRef.current = false;
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId })
+        body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId, audioPlaybackSpeed })
       });
     });
 
@@ -1901,12 +1944,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume })
       });
     });
 
@@ -1915,12 +1958,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume })
       });
     });
 
@@ -2004,6 +2047,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         }}
         ttsModelId={ttsModelId}
         setTtsModelId={setTtsModelId}
+        audioPlaybackSpeed={audioPlaybackSpeed}
+        setAudioPlaybackSpeed={setAudioPlaybackSpeed}
         selectedVoice={selectedVoice}
         generateVoice={generateVoice}
         importAudioVersion={importAudioVersion}
@@ -2014,6 +2059,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         selectedAsset={selectedAsset}
         backgroundMusicAssetId={backgroundMusicAssetId}
         setBackgroundMusicAssetId={setBackgroundMusicAssetId}
+        backgroundMusicVolume={backgroundMusicVolume}
+        setBackgroundMusicVolume={setBackgroundMusicVolume}
         selectedMusic={selectedMusic}
         generateSubtitles={generateSubtitles}
         setGenerateSubtitles={setGenerateSubtitles}
@@ -2086,6 +2133,8 @@ function StageWorkspace({
   setVoiceId,
   ttsModelId,
   setTtsModelId,
+  audioPlaybackSpeed,
+  setAudioPlaybackSpeed,
   selectedVoice,
   generateVoice,
   importAudioVersion,
@@ -2096,6 +2145,8 @@ function StageWorkspace({
   selectedAsset,
   backgroundMusicAssetId,
   setBackgroundMusicAssetId,
+  backgroundMusicVolume,
+  setBackgroundMusicVolume,
   selectedMusic,
   generateSubtitles,
   setGenerateSubtitles,
@@ -2133,6 +2184,8 @@ function StageWorkspace({
   setVoiceId: (value: string) => void;
   ttsModelId: string;
   setTtsModelId: (value: string) => void;
+  audioPlaybackSpeed: number;
+  setAudioPlaybackSpeed: (value: number) => void;
   selectedVoice?: Asset;
   generateVoice: () => Promise<unknown>;
   importAudioVersion: (file?: File, voiceName?: string) => Promise<unknown>;
@@ -2143,6 +2196,8 @@ function StageWorkspace({
   selectedAsset?: Asset;
   backgroundMusicAssetId: string;
   setBackgroundMusicAssetId: (value: string) => void;
+  backgroundMusicVolume: number;
+  setBackgroundMusicVolume: (value: number) => void;
   selectedMusic?: Asset;
   generateSubtitles: boolean;
   setGenerateSubtitles: (value: boolean) => void;
@@ -2264,6 +2319,7 @@ function StageWorkspace({
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
             <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
+          <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />
@@ -2304,7 +2360,12 @@ function StageWorkspace({
               {musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
             </select>
           </label>
-          {selectedMusic && <audio className="inline-audio" controls src={selectedMusic.uri} />}
+          {selectedMusic && (
+            <div className="media-control-block">
+              <audio className="inline-audio" controls src={selectedMusic.uri} />
+              <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
+            </div>
+          )}
           <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
           <div className="preset-row">
             <code>最佳参数模式：MediaPipe 智能裁剪 / 稳定融合 / 上边界 0.50</code>

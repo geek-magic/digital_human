@@ -540,6 +540,7 @@ function audioArtifactFromVersion(version) {
     voiceName: version.voiceName || "",
     ttsModelId: version.ttsModelId || "",
     ttsModelName: version.ttsModelName || "",
+    audioPlaybackSpeed: clampNumber(version.audioPlaybackSpeed, 0.5, 2, 1),
     metrics: version.metrics || {}
   };
 }
@@ -597,6 +598,7 @@ function normalizeAudioVersion(project, version, index) {
     modelInfo: version.modelInfo || null,
     ttsModelId: version.ttsModelId || version.modelInfo?.modelId || "",
     ttsModelName: version.ttsModelName || version.modelInfo?.modelName || "",
+    audioPlaybackSpeed: clampNumber(version.audioPlaybackSpeed || version.playbackSpeed || project.audioPlaybackSpeed, 0.5, 2, 1),
     adapter: version.adapter || "tts",
     note: version.note || "",
     metrics: version.metrics || {},
@@ -651,7 +653,9 @@ function normalizeProject(project) {
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
   project.ttsModelId ||= "";
+  project.audioPlaybackSpeed = clampNumber(project.audioPlaybackSpeed, 0.5, 2, 1);
   project.backgroundMusicAssetId ||= "";
+  project.backgroundMusicVolume = clampNumber(project.backgroundMusicVolume, 0, 1, 0.16);
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
   project.artifacts ||= {};
   project.scriptVersions = (project.scriptVersions || []).map((version, index) => normalizeScriptVersion(project, version, index));
@@ -691,6 +695,7 @@ function normalizeProject(project) {
       voiceName: project.artifacts.audio.voiceName || "",
       ttsModelId: project.artifacts.audio.ttsModelId || project.ttsModelId || "",
       ttsModelName: project.artifacts.audio.ttsModelName || "",
+      audioPlaybackSpeed: project.artifacts.audio.audioPlaybackSpeed || project.audioPlaybackSpeed || 1,
       audioUri: project.artifacts.audio.uri || "",
       audioPath: project.artifacts.audio.path || "",
       duration: project.artifacts.audio.duration || 0,
@@ -1278,7 +1283,7 @@ function queueSignature(project, type, payload = {}) {
     return stableStringify({ type, inputText: payload.inputText ?? project.inputText ?? "", requirements: payload.requirements ?? project.requirements ?? "", modelId });
   }
   if (type === "synthesize_speech") {
-    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "", ttsModelId: payload.ttsModelId || project.ttsModelId || "" });
+    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "", ttsModelId: payload.ttsModelId || project.ttsModelId || "", audioPlaybackSpeed: clampNumber(payload.audioPlaybackSpeed ?? project.audioPlaybackSpeed, 0.5, 2, 1) });
   }
   if (type === "render_video") {
     return stableStringify({
@@ -1286,6 +1291,7 @@ function queueSignature(project, type, payload = {}) {
       audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "",
       avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "",
       backgroundMusicAssetId: payload.backgroundMusicAssetId || project.backgroundMusicAssetId || "",
+      backgroundMusicVolume: clampNumber(payload.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.16),
       previewDuration: Number(payload.previewDuration || 0),
       variantLabel: payload.variantLabel || "",
       videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
@@ -3091,6 +3097,41 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   return result;
 }
 
+function atempoFilter(speed) {
+  let remaining = clampNumber(speed, 0.5, 2, 1);
+  const parts = [];
+  while (remaining > 2) {
+    parts.push("atempo=2");
+    remaining /= 2;
+  }
+  while (remaining < 0.5) {
+    parts.push("atempo=0.5");
+    remaining /= 0.5;
+  }
+  parts.push(`atempo=${remaining.toFixed(3)}`);
+  return parts.join(",");
+}
+
+async function applyAudioPlaybackSpeed(inputPath, speed = 1) {
+  const normalizedSpeed = clampNumber(speed, 0.5, 2, 1);
+  if (Math.abs(normalizedSpeed - 1) < 0.01) return { applied: false, speed: 1 };
+  if (!commandExists("ffmpeg") || !inputPath || !existsSync(inputPath)) return { applied: false, speed: normalizedSpeed };
+  const tmpPath = inputPath.replace(/(\.[^.]+)?$/, `.speed-${Date.now()}.wav`);
+  await execFileAsync("ffmpeg", [
+    "-y",
+    "-i",
+    inputPath,
+    "-filter:a",
+    atempoFilter(normalizedSpeed),
+    "-vn",
+    "-c:a",
+    "pcm_s16le",
+    tmpPath
+  ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  copyFileSync(tmpPath, inputPath);
+  return { applied: true, speed: normalizedSpeed };
+}
+
 async function createExternalAvatarVideo(input, outPath) {
   const payloadPath = join(dirname(outPath), "avatar-render-input.json");
   writeFileSync(payloadPath, JSON.stringify(input, null, 2));
@@ -3573,6 +3614,7 @@ async function packageAvatarRenderVideo({
   avatarRenderPath,
   audioPath,
   backgroundMusicPath = "",
+  backgroundMusicVolume = 0.16,
   subtitlesPath = "",
   duration,
   burnSubtitles = false,
@@ -3603,7 +3645,7 @@ async function packageAvatarRenderVideo({
   }
 
   if (hasMusic && hasAudio) {
-    filters.push(`[${musicInputIndex}:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
+    filters.push(`[${musicInputIndex}:a]volume=${clampNumber(backgroundMusicVolume, 0, 1, 0.16).toFixed(3)},atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
     filters.push(`[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`);
     args.push(
       "-filter_complex",
@@ -5227,7 +5269,9 @@ app.post("/api/projects", async (req, res, next) => {
     scriptModelId,
     avatarAssetId: req.body.avatarAssetId || "",
     backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
+    backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.16),
     voiceId: req.body.voiceId || "",
+    audioPlaybackSpeed: clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1),
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
     status: "created",
     currentStep: "input",
@@ -5322,6 +5366,8 @@ app.patch("/api/projects/:id", (req, res) => {
   for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
+  if (req.body.audioPlaybackSpeed !== undefined) project.audioPlaybackSpeed = clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1);
+  if (req.body.backgroundMusicVolume !== undefined) project.backgroundMusicVolume = clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.16);
   if (req.body.videoSettings !== undefined) {
     project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...req.body.videoSettings });
   }
@@ -5447,6 +5493,7 @@ function createAudioVersion(project, audioArtifact, options = {}) {
     adapter: audioArtifact.adapter || "tts",
     note: audioArtifact.note || "",
     metrics: audioArtifact.metrics || {},
+    audioPlaybackSpeed: options.audioPlaybackSpeed || audioArtifact.audioPlaybackSpeed || project.audioPlaybackSpeed || 1,
     createdAt: now(),
     status: options.status || "done",
     isCurrent: true
@@ -5707,12 +5754,14 @@ async function synthesizeProject(projectId, options = {}) {
     const modelAudioPath = join(outDir, "voiceover.wav");
     const voice = resolveTtsVoice(db, project, options.payload?.voiceId || "");
     const ttsTarget = findTypedModelTarget(db, "tts", options.payload?.ttsModelId || project.ttsModelId || "");
+    const audioPlaybackSpeed = clampNumber(options.payload?.audioPlaybackSpeed ?? project.audioPlaybackSpeed, 0.5, 2, 1);
     if (ttsTarget.type !== "local") {
       const err = new Error("任务生成口播音频暂只支持本地 TTS 模型。");
       err.status = 400;
       throw err;
     }
     project.ttsModelId = ttsTarget.model.id;
+    project.audioPlaybackSpeed = audioPlaybackSpeed;
     project.status = "running";
     setStage(project, "voice", "running", "正在生成口播音频。");
     setProjectProgress(project, {
@@ -5732,6 +5781,8 @@ async function synthesizeProject(projectId, options = {}) {
     let ttsResult;
     try {
       ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, { ...options, model: ttsTarget.model });
+      const speedResult = await applyAudioPlaybackSpeed(modelAudioPath, audioPlaybackSpeed);
+      ttsResult.metrics = { ...(ttsResult.metrics || {}), audioPlaybackSpeed, speedAdjusted: speedResult.applied };
     } catch (error) {
       const failDb = readDb();
       const failedProject = ensureProject(failDb, projectId);
@@ -5765,6 +5816,7 @@ async function synthesizeProject(projectId, options = {}) {
       voiceName: voice?.name || "",
       ttsModelId: ttsTarget.model.id,
       ttsModelName: ttsTarget.model.name,
+      audioPlaybackSpeed,
       metrics: ttsResult?.metrics || {}
     };
     const latestDb = readDb();
@@ -5772,8 +5824,10 @@ async function synthesizeProject(projectId, options = {}) {
     latestProject.selectedScriptVersionId = scriptVersion.id;
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.ttsModelId = ttsTarget.model.id;
+    latestProject.audioPlaybackSpeed = audioPlaybackSpeed;
     const version = createAudioVersion(latestProject, audioArtifact, {
       sourceScriptVersionId: scriptVersion.id,
+      audioPlaybackSpeed,
       modelInfo: { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: ttsResult?.metrics || {} }
     });
     latestProject.status = "voice_ready";
@@ -5904,7 +5958,9 @@ async function renderProject(projectId, options = {}) {
     project.avatarAssetId = avatarAssetId || project.avatarAssetId;
     const backgroundMusicAssetId = options.backgroundMusicAssetId || project.backgroundMusicAssetId || "";
     const backgroundMusic = (db.musicAssets || []).find((item) => item.id === backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
+    const backgroundMusicVolume = clampNumber(options.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.16);
     project.backgroundMusicAssetId = backgroundMusic?.id || "";
+    project.backgroundMusicVolume = backgroundMusicVolume;
     project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
     const generateSubtitles = Boolean(options.generateSubtitles ?? project.generateSubtitles);
     project.generateSubtitles = generateSubtitles;
@@ -5973,6 +6029,7 @@ async function renderProject(projectId, options = {}) {
       avatarRenderPath,
       audioPath: project.artifacts.audio?.path || "",
       backgroundMusicPath: backgroundMusic?.path || "",
+      backgroundMusicVolume,
       subtitlesPath: srtPath,
       duration,
       burnSubtitles: generateSubtitles,
@@ -6002,7 +6059,7 @@ async function renderProject(projectId, options = {}) {
           `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
           avatarRender.segmentCount ? `长视频已自动切成 ${avatarRender.segmentCount} 段渲染，每段约 ${avatarRender.segmentSeconds} 秒。` : "",
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
-          backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}。` : "未使用背景音乐。",
+          backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}，音量 ${Math.round(backgroundMusicVolume * 100)}%。` : "未使用背景音乐。",
           generateSubtitles ? (visibleCaptions ? "字幕已烧录到视频画面。" : subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频画面。") : "未生成字幕。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
         ].filter(Boolean)
@@ -6021,6 +6078,7 @@ async function renderProject(projectId, options = {}) {
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.avatarAssetId = avatarAssetId || latestProject.avatarAssetId;
     latestProject.backgroundMusicAssetId = backgroundMusic?.id || "";
+    latestProject.backgroundMusicVolume = backgroundMusicVolume;
     latestProject.generateSubtitles = generateSubtitles;
     latestProject.videoSettings = project.videoSettings;
     latestProject.artifacts.video = videoArtifact;
@@ -6061,6 +6119,7 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
     backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
+    backgroundMusicVolume: req.body?.backgroundMusicVolume,
     generateSubtitles: Boolean(req.body?.generateSubtitles)
   });
 });
@@ -6071,6 +6130,7 @@ app.post("/api/projects/:id/render-preview", async (req, res, next) => {
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
     backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
+    backgroundMusicVolume: req.body?.backgroundMusicVolume,
     generateSubtitles: Boolean(req.body?.generateSubtitles),
     previewDuration: 3,
     variantLabel: "3秒预览"
