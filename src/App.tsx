@@ -182,6 +182,7 @@ type Project = {
   manualScript: boolean;
   reviewEnabled: boolean;
   mode?: WorkMode;
+  generateSubtitles?: boolean;
   platforms: Platform[];
   avatarAssetId: string;
   backgroundMusicAssetId?: string;
@@ -720,6 +721,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [, setClock] = useState(Date.now());
 
   function showToast(message: string, tone: ToastState["tone"] = "success") {
@@ -850,6 +852,34 @@ export function App() {
         {view === "models" && <ModelCenter state={state} action={action} />}
         {view === "publish" && <PublishHistory records={state.publishRecords} projects={state.projects} action={action} />}
       </main>
+      <button className="settings-fab" type="button" onClick={() => setSettingsOpen(true)} aria-label="运行配置">
+        <Settings2 size={20} />
+      </button>
+      {settingsOpen && <RuntimeSettingsDialog state={state} action={action} onClose={() => setSettingsOpen(false)} />}
+    </div>
+  );
+}
+
+function RuntimeSettingsDialog({ state, action, onClose }: { state: State; action: AppAction; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="settings-modal" role="dialog" aria-modal="true" aria-label="运行配置">
+        <div className="modal-head">
+          <div><p className="eyebrow">配置页</p><h2>运行配置</h2></div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+        </div>
+        <RuntimeSettingsPanel state={state} action={action} />
+      </section>
     </div>
   );
 }
@@ -1336,6 +1366,7 @@ function TaskComposer({
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
     setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
@@ -1357,6 +1388,7 @@ function TaskComposer({
           manualScript: true,
           mode,
           reviewEnabled: mode === "manual",
+          generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           platforms: Object.keys(platformLabels)
@@ -1406,6 +1438,7 @@ function TaskComposer({
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+              <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
             </>
           )}
         </div>
@@ -1673,6 +1706,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
+  const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
   const [activeStage, setActiveStage] = useState<StageKey>(currentStage);
@@ -1692,6 +1726,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
+    setGenerateSubtitles(Boolean(project?.generateSubtitles));
   }, [project?.id]);
 
   useEffect(() => {
@@ -1765,7 +1800,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, videoSettings, changedStage: "video" })
       }));
 
   const generateVoice = () =>
@@ -1806,12 +1841,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
       });
     });
 
@@ -1820,12 +1855,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId })
       });
     });
 
@@ -1918,6 +1953,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         backgroundMusicAssetId={backgroundMusicAssetId}
         setBackgroundMusicAssetId={setBackgroundMusicAssetId}
         selectedMusic={selectedMusic}
+        generateSubtitles={generateSubtitles}
+        setGenerateSubtitles={setGenerateSubtitles}
         videoSettings={videoSettings}
         setVideoSettings={setVideoSettings}
         saveVideoSetup={saveVideoSetup}
@@ -1996,6 +2033,8 @@ function StageWorkspace({
   backgroundMusicAssetId,
   setBackgroundMusicAssetId,
   selectedMusic,
+  generateSubtitles,
+  setGenerateSubtitles,
   videoSettings,
   setVideoSettings,
   saveVideoSetup,
@@ -2039,6 +2078,8 @@ function StageWorkspace({
   backgroundMusicAssetId: string;
   setBackgroundMusicAssetId: (value: string) => void;
   selectedMusic?: Asset;
+  generateSubtitles: boolean;
+  setGenerateSubtitles: (value: boolean) => void;
   videoSettings: VideoSettings;
   setVideoSettings: React.Dispatch<React.SetStateAction<VideoSettings>>;
   saveVideoSetup: () => Promise<Project | undefined>;
@@ -2197,6 +2238,7 @@ function StageWorkspace({
             </select>
           </label>
           {selectedMusic && <audio className="inline-audio" controls src={selectedMusic.uri} />}
+          <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
           <div className="preset-row">
             <code>最佳参数模式：MediaPipe 智能裁剪 / 稳定融合 / 上边界 0.50</code>
           </div>
@@ -3306,7 +3348,6 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
       <div className="manager-toolbar">
         <div><p className="eyebrow">体验中心</p><h2>内容能力体验</h2></div>
       </div>
-      <RuntimeSettingsPanel state={state} action={action} />
       <div className="model-type-tabs" role="tablist" aria-label="体验分类">
         {modelTypeTabs.map((tab) => (
           <button key={tab.id} role="tab" className={cx(activeType === tab.id && "active")} onClick={() => setActiveType(tab.id)}>

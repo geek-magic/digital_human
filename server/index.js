@@ -625,6 +625,7 @@ function normalizeProject(project) {
   project.manualScript = Boolean(project.manualScript);
   project.reviewEnabled = project.reviewEnabled ?? ["review", "manual"].includes(project.mode);
   project.mode = project.reviewEnabled ? "manual" : "auto";
+  project.generateSubtitles = Boolean(project.generateSubtitles);
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
   project.backgroundMusicAssetId ||= "";
@@ -720,6 +721,7 @@ function normalizeProject(project) {
   if (selectedVideo) {
     project.artifacts.video = videoArtifactFromVersion(selectedVideo);
     if (selectedVideo.artifact?.subtitles) project.artifacts.subtitles = selectedVideo.artifact.subtitles;
+    else delete project.artifacts.subtitles;
   }
   project.progress ||= {
     percent: project.status === "video_ready" || project.status === "ready_to_publish" ? 100 : 0,
@@ -1578,6 +1580,7 @@ async function executeQueueItem(item) {
     audioVersionId: item.payload?.audioVersionId,
     avatarAssetId: item.payload?.avatarAssetId,
     backgroundMusicAssetId: item.payload?.backgroundMusicAssetId,
+    generateSubtitles: item.payload?.generateSubtitles,
     previewDuration: item.payload?.previewDuration,
     variantLabel: item.payload?.variantLabel
   });
@@ -3185,6 +3188,91 @@ function previewVideoFilter(subtitlesPath) {
   return `${base},subtitles='${escapeFilterPath(subtitlesPath)}':force_style='Fontsize=18,MarginV=150,PrimaryColour=&H00FFFFFF&,OutlineColour=&HAA000000&,BorderStyle=1,Outline=2'`;
 }
 
+async function createSimpleSubtitleOverlays(segments, outDir, baseVideoPath) {
+  const selectedSegments = segments.filter((segment) => segment.text).slice(0, 120);
+  if (!selectedSegments.length) return [];
+  const media = await probeMediaInfo(baseVideoPath).catch(() => ({}));
+  const width = Math.max(320, Math.ceil(Number(media.width || 1080) / 2) * 2);
+  const height = Math.max(240, Math.ceil(Number(media.height || 1920) / 2) * 2);
+  const overlayDir = join(outDir, "subtitle-overlays");
+  mkdirSync(overlayDir, { recursive: true });
+  const payload = {
+    width,
+    height,
+    segments: selectedSegments.map((segment) => ({
+      ...segment,
+      text: compactChinese(segment.text, 68),
+      path: join(overlayDir, `subtitle-${String(segment.index).padStart(3, "0")}.png`)
+    }))
+  };
+  const script = `
+import json, os, sys
+from PIL import Image, ImageDraw, ImageFont
+
+payload = json.loads(sys.argv[1])
+width = int(payload["width"])
+height = int(payload["height"])
+font_paths = [
+  "/System/Library/Fonts/PingFang.ttc",
+  "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+  "/Library/Fonts/Arial Unicode.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+]
+font_path = next((p for p in font_paths if os.path.exists(p)), None)
+def font(size):
+  if font_path:
+    return ImageFont.truetype(font_path, size)
+  return ImageFont.load_default()
+
+def wrap_text(draw, text, fnt, max_width):
+  lines, current = [], ""
+  for ch in text:
+    trial = current + ch
+    bbox = draw.textbbox((0, 0), trial, font=fnt, stroke_width=2)
+    if bbox[2] - bbox[0] <= max_width or not current:
+      current = trial
+    else:
+      lines.append(current)
+      current = ch
+  if current:
+    lines.append(current)
+  return lines[:2]
+
+font_size = max(22, min(52, int(height * 0.045)))
+caption_font = font(font_size)
+line_gap = int(font_size * 1.35)
+max_width = int(width * 0.84)
+pad_x = int(width * 0.045)
+pad_y = int(font_size * 0.42)
+bottom_margin = max(28, int(height * 0.07))
+
+for segment in payload["segments"]:
+  img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+  draw = ImageDraw.Draw(img)
+  lines = wrap_text(draw, segment["text"], caption_font, max_width)
+  if not lines:
+    img.save(segment["path"])
+    continue
+  text_width = max(draw.textbbox((0, 0), line, font=caption_font, stroke_width=2)[2] for line in lines)
+  box_width = min(width - pad_x * 2, text_width + pad_x * 2)
+  box_height = len(lines) * line_gap + pad_y * 2
+  x0 = int((width - box_width) / 2)
+  y0 = int(height - bottom_margin - box_height)
+  x1 = x0 + box_width
+  y1 = y0 + box_height
+  draw.rounded_rectangle((x0, y0, x1, y1), radius=max(10, int(font_size * 0.45)), fill=(0, 0, 0, 132))
+  y = y0 + pad_y
+  for line in lines:
+    bbox = draw.textbbox((0, 0), line, font=caption_font, stroke_width=2)
+    x = int((width - (bbox[2] - bbox[0])) / 2)
+    draw.text((x, y), line, font=caption_font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 220))
+    y += line_gap
+  img.save(segment["path"])
+`;
+  await execFileAsync("python3", ["-c", script, JSON.stringify(payload)], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
+  return payload.segments.filter((segment) => existsSync(segment.path));
+}
+
 async function runFfmpegWithSubtitleFallback(args, subtitlesPath) {
   try {
     await execFileAsync("ffmpeg", args);
@@ -3300,6 +3388,20 @@ function overlayFilterGraph(captionOverlays) {
     const start = Number(item.start || 0).toFixed(2);
     const end = Number(item.end || 0).toFixed(2);
     graph += `;[${inputIndex}:v]format=rgba[ov${index}];[${previous}][ov${index}]overlay=0:0:enable='between(t,${start},${end})'[${output}]`;
+    previous = output;
+  });
+  return graph;
+}
+
+function simpleSubtitleOverlayFilterGraph(captionOverlays, firstOverlayInputIndex) {
+  let graph = "[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p[v0]";
+  let previous = "v0";
+  captionOverlays.forEach((item, index) => {
+    const inputIndex = firstOverlayInputIndex + index;
+    const output = index === captionOverlays.length - 1 ? "v" : `vsub${index + 1}`;
+    const start = Number(item.start || 0).toFixed(2);
+    const end = Number(item.end || 0).toFixed(2);
+    graph += `;[${inputIndex}:v]format=rgba[ovsub${index}];[${previous}][ovsub${index}]overlay=0:0:enable='between(t,${start},${end})'[${output}]`;
     previous = output;
   });
   return graph;
@@ -3424,54 +3526,92 @@ async function packageAvatarRenderVideo({
   audioPath,
   backgroundMusicPath = "",
   subtitlesPath = "",
-  duration
+  duration,
+  burnSubtitles = false,
+  captionOverlays = []
 }) {
-  if (!commandExists("ffmpeg") || !avatarRenderPath || !existsSync(avatarRenderPath)) return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false };
+  if (!commandExists("ffmpeg") || !avatarRenderPath || !existsSync(avatarRenderPath)) return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false, visibleCaptions: false };
   const hasAudio = audioPath && existsSync(audioPath);
   const hasMusic = backgroundMusicPath && existsSync(backgroundMusicPath);
   const hasSubtitles = subtitlesPath && existsSync(subtitlesPath);
+  const shouldBurnSubtitles = Boolean(burnSubtitles && hasSubtitles);
+  const usableOverlays = shouldBurnSubtitles ? captionOverlays.filter((item) => item.path && existsSync(item.path)) : [];
   const inputs = ["-i", avatarRenderPath];
   if (hasAudio) inputs.push("-i", audioPath);
   if (hasMusic) inputs.push("-stream_loop", "-1", "-i", backgroundMusicPath);
-  if (hasSubtitles) inputs.push("-i", subtitlesPath);
+  if (hasSubtitles && !shouldBurnSubtitles) inputs.push("-i", subtitlesPath);
+  for (const overlay of usableOverlays) inputs.push("-loop", "1", "-i", overlay.path);
 
   const args = ["-y", ...inputs];
   const audioInputIndex = hasAudio ? 1 : -1;
   const musicInputIndex = hasMusic ? (hasAudio ? 2 : 1) : -1;
-  const subtitleInputIndex = hasSubtitles ? 1 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0) : -1;
+  const subtitleInputIndex = hasSubtitles && !shouldBurnSubtitles ? 1 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0) : -1;
+  const firstOverlayInputIndex = 1 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0) + (hasSubtitles && !shouldBurnSubtitles ? 1 : 0);
+  const filters = [];
+  if (usableOverlays.length) {
+    filters.push(simpleSubtitleOverlayFilterGraph(usableOverlays, firstOverlayInputIndex));
+  } else if (shouldBurnSubtitles) {
+    filters.push(`[0:v]${previewVideoFilter(subtitlesPath)}[v]`);
+  }
 
   if (hasMusic && hasAudio) {
+    filters.push(`[${musicInputIndex}:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
+    filters.push(`[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`);
     args.push(
       "-filter_complex",
-      `[${musicInputIndex}:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm];[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+      filters.join(";"),
       "-map",
-      "0:v:0",
+      shouldBurnSubtitles ? "[v]" : "0:v:0",
       "-map",
       "[a]"
     );
-  } else if (hasAudio) {
-    args.push("-map", "0:v:0", "-map", `${audioInputIndex}:a:0`);
   } else {
-    args.push("-map", "0:v:0", "-map", "0:a?");
+    if (filters.length) args.push("-filter_complex", filters.join(";"));
+    args.push("-map", shouldBurnSubtitles ? "[v]" : "0:v:0");
+    if (hasAudio) {
+      args.push("-map", `${audioInputIndex}:a:0`);
+    } else {
+      args.push("-map", "0:a?");
+    }
   }
 
-  if (hasSubtitles) args.push("-map", `${subtitleInputIndex}:0`);
+  if (hasSubtitles && !shouldBurnSubtitles) args.push("-map", `${subtitleInputIndex}:0`);
   args.push(
     "-t",
     String(duration),
-    "-shortest",
-    "-c:v",
-    "copy",
+    "-shortest"
+  );
+  if (shouldBurnSubtitles) {
+    args.push(
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "20",
+      "-pix_fmt",
+      "yuv420p"
+    );
+  } else {
+    args.push("-c:v", "copy");
+  }
+  args.push(
     "-c:a",
     "aac"
   );
-  if (hasSubtitles) args.push("-c:s", "mov_text");
+  if (hasSubtitles && !shouldBurnSubtitles) args.push("-c:s", "mov_text");
   args.push("-movflags", "+faststart", outPath);
   try {
     await execFileAsync("ffmpeg", args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
-    return { ok: existsSync(outPath), backgroundMusicMixed: Boolean(hasMusic && hasAudio), subtitlesEmbedded: hasSubtitles };
+    const ok = existsSync(outPath);
+    return {
+      ok,
+      backgroundMusicMixed: Boolean(ok && hasMusic && hasAudio),
+      subtitlesEmbedded: Boolean(ok && hasSubtitles && !shouldBurnSubtitles),
+      visibleCaptions: Boolean(ok && shouldBurnSubtitles)
+    };
   } catch {
-    return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false };
+    return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false, visibleCaptions: false };
   }
 }
 
@@ -4991,6 +5131,7 @@ app.post("/api/projects", async (req, res, next) => {
     manualScript,
     reviewEnabled: mode === "manual",
     mode,
+    generateSubtitles: Boolean(req.body.generateSubtitles),
     platforms: req.body.platforms?.length ? req.body.platforms : ["douyin", "xiaohongshu", "wechat"],
     scriptModelId,
     avatarAssetId: req.body.avatarAssetId || "",
@@ -5087,7 +5228,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.videoSettings !== undefined) {
@@ -5657,6 +5798,8 @@ async function renderProject(projectId, options = {}) {
     const backgroundMusic = (db.musicAssets || []).find((item) => item.id === backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
     project.backgroundMusicAssetId = backgroundMusic?.id || "";
     project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
+    const generateSubtitles = Boolean(options.generateSubtitles ?? project.generateSubtitles);
+    project.generateSubtitles = generateSubtitles;
     project.status = "running";
     setStage(project, "video", "running", "正在生成数字人视频。");
     setProjectProgress(project, {
@@ -5668,13 +5811,12 @@ async function renderProject(projectId, options = {}) {
     });
     pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration });
     writeDb(db);
-    updateQueueProgress(options.queueId, { percent: 70, label: "正在生成字幕文件。", stage: "video", stageStatus: "running" });
+    updateQueueProgress(options.queueId, { percent: 70, label: generateSubtitles ? "正在生成字幕文件。" : "正在准备视频素材。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human.mp4");
     const avatarRenderPath = join(outDir, "digital-human-musetalk.mp4");
-    const srtPath = join(outDir, "captions.srt");
-    const captionSegments = buildCaptionSegments(project.artifacts.script.script, duration);
-    writeFileSync(srtPath, buildSrt(project.artifacts.script.script, duration));
-    const captionOverlays = [];
+    const srtPath = generateSubtitles ? join(outDir, "captions.srt") : "";
+    const captionSegments = generateSubtitles ? buildCaptionSegments(project.artifacts.script.script, duration) : [];
+    if (generateSubtitles) writeFileSync(srtPath, buildSrt(project.artifacts.script.script, duration));
     updateQueueProgress(options.queueId, { percent: 76, label: "正在调用数字人口型 Adapter。", stage: "video" });
     const avatarRender = await createSegmentedAvatarVideo(
       {
@@ -5714,14 +5856,19 @@ async function renderProject(projectId, options = {}) {
       updateQueueProgress(options.queueId, { percent: 82, label: message, stage: "video", stageStatus: "failed" });
       throw new Error(message);
     }
-    updateQueueProgress(options.queueId, { percent: 86, label: "正在一次性封装视频、音频、背景音和字幕。", stage: "video" });
+    const captionOverlays = generateSubtitles
+      ? await createSimpleSubtitleOverlays(captionSegments, outDir, avatarRenderPath).catch(() => [])
+      : [];
+    updateQueueProgress(options.queueId, { percent: 86, label: generateSubtitles ? "正在一次性封装视频、音频、背景音和可见字幕。" : "正在一次性封装视频、音频和背景音。", stage: "video" });
     const packaged = await packageAvatarRenderVideo({
       outPath: videoPath,
       avatarRenderPath,
       audioPath: project.artifacts.audio?.path || "",
       backgroundMusicPath: backgroundMusic?.path || "",
       subtitlesPath: srtPath,
-      duration
+      duration,
+      burnSubtitles: generateSubtitles,
+      captionOverlays
     });
     let rendered = packaged.ok;
     if (!rendered) {
@@ -5732,14 +5879,15 @@ async function renderProject(projectId, options = {}) {
       rendered = true;
     }
     const backgroundMusicMixed = packaged.backgroundMusicMixed;
-    const subtitlesEmbedded = packaged.subtitlesEmbedded || (rendered && !packaged.ok ? await embedSubtitlesInMp4(videoPath, srtPath) : false);
+    const subtitlesEmbedded = packaged.subtitlesEmbedded || (generateSubtitles && rendered && !packaged.ok && !packaged.visibleCaptions ? await embedSubtitlesInMp4(videoPath, srtPath) : false);
+    const visibleCaptions = Boolean(generateSubtitles && (packaged.visibleCaptions || (rendered && !packaged.ok)));
     const videoArtifact = {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
       adapter: `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
       subtitlesEmbedded,
-      visibleCaptions: rendered,
+      visibleCaptions,
       qualityReport: {
         status: `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
@@ -5747,16 +5895,16 @@ async function renderProject(projectId, options = {}) {
           avatarRender.segmentCount ? `长视频已自动切成 ${avatarRender.segmentCount} 段渲染，每段约 ${avatarRender.segmentSeconds} 秒。` : "",
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
           backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}。` : "未使用背景音乐。",
-          subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频轨。",
+          generateSubtitles ? (visibleCaptions ? "字幕已烧录到视频画面。" : subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频画面。") : "未生成字幕。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
         ].filter(Boolean)
       }
     };
-    const subtitlesArtifact = {
+    const subtitlesArtifact = generateSubtitles ? {
       uri: publicPath(srtPath),
       path: srtPath,
       format: "srt"
-    };
+    } : null;
     const latestDb = readDb();
     const latestProject = ensureProject(latestDb, projectId);
     latestProject.selectedAudioVersionId = audioVersion.id;
@@ -5765,9 +5913,11 @@ async function renderProject(projectId, options = {}) {
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.avatarAssetId = avatarAssetId || latestProject.avatarAssetId;
     latestProject.backgroundMusicAssetId = backgroundMusic?.id || "";
+    latestProject.generateSubtitles = generateSubtitles;
     latestProject.videoSettings = project.videoSettings;
     latestProject.artifacts.video = videoArtifact;
-    latestProject.artifacts.subtitles = subtitlesArtifact;
+    if (subtitlesArtifact) latestProject.artifacts.subtitles = subtitlesArtifact;
+    else delete latestProject.artifacts.subtitles;
     latestProject.status = "video_ready";
     latestProject.lastError = "";
     setStage(latestProject, "video", "done", previewDuration > 0 ? "3秒预览已生成。" : "视频已生成。");
@@ -5802,7 +5952,8 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
-    backgroundMusicAssetId: req.body?.backgroundMusicAssetId || ""
+    backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
+    generateSubtitles: Boolean(req.body?.generateSubtitles)
   });
 });
 
@@ -5812,6 +5963,7 @@ app.post("/api/projects/:id/render-preview", async (req, res, next) => {
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
     backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
+    generateSubtitles: Boolean(req.body?.generateSubtitles),
     previewDuration: 3,
     variantLabel: "3秒预览"
   });
@@ -5821,7 +5973,8 @@ app.post("/api/projects/:id/video-versions", async (req, res, next) => {
   enqueueAndRespond(req, res, next, "render_video", {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
-    avatarAssetId: req.body?.avatarAssetId || ""
+    avatarAssetId: req.body?.avatarAssetId || "",
+    generateSubtitles: Boolean(req.body?.generateSubtitles)
   });
 });
 
