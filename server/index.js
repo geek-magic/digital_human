@@ -5930,7 +5930,12 @@ async function synthesizeProject(projectId, options = {}) {
     });
     pushJob(db, project.id, "synthesize_speech", "running", "开始生成口播音频。");
     writeDb(db);
-    updateQueueProgress(options.queueId, { percent: 50, label: "正在临时启动本地 TTS。", stage: "voice", stageStatus: "running" });
+    const usingWarmTts = runtimeWorkers.tts.status === "running" || runtimeWorkers.tts.status === "starting";
+    const ttsProgressLabel = usingWarmTts ? "正在使用已启动的音频合成模型。" : "正在临时启动本地 TTS。";
+    updateQueueProgress(options.queueId, { percent: 50, label: ttsProgressLabel, stage: "voice", stageStatus: "running" });
+    setStage(project, "voice", "running", ttsProgressLabel);
+    project.updatedAt = now();
+    writeDb(db);
     let ttsResult;
     try {
       ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, options);
@@ -5957,12 +5962,13 @@ async function synthesizeProject(projectId, options = {}) {
     const audioPath = modelAudioPath;
     const actualDuration = await probeMediaDuration(audioPath);
     const duration = Math.min(120, Math.max(estimatedDuration, Math.ceil(actualDuration || estimatedDuration)));
+    const usedWarmTts = Boolean(ttsResult?.metrics?.worker_warm);
     const audioArtifact = {
       uri: publicPath(audioPath),
       path: audioPath,
       duration,
-      adapter: "local-qwen3-tts-cli",
-      note: `已临时启动本地 TTS 生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
+      adapter: usedWarmTts ? "local-qwen3-tts-worker" : "local-qwen3-tts-cli",
+      note: `${usedWarmTts ? "已使用提前启动的音频合成模型" : "已临时启动本地 TTS"}生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
       voiceId: voice?.id || "",
       voiceName: voice?.name || "",
       metrics: ttsResult?.metrics || {}
