@@ -176,6 +176,18 @@ async function prepareInputs(payload, workDir) {
   return { preparedVideo, preparedAudio, duration };
 }
 
+async function prepareSegmentInputs(payload, workDir, index) {
+  const segment = payload.segments?.[index] || {};
+  const segmentDir = join(workDir, "segments", `segment-${String(index + 1).padStart(3, "0")}`);
+  mkdirSync(segmentDir, { recursive: true });
+  return prepareInputs({
+    ...payload,
+    duration: segment.duration || payload.duration,
+    audioStart: segment.audioStart || 0,
+    videoStart: segment.videoStart || 0
+  }, segmentDir);
+}
+
 async function createMediapipeCoords(videoPath, coordPath, settings) {
   const script = String.raw`
 import cv2, json, pickle, sys
@@ -272,18 +284,24 @@ async function render(payloadPath, outPath) {
   const outputPath = resolve(outPath);
   const workDir = dirname(outputPath);
   mkdirSync(workDir, { recursive: true });
-  const { preparedVideo, preparedAudio } = await prepareInputs(payload, workDir);
+  const segments = Array.isArray(payload.segments) && payload.segments.length ? payload.segments : [null];
+  const preparedSegments = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    preparedSegments.push(segments.length === 1
+      ? await prepareInputs(payload, workDir)
+      : await prepareSegmentInputs(payload, workDir, index));
+  }
 
   const resultDir = join(workDir, "musetalk-result");
   mkdirSync(resultDir, { recursive: true });
-  const resultName = "musetalk-output.mp4";
+  const resultNames = preparedSegments.map((_, index) => segments.length === 1 ? "musetalk-output.mp4" : `musetalk-output-${String(index + 1).padStart(3, "0")}.mp4`);
   const configPath = join(workDir, "musetalk-inference.yaml");
-  writeFileSync(configPath, [
-    "task_0:",
-    ` video_path: "${preparedVideo.replace(/"/g, '\\"')}"`,
-    ` audio_path: "${preparedAudio.replace(/"/g, '\\"')}"`,
-    ` result_name: "${resultName}"`
-  ].join("\n"));
+  writeFileSync(configPath, preparedSegments.flatMap((item, index) => [
+    `task_${index}:`,
+    ` video_path: "${item.preparedVideo.replace(/"/g, '\\"')}"`,
+    ` audio_path: "${item.preparedAudio.replace(/"/g, '\\"')}"`,
+    ` result_name: "${resultNames[index]}"`
+  ]).join("\n"));
 
   const args = [
     "-m",
@@ -316,11 +334,15 @@ async function render(payloadPath, outPath) {
   ];
 
   if (settings.cropMode === "mediapipe") {
-    const coordPath = join(workDir, `${basename(preparedVideo, ".mp4")}.pkl`);
+    let savedCoordCount = 0;
     try {
-      const coordResult = await createMediapipeCoords(preparedVideo, coordPath, settings);
-      console.log(`MediaPipe 坐标生成完成：frames=${coordResult.frames}, validFrames=${coordResult.validFrames}, skippedFrames=${coordResult.skippedFrames || 0}`);
-      args.push("--use_saved_coord");
+      for (const item of preparedSegments) {
+        const coordPath = join(dirname(item.preparedVideo), `${basename(item.preparedVideo, ".mp4")}.pkl`);
+        const coordResult = await createMediapipeCoords(item.preparedVideo, coordPath, settings);
+        savedCoordCount += 1;
+        console.log(`MediaPipe 坐标生成完成：segment=${savedCoordCount}/${preparedSegments.length}, frames=${coordResult.frames}, validFrames=${coordResult.validFrames}, skippedFrames=${coordResult.skippedFrames || 0}`);
+      }
+      if (savedCoordCount) args.push("--use_saved_coord");
     } catch (error) {
       console.warn(`MediaPipe 坐标生成失败，回退 MuseTalk 默认坐标检测：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -340,14 +362,23 @@ async function render(payloadPath, outPath) {
     }
   });
 
-  const generatedPath = join(resultDir, "v15", resultName);
-  if (!existsSync(generatedPath)) {
-    const repaired = await repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAudio, resultName, fps: 25 }).catch(() => false);
-    if (repaired) {
-      console.log("MuseTalk 缺失帧已用原始帧补齐。无人脸帧保留原画面。");
+  const generatedPaths = resultNames.map((resultName) => join(resultDir, "v15", resultName));
+  for (let index = 0; index < generatedPaths.length; index += 1) {
+    if (!existsSync(generatedPaths[index])) {
+      const repaired = await repairMuseTalkOutputFrames({
+        resultDir,
+        preparedVideo: preparedSegments[index].preparedVideo,
+        preparedAudio: preparedSegments[index].preparedAudio,
+        resultName: resultNames[index],
+        fps: 25
+      }).catch(() => false);
+      if (repaired) {
+        console.log(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段缺失帧已用原始帧补齐。无人脸帧保留原画面。`);
+      }
     }
   }
-  if (!existsSync(generatedPath)) {
+  const missingIndex = generatedPaths.findIndex((item) => !existsSync(item));
+  if (missingIndex !== -1) {
     const stdout = tailText(inference.stdout);
     const stderr = tailText(inference.stderr);
     const likelyFaceError = stdout.includes("integer division or modulo by zero")
@@ -358,10 +389,30 @@ async function render(payloadPath, outPath) {
       : "MuseTalk 未生成输出视频。";
     throw new Error([
       `${reason}`,
-      `预期输出：${generatedPath}`,
+      `失败片段：${missingIndex + 1}/${generatedPaths.length}`,
+      `预期输出：${generatedPaths[missingIndex]}`,
       stdout ? `MuseTalk stdout:\n${stdout}` : "",
       stderr ? `MuseTalk stderr:\n${stderr}` : ""
     ].filter(Boolean).join("\n\n"));
+  }
+  const generatedPath = generatedPaths.length === 1 ? generatedPaths[0] : join(workDir, "musetalk-output-concat.mp4");
+  if (generatedPaths.length > 1) {
+    const listPath = join(workDir, "musetalk-segments.txt");
+    writeFileSync(listPath, generatedPaths.map((item) => `file '${item.replace(/'/g, "'\\''")}'`).join("\n"));
+    await run(ffmpegBin, [
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      generatedPath
+    ]);
   }
   try {
     await run(ffmpegBin, [

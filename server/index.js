@@ -328,6 +328,10 @@ const defaultDb = {
   requirementTemplates: defaultRequirementTemplates,
   settings: {
     defaultTextModelId: "model-qwen2-5-7b-instruct-4bit-mlx",
+    keepAsrModelWarm: false,
+    keepTtsModelWarm: false,
+    videoConcurrency: 1,
+    avatarSegmentSeconds: 30,
     defaultModelIds: {
       llm: "model-qwen2-5-7b-instruct-4bit-mlx",
       asr: "model-qwen3-asr-1-7b",
@@ -385,6 +389,10 @@ function normalizeDb(db) {
       updatedAt: item.updatedAt || item.createdAt || now()
     }));
   db.settings ||= {};
+  db.settings.keepAsrModelWarm = Boolean(db.settings.keepAsrModelWarm);
+  db.settings.keepTtsModelWarm = Boolean(db.settings.keepTtsModelWarm);
+  db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
+  db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
   db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
   if (db.settings.defaultTextModelId === "model-qwen3-5-27b-4bit-mlx") {
     db.settings.defaultTextModelId = "model-qwen2-5-7b-instruct-4bit-mlx";
@@ -788,6 +796,14 @@ function normalizeVideoSettings(settings = {}) {
     batchSize: clampNumber(settings.batchSize, 1, 4, defaultVideoSettings.batchSize, true),
     leftCheekWidth: clampNumber(settings.leftCheekWidth, 40, 140, defaultVideoSettings.leftCheekWidth, true),
     rightCheekWidth: clampNumber(settings.rightCheekWidth, 40, 140, defaultVideoSettings.rightCheekWidth, true)
+  };
+}
+
+function applyRuntimeVideoSettings(db, settings = {}) {
+  const normalized = normalizeVideoSettings(settings);
+  return {
+    ...normalized,
+    batchSize: clampNumber(db.settings?.videoConcurrency, 1, 4, normalized.batchSize, true)
   };
 }
 
@@ -3071,7 +3087,7 @@ async function createExternalAvatarVideo(input, outPath) {
 }
 
 function avatarSegmentSeconds() {
-  return clampNumber(process.env.AVATAR_SEGMENT_SECONDS || 60, 10, 120, 60, true);
+  return clampNumber(process.env.AVATAR_SEGMENT_SECONDS || 30, 10, 120, 30, true);
 }
 
 function shellQuoteForConcat(filePath) {
@@ -3130,50 +3146,30 @@ async function concatVideoSegments(segmentPaths, outPath) {
 
 async function createSegmentedAvatarVideo(input, outPath, options = {}) {
   const duration = Math.max(1, Number(input.duration || 1));
-  const segmentSeconds = avatarSegmentSeconds();
+  const segmentSeconds = clampNumber(options.segmentSeconds, 10, 120, avatarSegmentSeconds(), true);
   if (duration <= segmentSeconds) {
     return createExternalAvatarVideo(input, outPath);
   }
-  const workDir = dirname(outPath);
-  const segmentDir = join(workDir, "avatar-segments");
-  mkdirSync(segmentDir, { recursive: true });
   const avatarDuration = await probeMediaDuration(input.avatarPath).catch(() => 0);
   const segmentCount = Math.ceil(duration / segmentSeconds);
-  const segmentPaths = [];
-  let engine = input.videoSettings?.engine || defaultVideoSettings.engine;
+  const segments = [];
   for (let index = 0; index < segmentCount; index += 1) {
     const start = index * segmentSeconds;
     const segmentDuration = Math.min(segmentSeconds, duration - start);
-    const segmentPath = join(segmentDir, `segment-${String(index + 1).padStart(3, "0")}.mp4`);
-    const videoStart = avatarDuration > 0 ? start % avatarDuration : 0;
-    updateQueueProgress(options.queueId, {
-      percent: Math.min(84, 76 + Math.round((index / segmentCount) * 8)),
-      label: `正在生成数字人口型片段 ${index + 1}/${segmentCount}。`,
-      stage: "video"
-    });
-    const segmentResult = await createExternalAvatarVideo({
-      ...input,
+    segments.push({
       duration: segmentDuration,
       audioStart: start,
-      videoStart,
+      videoStart: avatarDuration > 0 ? start % avatarDuration : 0,
       segmentIndex: index,
       segmentCount
-    }, segmentPath);
-    engine = segmentResult.engine || engine;
-    if (!segmentResult.ok || !existsSync(segmentPath)) {
-      return {
-        ok: false,
-        engine,
-        error: `第 ${index + 1}/${segmentCount} 段生成失败：${segmentResult.error || "未输出视频片段。"}`
-      };
-    }
-    segmentPaths.push(segmentPath);
+    });
   }
-  updateQueueProgress(options.queueId, { percent: 85, label: `正在拼接 ${segmentCount} 个数字人口型片段。`, stage: "video" });
-  await concatVideoSegments(segmentPaths, outPath);
+  updateQueueProgress(options.queueId, { percent: 78, label: `正在单进程生成 ${segmentCount} 个数字人口型片段。`, stage: "video" });
+  const result = await createExternalAvatarVideo({ ...input, segments }, outPath);
   return {
-    ok: existsSync(outPath),
-    engine: `${engine}-segmented`,
+    ...result,
+    ok: result.ok && existsSync(outPath),
+    engine: result.engine ? `${result.engine}-segmented` : `${input.videoSettings?.engine || defaultVideoSettings.engine}-segmented`,
     segmentCount,
     segmentSeconds
   };
@@ -3540,6 +3536,17 @@ app.delete("/api/requirement-templates/:id", (req, res) => {
   if (db.requirementTemplates.length === before) return res.status(404).json({ error: "模板不存在。" });
   writeDb(db);
   res.json({ ok: true });
+});
+
+app.patch("/api/settings/runtime", (req, res) => {
+  const db = readDb();
+  const body = req.body || {};
+  if (body.keepAsrModelWarm !== undefined) db.settings.keepAsrModelWarm = Boolean(body.keepAsrModelWarm);
+  if (body.keepTtsModelWarm !== undefined) db.settings.keepTtsModelWarm = Boolean(body.keepTtsModelWarm);
+  if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
+  if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
+  writeDb(db);
+  res.json({ ok: true, settings: db.settings });
 });
 
 function parseFps(value = "") {
@@ -4298,7 +4305,7 @@ app.post("/api/model-tests/avatar", upload.fields([
         return {};
       }
     })();
-    const videoSettings = normalizeVideoSettings({
+    const videoSettings = applyRuntimeVideoSettings(db, {
       ...requestedSettings,
       engine: requestedSettings.engine || avatarEngineFromModelId(model?.catalogId || model?.id || modelId)
     });
@@ -5592,7 +5599,7 @@ async function renderProject(projectId, options = {}) {
     const backgroundMusicAssetId = options.backgroundMusicAssetId || project.backgroundMusicAssetId || "";
     const backgroundMusic = (db.musicAssets || []).find((item) => item.id === backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
     project.backgroundMusicAssetId = backgroundMusic?.id || "";
-    project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...(options.videoSettings || {}) });
+    project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
     project.status = "running";
     setStage(project, "video", "running", "正在生成数字人视频。");
     setProjectProgress(project, {
@@ -5623,7 +5630,7 @@ async function renderProject(projectId, options = {}) {
         videoSettings: project.videoSettings
       },
       avatarRenderPath,
-      { queueId: options.queueId }
+      { queueId: options.queueId, segmentSeconds: db.settings.avatarSegmentSeconds }
     ).catch((error) => ({
       ok: false,
       engine: project.videoSettings.engine,

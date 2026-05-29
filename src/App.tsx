@@ -393,7 +393,14 @@ type State = {
   publishRecords: PublishRecord[];
   requirementTemplates: RequirementTemplate[];
   modelHome: string;
-  settings?: { defaultTextModelId?: string; defaultModelIds?: Partial<Record<ModelTypeKey, string>> };
+  settings?: {
+    defaultTextModelId?: string;
+    defaultModelIds?: Partial<Record<ModelTypeKey, string>>;
+    keepAsrModelWarm?: boolean;
+    keepTtsModelWarm?: boolean;
+    videoConcurrency?: number;
+    avatarSegmentSeconds?: number;
+  };
 };
 
 const emptyState: State = {
@@ -3299,6 +3306,7 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
       <div className="manager-toolbar">
         <div><p className="eyebrow">体验中心</p><h2>内容能力体验</h2></div>
       </div>
+      <RuntimeSettingsPanel state={state} action={action} />
       <div className="model-type-tabs" role="tablist" aria-label="体验分类">
         {modelTypeTabs.map((tab) => (
           <button key={tab.id} role="tab" className={cx(activeType === tab.id && "active")} onClick={() => setActiveType(tab.id)}>
@@ -3310,6 +3318,47 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
       {activeType === "llm" && <LlmTypeTestPanel state={state} action={action} />}
       {activeType === "tts" && <TtsTypeTestPanel voices={state.voices} action={action} />}
       {activeType === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
+    </section>
+  );
+}
+
+function RuntimeSettingsPanel({ state, action }: { state: State; action: AppAction }) {
+  const settings = state.settings || {};
+  const [draft, setDraft] = useState({
+    keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
+    keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
+    videoConcurrency: settings.videoConcurrency || 1,
+    avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
+  });
+  useEffect(() => {
+    setDraft({
+      keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
+      keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
+      videoConcurrency: settings.videoConcurrency || 1,
+      avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
+    });
+  }, [settings.keepAsrModelWarm, settings.keepTtsModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
+
+  function update(next: Partial<typeof draft>) {
+    const payload = { ...draft, ...next };
+    setDraft(payload);
+    action("保存运行配置", () => request("/api/settings/runtime", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }));
+  }
+
+  return (
+    <section className="runtime-settings">
+      <div>
+        <strong>运行配置</strong>
+        <small>未预启动时，ASR/TTS 会在使用时临时启动，完成后释放。</small>
+      </div>
+      <Toggle checked={draft.keepAsrModelWarm} onChange={(checked) => update({ keepAsrModelWarm: checked })} label="启动语音识别模型" />
+      <Toggle checked={draft.keepTtsModelWarm} onChange={(checked) => update({ keepTtsModelWarm: checked })} label="启动音频合成模型" />
+      <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) })} /></label>
+      <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) })} /></label>
     </section>
   );
 }
