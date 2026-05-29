@@ -24,6 +24,7 @@ const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "
 const ASR_WORKER_PATH = join(rootDir, "scripts", "qwen-asr-worker.py");
 const TTS_WORKER_PATH = join(rootDir, "scripts", "qwen-tts-worker.py");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
+const MUSETALK_WORKER_PATH = join(rootDir, "scripts", "musetalk-worker.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
 const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
   ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
@@ -332,6 +333,7 @@ const defaultDb = {
     defaultTextModelId: "model-qwen2-5-7b-instruct-4bit-mlx",
     keepAsrModelWarm: false,
     keepTtsModelWarm: false,
+    keepAvatarModelWarm: false,
     videoConcurrency: 1,
     avatarSegmentSeconds: 30,
     defaultModelIds: {
@@ -393,6 +395,7 @@ function normalizeDb(db) {
   db.settings ||= {};
   db.settings.keepAsrModelWarm = Boolean(db.settings.keepAsrModelWarm);
   db.settings.keepTtsModelWarm = Boolean(db.settings.keepTtsModelWarm);
+  db.settings.keepAvatarModelWarm = Boolean(db.settings.keepAvatarModelWarm);
   db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
   db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
@@ -2017,7 +2020,8 @@ function parseJsonFromStdout(stdout = "") {
 
 const runtimeWorkers = {
   asr: createRuntimeWorker("asr"),
-  tts: createRuntimeWorker("tts")
+  tts: createRuntimeWorker("tts"),
+  avatar: createRuntimeWorker("avatar")
 };
 
 function appendTail(current = "", chunk = "", max = 6000) {
@@ -2039,8 +2043,8 @@ async function inspectLocalRuntime(kind) {
 }
 
 function createRuntimeWorker(kind) {
-  const label = kind === "asr" ? "语音识别模型" : "音频合成模型";
-  const workerPath = kind === "asr" ? ASR_WORKER_PATH : TTS_WORKER_PATH;
+  const label = kind === "asr" ? "语音识别模型" : kind === "tts" ? "音频合成模型" : "视频合成模型";
+  const workerPath = kind === "asr" ? ASR_WORKER_PATH : kind === "tts" ? TTS_WORKER_PATH : MUSETALK_WORKER_PATH;
   const defaults = kind === "asr"
     ? {
         language: process.env.DH_ASR_LANGUAGE || "Chinese",
@@ -2048,11 +2052,11 @@ function createRuntimeWorker(kind) {
         dtype: process.env.DH_ASR_DTYPE || "float16",
         maxNewTokens: process.env.DH_ASR_MAX_NEW_TOKENS || "1024"
       }
-    : {
+    : kind === "tts" ? {
         language: process.env.DH_TTS_LANGUAGE || "Chinese",
         deviceMap: process.env.DH_TTS_DEVICE_MAP || "mps",
         dtype: process.env.DH_TTS_DTYPE || "float16"
-      };
+      } : {};
   return {
     kind,
     label,
@@ -2070,18 +2074,24 @@ function createRuntimeWorker(kind) {
       if (this.status === "running") return this.publicStatus();
       if (this.status === "starting" && this.startPromise) return this.startPromise;
       if (!existsSync(workerPath)) throw new Error(`缺少 ${label} worker：${workerPath}`);
-      const runtime = await inspectLocalRuntime(kind);
-      const args = [
-        workerPath,
-        "--model",
-        runtime.model,
-        "--language",
-        defaults.language,
-        "--device-map",
-        defaults.deviceMap,
-        "--dtype",
-        defaults.dtype
-      ];
+      if (kind === "avatar") {
+        const check = validateMuseTalkInstall(join(MODEL_HOME, "avatar", "MuseTalk"));
+        if (!check.ok) throw new Error(`MuseTalk 运行环境未就绪：${check.missing.join(", ")}`);
+      }
+      const runtime = kind === "avatar" ? { python: process.execPath } : await inspectLocalRuntime(kind);
+      const args = kind === "avatar"
+        ? [workerPath]
+        : [
+            workerPath,
+            "--model",
+            runtime.model,
+            "--language",
+            defaults.language,
+            "--device-map",
+            defaults.deviceMap,
+            "--dtype",
+            defaults.dtype
+          ];
       if (kind === "asr") args.push("--max-new-tokens", String(defaults.maxNewTokens));
       this.stop(false);
       this.status = "starting";
@@ -2228,7 +2238,8 @@ function createRuntimeWorker(kind) {
 function runtimeWorkerStatus() {
   return {
     asr: runtimeWorkers.asr.publicStatus(),
-    tts: runtimeWorkers.tts.publicStatus()
+    tts: runtimeWorkers.tts.publicStatus(),
+    avatar: runtimeWorkers.avatar.publicStatus()
   };
 }
 
@@ -3296,6 +3307,15 @@ async function createExternalAvatarVideo(input, outPath) {
   const payloadPath = join(dirname(outPath), "avatar-render-input.json");
   writeFileSync(payloadPath, JSON.stringify(input, null, 2));
   const engine = input.videoSettings?.engine || defaultVideoSettings.engine;
+  if (engine === "musetalk" && (runtimeWorkers.avatar.status === "running" || runtimeWorkers.avatar.status === "starting")) {
+    const result = await runtimeWorkers.avatar.request({
+      command: "render",
+      payloadPath,
+      outPath
+    }, 1200000);
+    if (result.ok && existsSync(outPath)) return { ok: true, engine: result.engine || "musetalk-v15-worker" };
+    return { ok: false, engine: "musetalk-v15-worker", error: result.error || "MuseTalk 常驻 Adapter 未输出视频。" };
+  }
   const attempts = [];
   if (process.env.AVATAR_RENDER_COMMAND) {
     attempts.push({ command: process.env.AVATAR_RENDER_COMMAND, args: [payloadPath, outPath], engine: "configured-avatar-adapter" });
@@ -3979,11 +3999,12 @@ app.delete("/api/requirement-templates/:id", (req, res) => {
 app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
   try {
     const kind = req.params.kind;
-    if (!["asr", "tts"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+    if (!["asr", "tts", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
     const status = await runtimeWorkers[kind].start();
     const db = readDb();
     if (kind === "asr") db.settings.keepAsrModelWarm = true;
     if (kind === "tts") db.settings.keepTtsModelWarm = true;
+    if (kind === "avatar") db.settings.keepAvatarModelWarm = true;
     writeDb(db);
     res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
   } catch (err) {
@@ -3993,11 +4014,12 @@ app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
 
 app.post("/api/runtime-models/:kind/stop", (req, res) => {
   const kind = req.params.kind;
-  if (!["asr", "tts"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
+  if (!["asr", "tts", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
   const status = runtimeWorkers[kind].stop();
   const db = readDb();
   if (kind === "asr") db.settings.keepAsrModelWarm = false;
   if (kind === "tts") db.settings.keepTtsModelWarm = false;
+  if (kind === "avatar") db.settings.keepAvatarModelWarm = false;
   writeDb(db);
   res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
 });
@@ -4012,6 +4034,7 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   const body = req.body || {};
   if (body.keepAsrModelWarm !== undefined) db.settings.keepAsrModelWarm = Boolean(body.keepAsrModelWarm);
   if (body.keepTtsModelWarm !== undefined) db.settings.keepTtsModelWarm = Boolean(body.keepTtsModelWarm);
+  if (body.keepAvatarModelWarm !== undefined) db.settings.keepAvatarModelWarm = Boolean(body.keepAvatarModelWarm);
   if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
   writeDb(db);
@@ -4019,6 +4042,8 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   if (body.keepAsrModelWarm === false) runtimeWorkers.asr.stop();
   if (body.keepTtsModelWarm === true) await runtimeWorkers.tts.start();
   if (body.keepTtsModelWarm === false) runtimeWorkers.tts.stop();
+  if (body.keepAvatarModelWarm === true) await runtimeWorkers.avatar.start();
+  if (body.keepAvatarModelWarm === false) runtimeWorkers.avatar.stop();
   res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
   } catch (err) {
     next(err);
@@ -6876,5 +6901,8 @@ app.listen(PORT, () => {
   }
   if (db.settings.keepTtsModelWarm) {
     runtimeWorkers.tts.start().catch((error) => console.error(`[runtime-models] TTS 启动失败：${error.message}`));
+  }
+  if (db.settings.keepAvatarModelWarm) {
+    runtimeWorkers.avatar.start().catch((error) => console.error(`[runtime-models] MuseTalk 启动失败：${error.message}`));
   }
 });

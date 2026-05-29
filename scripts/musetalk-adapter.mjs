@@ -272,7 +272,7 @@ print(json.dumps({"frames": len(coords), "validFrames": detected_valid, "skipped
   return result;
 }
 
-async function render(payloadPath, outPath) {
+export async function render(payloadPath, outPath) {
   assertFile(payloadPath, "Adapter 输入");
   assertFile(join(museTalkHome, "scripts", "inference.py"), "MuseTalk 推理脚本");
   assertFile(join(museTalkHome, "models", "musetalkV15", "unet.pth"), "MuseTalk v1.5 权重");
@@ -431,13 +431,15 @@ async function render(payloadPath, outPath) {
   assertFile(outputPath, "最终数字人视频");
 }
 
-const [payloadPath, outPath] = process.argv.slice(2);
-if (!payloadPath || !outPath) {
-  console.error("Usage: musetalk-adapter.mjs <payload.json> <output.mp4>");
-  process.exit(2);
-}
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const [payloadPath, outPath] = process.argv.slice(2);
+  if (!payloadPath || !outPath) {
+    console.error("Usage: musetalk-adapter.mjs <payload.json> <output.mp4>");
+    process.exit(2);
+  }
 
-render(payloadPath, outPath).catch((error) => {
-  console.error(error?.message || error);
-  process.exit(1);
-});
+  render(payloadPath, outPath).catch((error) => {
+    console.error(error?.message || error);
+    process.exit(1);
+  });
+}

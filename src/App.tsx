@@ -110,7 +110,7 @@ type ToastState = {
 };
 
 type RuntimeModelStatus = {
-  kind: "asr" | "tts";
+  kind: "asr" | "tts" | "avatar";
   label: string;
   status: "stopped" | "starting" | "running" | "failed";
   startedAt?: string;
@@ -407,6 +407,7 @@ type State = {
   runtimeModels?: {
     asr?: RuntimeModelStatus;
     tts?: RuntimeModelStatus;
+    avatar?: RuntimeModelStatus;
   };
   modelHome: string;
   settings?: {
@@ -414,6 +415,7 @@ type State = {
     defaultModelIds?: Partial<Record<ModelTypeKey, string>>;
     keepAsrModelWarm?: boolean;
     keepTtsModelWarm?: boolean;
+    keepAvatarModelWarm?: boolean;
     videoConcurrency?: number;
     avatarSegmentSeconds?: number;
   };
@@ -3386,6 +3388,7 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   const [draft, setDraft] = useState({
     keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
     keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
+    keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
     videoConcurrency: settings.videoConcurrency || 1,
     avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
   });
@@ -3393,10 +3396,11 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
     setDraft({
       keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
       keepTtsModelWarm: Boolean(settings.keepTtsModelWarm),
+      keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
       videoConcurrency: settings.videoConcurrency || 1,
       avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
     });
-  }, [settings.keepAsrModelWarm, settings.keepTtsModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
+  }, [settings.keepAsrModelWarm, settings.keepTtsModelWarm, settings.keepAvatarModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
 
   async function update(next: Partial<typeof draft>, key = "runtime", label = "保存中") {
     const payload = { ...draft, ...next };
@@ -3415,11 +3419,11 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
     }
   }
 
-  async function toggleRuntimeModel(kind: "asr" | "tts", enabled: boolean) {
+  async function toggleRuntimeModel(kind: "asr" | "tts" | "avatar", enabled: boolean) {
     const nextEnabled = !enabled;
     setDraft((current) => ({
       ...current,
-      ...(kind === "asr" ? { keepAsrModelWarm: nextEnabled } : { keepTtsModelWarm: nextEnabled })
+      ...(kind === "asr" ? { keepAsrModelWarm: nextEnabled } : kind === "tts" ? { keepTtsModelWarm: nextEnabled } : { keepAvatarModelWarm: nextEnabled })
     }));
     setPendingKey(kind);
     setPendingLabel(nextEnabled ? "启动中" : "关闭中");
@@ -3435,14 +3439,16 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
 
   const asrRuntime = state.runtimeModels?.asr;
   const ttsRuntime = state.runtimeModels?.tts;
+  const avatarRuntime = state.runtimeModels?.avatar;
   const asrEnabled = asrRuntime?.status === "running" || asrRuntime?.status === "starting";
   const ttsEnabled = ttsRuntime?.status === "running" || ttsRuntime?.status === "starting";
+  const avatarEnabled = avatarRuntime?.status === "running" || avatarRuntime?.status === "starting";
 
   return (
     <section className="runtime-settings">
       <div>
         <strong>运行配置</strong>
-        <small>未预启动时，ASR/TTS 会在使用时临时启动，完成后释放。</small>
+        <small>未预启动时，模型会在使用时临时启动，完成后释放。</small>
       </div>
       <RuntimeModelSwitch
         label="语音识别模型"
@@ -3459,6 +3465,14 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
         pending={pendingKey === "tts" || ttsRuntime?.status === "starting"}
         pendingLabel={pendingKey === "tts" ? pendingLabel : ""}
         onClick={() => toggleRuntimeModel("tts", ttsEnabled)}
+      />
+      <RuntimeModelSwitch
+        label="视频合成模型"
+        enabled={avatarEnabled}
+        status={avatarRuntime}
+        pending={pendingKey === "avatar" || avatarRuntime?.status === "starting"}
+        pendingLabel={pendingKey === "avatar" ? pendingLabel : ""}
+        onClick={() => toggleRuntimeModel("avatar", avatarEnabled)}
       />
       <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) }, "videoConcurrency")} /></label>
       <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} /></label>
