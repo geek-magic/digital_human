@@ -816,9 +816,14 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div><p className="eyebrow">手动流 · 自动流 · 阶段产物可回看</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div>
-          <button className="icon-button" onClick={() => refresh(true)} aria-label="刷新">
-            {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-          </button>
+          <div className="topbar-actions">
+            <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
+              <Settings2 size={17} />配置
+            </button>
+            <button className="icon-button" onClick={() => refresh(true)} aria-label="刷新">
+              {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            </button>
+          </div>
         </header>
 
         {toast && (
@@ -854,6 +859,7 @@ export function App() {
       </main>
       <button className="settings-fab" type="button" onClick={() => setSettingsOpen(true)} aria-label="运行配置">
         <Settings2 size={20} />
+        <span>配置</span>
       </button>
       {settingsOpen && <RuntimeSettingsDialog state={state} action={action} onClose={() => setSettingsOpen(false)} />}
     </div>

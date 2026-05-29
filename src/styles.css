@@ -100,6 +100,11 @@ h3 { font-size: 15px; line-height: 1.35; }
   justify-content: space-between;
   margin-bottom: 16px;
 }
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .eyebrow {
   margin-bottom: 5px;
   color: var(--muted);
@@ -1620,20 +1625,23 @@ small { color: var(--muted); font-size: 12px; }
 }
 .settings-fab {
   position: fixed;
-  right: 22px;
-  bottom: 22px;
-  z-index: 30;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 90;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 46px;
+  gap: 7px;
+  min-width: 82px;
+  height: 44px;
+  padding: 0 14px;
   border: 1px solid #bfd3e8;
-  border-radius: 50%;
+  border-radius: 999px;
   background: #0f6cbd;
   color: #fff;
   box-shadow: 0 12px 30px rgba(15, 108, 189, .28);
   cursor: pointer;
+  font-weight: 800;
 }
 .settings-fab:hover {
   background: #0b5ca5;
