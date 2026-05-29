@@ -907,6 +907,7 @@ function TaskListPage(props: {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const checkedSet = useMemo(() => new Set(checkedIds), [checkedIds]);
   const allChecked = props.state.projects.length > 0 && props.state.projects.every((project) => checkedSet.has(project.id));
+  const deletingChecked = props.busy === "批量删除任务";
 
   useEffect(() => {
     setCheckedIds((current) => current.filter((id) => props.state.projects.some((project) => project.id === id)));
@@ -921,7 +922,7 @@ function TaskListPage(props: {
   };
 
   async function deleteChecked() {
-    if (!checkedIds.length) return;
+    if (!checkedIds.length || deletingChecked) return;
     if (!window.confirm(`删除选中的 ${checkedIds.length} 个任务？`)) return;
     const ids = [...checkedIds];
     await props.action("批量删除任务", async () => {
@@ -944,7 +945,10 @@ function TaskListPage(props: {
             <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
             全选
           </label>
-          <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
+          <button className="ghost-button danger" disabled={!checkedIds.length || deletingChecked} onClick={deleteChecked}>
+            {deletingChecked ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+            {deletingChecked ? "删除中" : "删除所选"}
+          </button>
           {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
         </div>
         <div className="task-list">
@@ -2895,6 +2899,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const [clipStart, setClipStart] = useState("0");
   const [clipEnd, setClipEnd] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const filtered = items.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()));
   const uploadUrl = kind === "avatar" ? "/api/assets/avatar-videos" : kind === "music" ? "/api/assets/music" : "/api/voices/reference-samples";
   const endpointFor = (id: string) => kind === "avatar" ? `/api/assets/avatar-videos/${id}` : kind === "music" ? `/api/assets/music/${id}` : `/api/voices/reference-samples/${id}`;
@@ -2938,14 +2943,19 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   }
 
   async function deleteChecked() {
-    if (!checkedIds.length) return;
+    if (!checkedIds.length || bulkDeleting) return;
     if (!window.confirm(`删除选中的 ${checkedIds.length} 个${entityLabel}？`)) return;
     const ids = [...checkedIds];
-    await action(`批量删除${entityLabel}`, async () => {
-      await Promise.all(ids.map((id) => request(endpointFor(id), { method: "DELETE" })));
-      return { ok: true };
-    });
-    setCheckedIds([]);
+    setBulkDeleting(true);
+    try {
+      await action(`批量删除${entityLabel}`, async () => {
+        await Promise.all(ids.map((id) => request(endpointFor(id), { method: "DELETE" })));
+        return { ok: true };
+      });
+      setCheckedIds([]);
+    } finally {
+      setBulkDeleting(false);
+    }
   }
 
   function startEdit(item: Asset) {
@@ -3017,7 +3027,10 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
           <input type="checkbox" checked={allChecked} onChange={(event) => toggleAll(event.target.checked)} />
           全选
         </label>
-        <button className="ghost-button danger" disabled={!checkedIds.length} onClick={deleteChecked}><Trash2 size={15} />删除所选</button>
+        <button className="ghost-button danger" disabled={!checkedIds.length || bulkDeleting} onClick={deleteChecked}>
+          {bulkDeleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+          {bulkDeleting ? "删除中" : "删除所选"}
+        </button>
         {checkedIds.length > 0 && <small>已选 {checkedIds.length} 个</small>}
       </div>
       <DataTable

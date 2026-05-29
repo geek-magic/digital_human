@@ -1412,8 +1412,33 @@ small { color: var(--muted); font-size: 12px; }
 
 .manager-page {
   flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
   overflow: auto;
   padding: 16px;
+}
+.asset-library {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.asset-library > .library-tabs {
+  flex: 0 0 auto;
+}
+.asset-library > .manager-page {
+  flex: 1 1 auto;
+  height: auto;
+}
+.manager-page .data-table {
+  max-height: min(62vh, 720px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.manager-page .data-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 .manager-toolbar { margin-bottom: 14px; }
 .manager-toolbar.secondary { margin-top: 20px; }
