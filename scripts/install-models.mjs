@@ -49,11 +49,25 @@ const models = {
       license: "Apache-2.0"
     }
   },
-  tts: {
+  ttsVoxcpm2: {
+    repo: "openbmb/VoxCPM2",
+    target: join(modelHome, "tts", "voxcpm2"),
+    runtime: join(runtimeHome, "tts"),
+    packages: ["qwen-tts", "voxcpm==2.0.3", "addict", "simplejson", "sortedcontainers", "soundfile", "huggingface_hub[cli]"],
+    required: ["config.json", "model.safetensors", "audiovae.pth", "tokenizer.json"],
+    protocol: {
+      protocolId: "digital-human.tts.voice",
+      protocolVersion: "1.0",
+      engine: "VoxCPM2",
+      weightSource: "https://huggingface.co/openbmb/VoxCPM2",
+      license: "Apache-2.0"
+    }
+  },
+  ttsQwen3: {
     repo: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     target: join(modelHome, "tts", "qwen3-tts-12hz-1.7b-base"),
     runtime: join(runtimeHome, "tts"),
-    packages: ["qwen-tts", "soundfile", "huggingface_hub[cli]"],
+    packages: ["qwen-tts", "voxcpm==2.0.3", "addict", "simplejson", "sortedcontainers", "soundfile", "huggingface_hub[cli]"],
     required: ["config.json", "model.safetensors", "speech_tokenizer/model.safetensors"],
     protocol: {
       protocolId: "digital-human.tts.voice",
@@ -375,7 +389,8 @@ function main() {
   }
   installCoreModel(models.llm);
   installCoreModel(models.asr);
-  installCoreModel(models.tts);
+  installCoreModel(models.ttsVoxcpm2);
+  installCoreModel(models.ttsQwen3);
   ensureMuseTalkRepo();
   patchMuseTalkCompatibility();
   const museTalkPython = installMuseTalkRuntime();

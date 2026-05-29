@@ -111,13 +111,26 @@ const modelCatalog = [
     installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/asr/qwen3-asr-1.7b，或通过 DH_ASR_MODEL_PATH 指定权重目录。"
   },
   {
+    id: "voxcpm2",
+    name: "VoxCPM2",
+    type: "tts",
+    runtime: "内置 TTS Adapter",
+    defaultPath: "tts/voxcpm2",
+    protocolId: "ttsVoiceV1",
+    recommended: true,
+    bundleRole: "默认高质量口播与克隆音色模型",
+    license: "Apache 2.0",
+    description: "48kHz 高质量口播 TTS 和参考音色克隆。",
+    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/tts/voxcpm2，或通过 DH_VOXCPM2_MODEL_PATH 指定权重目录。"
+  },
+  {
     id: "qwen3-tts-1-7b-base",
     name: "Qwen3-TTS 1.7B Base",
     type: "tts",
     runtime: "内置 TTS Adapter",
     defaultPath: "tts/qwen3-tts-12hz-1.7b-base",
     protocolId: "ttsVoiceV1",
-    recommended: true,
+    recommended: false,
     bundleRole: "口播与克隆音色模型",
     license: "Apache 2.0",
     description: "用于中文口播 TTS 和音色克隆。",
@@ -336,7 +349,7 @@ const defaultDb = {
     defaultModelIds: {
       llm: "model-qwen2-5-7b-instruct-4bit-mlx",
       asr: "model-qwen3-asr-1-7b",
-      tts: "model-qwen3-tts-1-7b-base",
+      tts: "model-voxcpm2",
       avatar: "model-musetalk-v15"
     }
   }
@@ -402,6 +415,9 @@ function normalizeDb(db) {
   db.settings.defaultModelIds ||= {};
   if (db.settings.defaultModelIds.llm === "model-qwen3-5-27b-4bit-mlx") {
     db.settings.defaultModelIds.llm = "model-qwen2-5-7b-instruct-4bit-mlx";
+  }
+  if (!db.settings.defaultModelIds.tts || db.settings.defaultModelIds.tts === "model-qwen3-tts-1-7b-base") {
+    db.settings.defaultModelIds.tts = "model-voxcpm2";
   }
   db.projects = db.projects.map(normalizeProject);
   db.queueItems = db.queueItems.map(normalizeQueueItem);
@@ -522,6 +538,8 @@ function audioArtifactFromVersion(version) {
     note: version.note || "",
     voiceId: version.voiceId || "",
     voiceName: version.voiceName || "",
+    ttsModelId: version.ttsModelId || "",
+    ttsModelName: version.ttsModelName || "",
     metrics: version.metrics || {}
   };
 }
@@ -577,6 +595,8 @@ function normalizeAudioVersion(project, version, index) {
     duration: Number(version.duration || 0),
     transcriptText: version.transcriptText || "",
     modelInfo: version.modelInfo || null,
+    ttsModelId: version.ttsModelId || version.modelInfo?.modelId || "",
+    ttsModelName: version.ttsModelName || version.modelInfo?.modelName || "",
     adapter: version.adapter || "tts",
     note: version.note || "",
     metrics: version.metrics || {},
@@ -630,6 +650,7 @@ function normalizeProject(project) {
   project.generateSubtitles = Boolean(project.generateSubtitles);
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
+  project.ttsModelId ||= "";
   project.backgroundMusicAssetId ||= "";
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
   project.artifacts ||= {};
@@ -668,6 +689,8 @@ function normalizeProject(project) {
       sourceScriptVersionId: project.selectedScriptVersionId || "",
       voiceId: project.artifacts.audio.voiceId || project.voiceId || "",
       voiceName: project.artifacts.audio.voiceName || "",
+      ttsModelId: project.artifacts.audio.ttsModelId || project.ttsModelId || "",
+      ttsModelName: project.artifacts.audio.ttsModelName || "",
       audioUri: project.artifacts.audio.uri || "",
       audioPath: project.artifacts.audio.path || "",
       duration: project.artifacts.audio.duration || 0,
@@ -1255,7 +1278,7 @@ function queueSignature(project, type, payload = {}) {
     return stableStringify({ type, inputText: payload.inputText ?? project.inputText ?? "", requirements: payload.requirements ?? project.requirements ?? "", modelId });
   }
   if (type === "synthesize_speech") {
-    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "" });
+    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "", ttsModelId: payload.ttsModelId || project.ttsModelId || "" });
   }
   if (type === "render_video") {
     return stableStringify({
@@ -3027,14 +3050,23 @@ function resolveTtsVoice(db, project, requestedVoiceId = "") {
   return selected || activeVoices[0] || null;
 }
 
+function ttsEngineFromModel(model) {
+  const key = `${model?.catalogId || ""} ${model?.id || ""} ${model?.name || ""}`.toLowerCase();
+  if (key.includes("qwen")) return "qwen3";
+  return "voxcpm2";
+}
+
 async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (!existsSync(TTS_TOOL_PATH)) throw new Error("缺少本地 TTS CLI 工具。");
   if (!voice?.path || !existsSync(voice.path)) {
     throw new Error("缺少可用参考音色。请先在音色库上传一个参考音频，或在任务中选择音色。");
   }
+  const engine = options.engine || ttsEngineFromModel(options.model);
   const args = [
     TTS_TOOL_PATH,
     "synthesize",
+    "--engine",
+    engine,
     "--text",
     script,
     "--ref-audio",
@@ -3048,6 +3080,7 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   ];
   if (options.deviceMap) args.push("--device-map", options.deviceMap);
   if (options.dtype) args.push("--dtype", options.dtype);
+  if (options.device) args.push("--device", options.device);
   const { stdout } = await execFileAsync(process.execPath, args, {
     timeout: options.ttsTimeout || 1200000,
     maxBuffer: 1024 * 1024 * 16,
@@ -3686,7 +3719,17 @@ app.get("/api/state", (_req, res) => {
   const db = readDb();
   res.json({
     ...db,
-    models: db.models.filter((model) => !model.hidden && model.type !== "media"),
+    models: db.models.filter((model) => !model.hidden && model.type !== "media").map((model) => {
+      const detection = detectModel(model);
+      return {
+        ...model,
+        status: detection.status,
+        resolvedPath: detection.resolvedPath,
+        protocolStatus: detection.protocolStatus,
+        protocolMessage: detection.protocolMessage,
+        healthMessage: detection.message
+      };
+    }),
     projects: visibleProjects(db),
     avatarAssets: (db.avatarAssets || []).filter((asset) => !asset.deletedAt),
     musicAssets: (db.musicAssets || []).filter((asset) => !asset.deletedAt),
@@ -4484,7 +4527,8 @@ app.post("/api/model-tests/tts", upload.single("referenceAudio"), async (req, re
     const result = target.type === "cloud"
       ? await callCloudTts(target.provider, text, outPath, { voice: body.cloudVoice || body.voice || "alloy", timeout: Number(body.timeout || 120000) })
       : await createLocalTtsAudio(text, voice, outPath, {
-          ttsTimeout: Number(body.timeout || 1200000)
+          ttsTimeout: Number(body.timeout || 1200000),
+          model: target.model
         });
     const duration = await probeMediaDuration(outPath);
     res.json({
@@ -5275,7 +5319,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.videoSettings !== undefined) {
@@ -5662,6 +5706,13 @@ async function synthesizeProject(projectId, options = {}) {
     mkdirSync(outDir, { recursive: true });
     const modelAudioPath = join(outDir, "voiceover.wav");
     const voice = resolveTtsVoice(db, project, options.payload?.voiceId || "");
+    const ttsTarget = findTypedModelTarget(db, "tts", options.payload?.ttsModelId || project.ttsModelId || "");
+    if (ttsTarget.type !== "local") {
+      const err = new Error("任务生成口播音频暂只支持本地 TTS 模型。");
+      err.status = 400;
+      throw err;
+    }
+    project.ttsModelId = ttsTarget.model.id;
     project.status = "running";
     setStage(project, "voice", "running", "正在生成口播音频。");
     setProjectProgress(project, {
@@ -5673,14 +5724,14 @@ async function synthesizeProject(projectId, options = {}) {
     });
     pushJob(db, project.id, "synthesize_speech", "running", "开始生成口播音频。");
     writeDb(db);
-    const ttsProgressLabel = "正在生成口播音频。";
+    const ttsProgressLabel = `正在使用 ${ttsTarget.model.name} 生成口播音频。`;
     updateQueueProgress(options.queueId, { percent: 50, label: ttsProgressLabel, stage: "voice", stageStatus: "running" });
     setStage(project, "voice", "running", ttsProgressLabel);
     project.updatedAt = now();
     writeDb(db);
     let ttsResult;
     try {
-      ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, options);
+      ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, { ...options, model: ttsTarget.model });
     } catch (error) {
       const failDb = readDb();
       const failedProject = ensureProject(failDb, projectId);
@@ -5696,7 +5747,7 @@ async function synthesizeProject(projectId, options = {}) {
       failedProject.status = "failed";
       failedProject.lastError = message;
       failedProject.updatedAt = now();
-      pushJob(failDb, failedProject.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "" });
+      pushJob(failDb, failedProject.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "", ttsModelId: ttsTarget.model.id, ttsModelName: ttsTarget.model.name });
       writeDb(failDb);
       updateQueueProgress(options.queueId, { percent: 50, label: message, stage: "voice", stageStatus: "failed" });
       throw error;
@@ -5708,17 +5759,23 @@ async function synthesizeProject(projectId, options = {}) {
       uri: publicPath(audioPath),
       path: audioPath,
       duration,
-      adapter: "local-qwen3-tts-cli",
-      note: `已生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
+      adapter: `local-${ttsEngineFromModel(ttsTarget.model)}-tts-cli`,
+      note: `已使用 ${ttsTarget.model.name} 生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
       voiceId: voice?.id || "",
       voiceName: voice?.name || "",
+      ttsModelId: ttsTarget.model.id,
+      ttsModelName: ttsTarget.model.name,
       metrics: ttsResult?.metrics || {}
     };
     const latestDb = readDb();
     const latestProject = ensureProject(latestDb, projectId);
     latestProject.selectedScriptVersionId = scriptVersion.id;
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
-    const version = createAudioVersion(latestProject, audioArtifact, { sourceScriptVersionId: scriptVersion.id });
+    latestProject.ttsModelId = ttsTarget.model.id;
+    const version = createAudioVersion(latestProject, audioArtifact, {
+      sourceScriptVersionId: scriptVersion.id,
+      modelInfo: { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: ttsResult?.metrics || {} }
+    });
     latestProject.status = "voice_ready";
     setStage(latestProject, "voice", "done", `${version.label} 口播音频已生成。`);
     if (latestProject.mode === "auto") {

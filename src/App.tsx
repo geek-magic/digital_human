@@ -172,6 +172,8 @@ type AudioVersion = {
   sourceScriptVersionId: string;
   voiceId: string;
   voiceName: string;
+  ttsModelId?: string;
+  ttsModelName?: string;
   audioUri: string;
   audioPath?: string;
   duration: number;
@@ -199,6 +201,7 @@ type Project = {
   backgroundMusicAssetId?: string;
   voiceId: string;
   scriptModelId?: string;
+  ttsModelId?: string;
   selectedScriptVersionId?: string;
   selectedAudioVersionId?: string;
   selectedVideoVersionId?: string;
@@ -1383,6 +1386,7 @@ function TaskComposer({
   const [mode, setMode] = useState<WorkMode>("manual");
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
+  const [ttsModelId, setTtsModelId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
@@ -1390,6 +1394,9 @@ function TaskComposer({
   useEffect(() => {
     setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
   }, [state.settings?.defaultTextModelId, state.models]);
+  useEffect(() => {
+    setTtsModelId((current) => current || defaultModelIdForType(state, "tts"));
+  }, [state.settings?.defaultModelIds?.tts, state.models]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -1409,6 +1416,7 @@ function TaskComposer({
           reviewEnabled: mode === "manual",
           generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
+          ttsModelId: mode === "auto" ? ttsModelId : defaultModelIdForType(state, "tts"),
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           backgroundMusicAssetId,
           platforms: Object.keys(platformLabels)
@@ -1426,6 +1434,7 @@ function TaskComposer({
     setRequirements("");
     setScriptModelId(state.settings?.defaultTextModelId || "");
     setVoiceId("");
+    setTtsModelId(defaultModelIdForType(state, "tts"));
     setAvatarAssetId("");
     setBackgroundMusicAssetId("");
     setGenerateSubtitles(false);
@@ -1468,6 +1477,7 @@ function TaskComposer({
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
               <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
             </>
@@ -1690,6 +1700,18 @@ function TextModelSelect({ state, value, onChange }: { state: State; value: stri
   );
 }
 
+function TtsModelSelect({ state, value, onChange }: { state: State; value: string; onChange: (value: string) => void }) {
+  const models = state.models.filter((model) => model.type === "tts");
+  return (
+    <label>
+      <span>TTS 模型</span>
+      <select value={value || defaultModelIdForType(state, "tts")} onChange={(event) => onChange(event.target.value)}>
+        {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "llm" | "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
   const providers = providersForType(state, type);
   const selected = value || defaultModelIdForType(state, type);
@@ -1735,6 +1757,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [requirements, setRequirements] = useState("");
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
+  const [ttsModelId, setTtsModelId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
@@ -1754,6 +1777,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setRequirements(project?.requirements || "");
     setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
     setVoiceId(project?.voiceId || "");
+    setTtsModelId(project?.ttsModelId || defaultModelIdForType(state, "tts"));
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
@@ -1764,6 +1788,11 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     if (!project || voiceDirtyRef.current) return;
     setVoiceId(project.voiceId || "");
   }, [project?.voiceId]);
+
+  useEffect(() => {
+    if (!project) return;
+    setTtsModelId((current) => current || project.ttsModelId || defaultModelIdForType(state, "tts"));
+  }, [project?.ttsModelId, state.settings?.defaultModelIds?.tts, state.models]);
 
   useEffect(() => {
     setActiveStage(currentStage);
@@ -1824,7 +1853,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存口播文案", () => request<Project>(`/api/projects/${project.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
+      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, scriptModelId, changedStage: "script" })
     }));
 
   const saveVideoSetup = () =>
@@ -1839,19 +1868,19 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       const updated = await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, scriptModelId, changedStage: "script" })
+        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, scriptModelId, changedStage: "script" })
       });
       const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
+        body: JSON.stringify({ voiceId, ttsModelId, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
       });
       voiceDirtyRef.current = false;
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptVersionId, voiceId })
+        body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId })
       });
     });
 
@@ -1973,6 +2002,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
           voiceDirtyRef.current = true;
           setVoiceId(value);
         }}
+        ttsModelId={ttsModelId}
+        setTtsModelId={setTtsModelId}
         selectedVoice={selectedVoice}
         generateVoice={generateVoice}
         importAudioVersion={importAudioVersion}
@@ -2053,6 +2084,8 @@ function StageWorkspace({
   setSelectedScriptVersionId,
   voiceId,
   setVoiceId,
+  ttsModelId,
+  setTtsModelId,
   selectedVoice,
   generateVoice,
   importAudioVersion,
@@ -2098,6 +2131,8 @@ function StageWorkspace({
   setSelectedScriptVersionId: (value: string) => void;
   voiceId: string;
   setVoiceId: (value: string) => void;
+  ttsModelId: string;
+  setTtsModelId: (value: string) => void;
   selectedVoice?: Asset;
   generateVoice: () => Promise<unknown>;
   importAudioVersion: (file?: File, voiceName?: string) => Promise<unknown>;
@@ -2227,6 +2262,7 @@ function StageWorkspace({
           </label>
           <div className="field-row">
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+            <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
@@ -3388,7 +3424,7 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
       </div>
 
       {activeType === "llm" && <LlmTypeTestPanel state={state} action={action} />}
-      {activeType === "tts" && <TtsTypeTestPanel voices={state.voices} action={action} />}
+      {activeType === "tts" && <TtsTypeTestPanel state={state} voices={state.voices} action={action} />}
       {activeType === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
     </section>
   );
@@ -3511,7 +3547,7 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
 function ModelTypeTestPanel({ type, models, state, action }: { type: Exclude<ModelTypeKey, "llm">; models: ModelRecord[]; state: State; action: AppAction }) {
   const defaultModelId = defaultModelIdForType(state, type);
   if (type === "asr") return <AsrTypeTestPanel state={state} models={models} defaultModelId={defaultModelId} action={action} />;
-  if (type === "tts") return <TtsTypeTestPanel voices={state.voices} action={action} />;
+  if (type === "tts") return <TtsTypeTestPanel state={state} voices={state.voices} action={action} />;
   return <AvatarTypeTestPanel state={state} action={action} />;
 }
 
@@ -3553,7 +3589,8 @@ function AsrTypeTestPanel({ state, models, defaultModelId, action }: { state: St
   );
 }
 
-function TtsTypeTestPanel({ voices, action }: { voices: Asset[]; action: AppAction }) {
+function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Asset[]; action: AppAction }) {
+  const [modelId, setModelId] = useState(defaultModelIdForType(state, "tts"));
   const [voiceId, setVoiceId] = useState("");
   const [text, setText] = useState("这是一次音色克隆测试，请生成自然清晰的中文口播。");
   const [audioUri, setAudioUri] = useState("");
@@ -3561,6 +3598,9 @@ function TtsTypeTestPanel({ voices, action }: { voices: Asset[]; action: AppActi
   useEffect(() => {
     setVoiceId((current) => current || voices[0]?.id || "");
   }, [voices]);
+  useEffect(() => {
+    setModelId((current) => current || defaultModelIdForType(state, "tts"));
+  }, [state.settings?.defaultModelIds?.tts, state.models]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -3568,6 +3608,7 @@ function TtsTypeTestPanel({ voices, action }: { voices: Asset[]; action: AppActi
     try {
       const body = new FormData();
       body.append("text", text);
+      body.append("modelId", modelId || defaultModelIdForType(state, "tts"));
       if (voiceId) body.append("voiceId", voiceId);
       const response = await action("生成试听", () => request<{ audio?: { uri: string } }>("/api/model-tests/tts", { method: "POST", body }));
       if (response?.audio?.uri) setAudioUri(response.audio.uri);
@@ -3579,9 +3620,10 @@ function TtsTypeTestPanel({ voices, action }: { voices: Asset[]; action: AppActi
   return (
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>音色试听</h3></div>
+      <TtsModelSelect state={state} value={modelId} onChange={setModelId} />
       <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
       <label><span>合成文本</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-      <button className="primary-button" disabled={testing || !text.trim() || !voiceId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
+      <button className="primary-button" disabled={testing || !text.trim() || !voiceId || !modelId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
       {audioUri && <OutputItem title="试听音频" status="done"><audio controls src={audioUri} /></OutputItem>}
     </form>
   );

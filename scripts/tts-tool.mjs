@@ -8,7 +8,10 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
-const synthesizerPath = join(__dirname, "qwen-tts-synthesize.py");
+const synthesizers = {
+  qwen3: join(__dirname, "qwen-tts-synthesize.py"),
+  voxcpm2: join(__dirname, "voxcpm2-tts-synthesize.py")
+};
 
 const defaults = {
   language: process.env.DH_TTS_LANGUAGE || "Chinese",
@@ -37,29 +40,40 @@ function unique(values) {
 }
 
 function candidateRuntime(overrides = {}) {
+  const engine = normalizeEngine(overrides.engine || process.env.DH_TTS_ENGINE || "voxcpm2");
   const pythonCandidates = unique([
     overrides.python,
     process.env.DH_TTS_PYTHON,
     join(rootDir, "runtime", "tts", "bin", "python"),
     join(rootDir, ".venv-tts", "bin", "python")
   ]);
-  const modelCandidates = unique([
-    overrides.model,
-    process.env.DH_TTS_MODEL_PATH,
-    join(rootDir, "models", "tts", "qwen3-tts-12hz-1.7b-base"),
-    join(rootDir, "storage", "models", "tts", "qwen3-tts-12hz-1.7b-base")
-  ]);
+  const modelCandidates = engine === "voxcpm2"
+    ? unique([
+        overrides.model,
+        process.env.DH_VOXCPM2_MODEL_PATH,
+        join(rootDir, "models", "tts", "voxcpm2"),
+        join(rootDir, "storage", "models", "tts", "voxcpm2")
+      ])
+    : unique([
+        overrides.model,
+        process.env.DH_QWEN_TTS_MODEL_PATH,
+        process.env.DH_TTS_MODEL_PATH,
+        join(rootDir, "models", "tts", "qwen3-tts-12hz-1.7b-base"),
+        join(rootDir, "storage", "models", "tts", "qwen3-tts-12hz-1.7b-base")
+      ]);
   const python = pythonCandidates.find((item) => existsSync(item)) || "";
   const model = modelCandidates.find((item) => existsSync(item)) || "";
+  const synthesizerPath = synthesizers[engine] || synthesizers.voxcpm2;
   const script = existsSync(synthesizerPath) ? synthesizerPath : "";
   const missing = [
     script ? "" : "TTS synthesizer script",
     python ? "" : "TTS Python runtime",
-    model ? "" : "Qwen3-TTS model weights"
+    model ? "" : `${engine === "voxcpm2" ? "VoxCPM2" : "Qwen3-TTS"} model weights`
   ].filter(Boolean);
   return {
     ok: missing.length === 0,
     ready: missing.length === 0,
+    engine,
     python,
     model,
     script,
@@ -69,6 +83,13 @@ function candidateRuntime(overrides = {}) {
       model: modelCandidates
     }
   };
+}
+
+function normalizeEngine(value = "") {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized.includes("qwen")) return "qwen3";
+  if (normalized.includes("voxcpm")) return "voxcpm2";
+  return normalized === "qwen3" ? "qwen3" : "voxcpm2";
 }
 
 function parseJson(stdout = "") {
@@ -95,7 +116,7 @@ function print(payload) {
 }
 
 async function synthesize(args) {
-  const runtime = candidateRuntime({ python: args.python, model: args.model });
+  const runtime = candidateRuntime({ python: args.python, model: args.model, engine: args.engine || args["model-id"] });
   if (!runtime.ready) {
     print({
       ok: false,
@@ -116,7 +137,7 @@ async function synthesize(args) {
     print({ ok: false, error: "缺少输出音频路径。", runtime });
     return 2;
   }
-  const { stdout } = await execFileAsync(runtime.python, [
+  const commonArgs = [
     runtime.script,
     "--model",
     runtime.model,
@@ -125,16 +146,28 @@ async function synthesize(args) {
     "--ref-audio",
     args["ref-audio"],
     "--output",
-    args.output,
-    "--ref-text",
-    args["ref-text"] || "",
-    "--language",
-    args.language || defaults.language,
-    "--device-map",
-    args["device-map"] || defaults.deviceMap,
-    "--dtype",
-    args.dtype || defaults.dtype
-  ], {
+    args.output
+  ];
+  const modelArgs = runtime.engine === "voxcpm2"
+    ? [
+        "--device",
+        args.device || process.env.DH_VOXCPM2_DEVICE || defaults.deviceMap,
+        "--inference-timesteps",
+        String(args["inference-timesteps"] || process.env.DH_VOXCPM2_INFERENCE_TIMESTEPS || 10),
+        "--cfg-value",
+        String(args["cfg-value"] || process.env.DH_VOXCPM2_CFG_VALUE || 2.0)
+      ]
+    : [
+        "--ref-text",
+        args["ref-text"] || "",
+        "--language",
+        args.language || defaults.language,
+        "--device-map",
+        args["device-map"] || defaults.deviceMap,
+        "--dtype",
+        args.dtype || defaults.dtype
+      ];
+  const { stdout } = await execFileAsync(runtime.python, [...commonArgs, ...modelArgs], {
     timeout: Number(args.timeout || process.env.DH_TTS_TIMEOUT_MS || 1200000),
     maxBuffer: 1024 * 1024 * 16,
     env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
