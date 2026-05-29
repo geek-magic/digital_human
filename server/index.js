@@ -3074,12 +3074,21 @@ async function createExternalAvatarVideo(input, outPath) {
   let lastError = "";
   for (const attempt of attempts) {
     try {
-      await execFileAsync(attempt.command, attempt.args, {
+      const result = await execFileAsync(attempt.command, attempt.args, {
         timeout: 1200000,
         maxBuffer: 1024 * 1024 * 16
       });
       if (existsSync(outPath)) return { ok: true, engine: attempt.engine };
       lastError = `${attempt.engine} 未输出视频文件。`;
+      writeFileSync(join(dirname(outPath), "avatar-render-error.json"), JSON.stringify({
+        engine: attempt.engine,
+        settings: input.videoSettings || {},
+        message: lastError,
+        stdout: result?.stdout || "",
+        stderr: result?.stderr || "",
+        expectedOutput: outPath,
+        updatedAt: now()
+      }, null, 2));
     } catch (error) {
       lastError = error?.message || "avatar render failed";
       writeFileSync(join(dirname(outPath), "avatar-render-error.json"), JSON.stringify({

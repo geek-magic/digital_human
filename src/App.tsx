@@ -1384,6 +1384,7 @@ function TaskComposer({
   const [scriptModelId, setScriptModelId] = useState("");
   const [voiceId, setVoiceId] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
@@ -1409,6 +1410,7 @@ function TaskComposer({
           generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
+          backgroundMusicAssetId,
           platforms: Object.keys(platformLabels)
         })
       });
@@ -1423,6 +1425,10 @@ function TaskComposer({
     setInputText("");
     setRequirements("");
     setScriptModelId(state.settings?.defaultTextModelId || "");
+    setVoiceId("");
+    setAvatarAssetId("");
+    setBackgroundMusicAssetId("");
+    setGenerateSubtitles(false);
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
   const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
@@ -1452,6 +1458,13 @@ function TaskComposer({
           <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
         </label>
         <div className={cx("composer-grid", mode === "manual" && "compact")}>
+          <label>
+            <span>背景音乐</span>
+            <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
+              <option value="">不使用背景音乐</option>
+              {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+            </select>
+          </label>
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
