@@ -3070,6 +3070,115 @@ async function createExternalAvatarVideo(input, outPath) {
   return { ok: false, engine, error: lastError || "口型 Adapter 未生成视频。" };
 }
 
+function avatarSegmentSeconds() {
+  return clampNumber(process.env.AVATAR_SEGMENT_SECONDS || 60, 10, 120, 60, true);
+}
+
+function shellQuoteForConcat(filePath) {
+  return String(filePath).replace(/'/g, "'\\''");
+}
+
+async function concatVideoSegments(segmentPaths, outPath) {
+  if (!segmentPaths.length) throw new Error("没有可拼接的视频片段。");
+  if (segmentPaths.length === 1) {
+    copyFileSync(segmentPaths[0], outPath);
+    return;
+  }
+  const listPath = join(dirname(outPath), "avatar-segments.txt");
+  writeFileSync(listPath, segmentPaths.map((item) => `file '${shellQuoteForConcat(item)}'`).join("\n"));
+  try {
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      outPath
+    ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  } catch {
+    const inputs = segmentPaths.flatMap((item) => ["-i", item]);
+    const concatFilter = segmentPaths.map((_, index) => `[${index}:v:0][${index}:a:0]`).join("") + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
+    await execFileAsync("ffmpeg", [
+      "-y",
+      ...inputs,
+      "-filter_complex",
+      concatFilter,
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "20",
+      "-c:a",
+      "aac",
+      "-movflags",
+      "+faststart",
+      outPath
+    ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  }
+}
+
+async function createSegmentedAvatarVideo(input, outPath, options = {}) {
+  const duration = Math.max(1, Number(input.duration || 1));
+  const segmentSeconds = avatarSegmentSeconds();
+  if (duration <= segmentSeconds) {
+    return createExternalAvatarVideo(input, outPath);
+  }
+  const workDir = dirname(outPath);
+  const segmentDir = join(workDir, "avatar-segments");
+  mkdirSync(segmentDir, { recursive: true });
+  const avatarDuration = await probeMediaDuration(input.avatarPath).catch(() => 0);
+  const segmentCount = Math.ceil(duration / segmentSeconds);
+  const segmentPaths = [];
+  let engine = input.videoSettings?.engine || defaultVideoSettings.engine;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const start = index * segmentSeconds;
+    const segmentDuration = Math.min(segmentSeconds, duration - start);
+    const segmentPath = join(segmentDir, `segment-${String(index + 1).padStart(3, "0")}.mp4`);
+    const videoStart = avatarDuration > 0 ? start % avatarDuration : 0;
+    updateQueueProgress(options.queueId, {
+      percent: Math.min(84, 76 + Math.round((index / segmentCount) * 8)),
+      label: `正在生成数字人口型片段 ${index + 1}/${segmentCount}。`,
+      stage: "video"
+    });
+    const segmentResult = await createExternalAvatarVideo({
+      ...input,
+      duration: segmentDuration,
+      audioStart: start,
+      videoStart,
+      segmentIndex: index,
+      segmentCount
+    }, segmentPath);
+    engine = segmentResult.engine || engine;
+    if (!segmentResult.ok || !existsSync(segmentPath)) {
+      return {
+        ok: false,
+        engine,
+        error: `第 ${index + 1}/${segmentCount} 段生成失败：${segmentResult.error || "未输出视频片段。"}`
+      };
+    }
+    segmentPaths.push(segmentPath);
+  }
+  updateQueueProgress(options.queueId, { percent: 85, label: `正在拼接 ${segmentCount} 个数字人口型片段。`, stage: "video" });
+  await concatVideoSegments(segmentPaths, outPath);
+  return {
+    ok: existsSync(outPath),
+    engine: `${engine}-segmented`,
+    segmentCount,
+    segmentSeconds
+  };
+}
+
 function escapeFilterPath(filePath) {
   return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
 }
@@ -5512,7 +5621,7 @@ async function renderProject(projectId, options = {}) {
     writeFileSync(srtPath, buildSrt(project.artifacts.script.script, duration));
     const captionOverlays = [];
     updateQueueProgress(options.queueId, { percent: 76, label: "正在调用数字人口型 Adapter。", stage: "video" });
-    const avatarRender = await createExternalAvatarVideo(
+    const avatarRender = await createSegmentedAvatarVideo(
       {
         projectId: project.id,
         script: project.artifacts.script.script,
@@ -5522,7 +5631,8 @@ async function renderProject(projectId, options = {}) {
         duration,
         videoSettings: project.videoSettings
       },
-      avatarRenderPath
+      avatarRenderPath,
+      { queueId: options.queueId }
     ).catch((error) => ({
       ok: false,
       engine: project.videoSettings.engine,
@@ -5570,11 +5680,12 @@ async function renderProject(projectId, options = {}) {
         status: `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
           `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
+          avatarRender.segmentCount ? `长视频已自动切成 ${avatarRender.segmentCount} 段渲染，每段约 ${avatarRender.segmentSeconds} 秒。` : "",
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
           backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}。` : "未使用背景音乐。",
           subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频轨。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
-        ]
+        ].filter(Boolean)
       }
     };
     const subtitlesArtifact = {

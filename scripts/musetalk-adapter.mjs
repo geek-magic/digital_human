@@ -132,7 +132,10 @@ async function repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAu
 }
 
 async function prepareInputs(payload, workDir) {
-  const duration = Math.min(120, Math.max(1, Number(payload.duration || 45)));
+  const maxDuration = Math.max(1, Number(process.env.MUSETALK_MAX_SEGMENT_SECONDS || 120));
+  const duration = Math.min(maxDuration, Math.max(1, Number(payload.duration || 45)));
+  const videoStart = Math.max(0, Number(payload.videoStart || 0));
+  const audioStart = Math.max(0, Number(payload.audioStart || 0));
   const sourceVideo = resolve(payload.avatarPath);
   const sourceAudio = resolve(payload.audioPath);
   assertFile(sourceVideo, "数字人原视频");
@@ -140,10 +143,13 @@ async function prepareInputs(payload, workDir) {
 
   const preparedVideo = join(workDir, "musetalk-input.mp4");
   const preparedAudio = join(workDir, "musetalk-audio.wav");
+  const videoSeekArgs = videoStart > 0 ? ["-ss", String(videoStart)] : [];
+  const audioSeekArgs = audioStart > 0 ? ["-ss", String(audioStart)] : [];
   await run(ffmpegBin, [
     "-y",
     "-stream_loop",
     "-1",
+    ...videoSeekArgs,
     "-i",
     sourceVideo,
     "-t",
@@ -155,6 +161,7 @@ async function prepareInputs(payload, workDir) {
   ]);
   await run(ffmpegBin, [
     "-y",
+    ...audioSeekArgs,
     "-i",
     sourceAudio,
     "-t",
