@@ -1393,7 +1393,7 @@ function TaskComposer({
   const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
-  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.16);
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
@@ -1445,7 +1445,7 @@ function TaskComposer({
     setAudioPlaybackSpeed(1);
     setAvatarAssetId("");
     setBackgroundMusicAssetId("");
-    setBackgroundMusicVolume(0.16);
+    setBackgroundMusicVolume(0.2);
     setGenerateSubtitles(false);
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
@@ -1800,7 +1800,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
-  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.16);
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
@@ -1823,7 +1823,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
-    setBackgroundMusicVolume(project?.backgroundMusicVolume ?? 0.16);
+    setBackgroundMusicVolume(project?.backgroundMusicVolume ?? 0.2);
     setGenerateSubtitles(Boolean(project?.generateSubtitles));
   }, [project?.id]);
 

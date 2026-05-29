@@ -655,7 +655,7 @@ function normalizeProject(project) {
   project.ttsModelId ||= "";
   project.audioPlaybackSpeed = clampNumber(project.audioPlaybackSpeed, 0.5, 2, 1);
   project.backgroundMusicAssetId ||= "";
-  project.backgroundMusicVolume = clampNumber(project.backgroundMusicVolume, 0, 1, 0.16);
+  project.backgroundMusicVolume = clampNumber(project.backgroundMusicVolume, 0, 1, 0.2);
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
   project.artifacts ||= {};
   project.scriptVersions = (project.scriptVersions || []).map((version, index) => normalizeScriptVersion(project, version, index));
@@ -1291,7 +1291,7 @@ function queueSignature(project, type, payload = {}) {
       audioVersionId: payload.audioVersionId || project.selectedAudioVersionId || "",
       avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "",
       backgroundMusicAssetId: payload.backgroundMusicAssetId || project.backgroundMusicAssetId || "",
-      backgroundMusicVolume: clampNumber(payload.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.16),
+      backgroundMusicVolume: clampNumber(payload.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.2),
       previewDuration: Number(payload.previewDuration || 0),
       variantLabel: payload.variantLabel || "",
       videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
@@ -3593,7 +3593,7 @@ async function mixBackgroundMusic(videoPath, musicPath, duration) {
     "-i",
     musicPath,
     "-filter_complex",
-    `[1:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+    `[1:a]volume=0.2,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`,
     "-map",
     "0:v:0",
     "-map",
@@ -3614,7 +3614,7 @@ async function packageAvatarRenderVideo({
   avatarRenderPath,
   audioPath,
   backgroundMusicPath = "",
-  backgroundMusicVolume = 0.16,
+  backgroundMusicVolume = 0.2,
   subtitlesPath = "",
   duration,
   burnSubtitles = false,
@@ -3645,7 +3645,7 @@ async function packageAvatarRenderVideo({
   }
 
   if (hasMusic && hasAudio) {
-    filters.push(`[${musicInputIndex}:a]volume=${clampNumber(backgroundMusicVolume, 0, 1, 0.16).toFixed(3)},atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
+    filters.push(`[${musicInputIndex}:a]volume=${clampNumber(backgroundMusicVolume, 0, 1, 0.2).toFixed(3)},atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
     filters.push(`[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`);
     args.push(
       "-filter_complex",
@@ -5269,7 +5269,7 @@ app.post("/api/projects", async (req, res, next) => {
     scriptModelId,
     avatarAssetId: req.body.avatarAssetId || "",
     backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
-    backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.16),
+    backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.2),
     voiceId: req.body.voiceId || "",
     audioPlaybackSpeed: clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1),
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
@@ -5367,7 +5367,7 @@ app.patch("/api/projects/:id", (req, res) => {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.audioPlaybackSpeed !== undefined) project.audioPlaybackSpeed = clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1);
-  if (req.body.backgroundMusicVolume !== undefined) project.backgroundMusicVolume = clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.16);
+  if (req.body.backgroundMusicVolume !== undefined) project.backgroundMusicVolume = clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.2);
   if (req.body.videoSettings !== undefined) {
     project.videoSettings = normalizeVideoSettings({ ...project.videoSettings, ...req.body.videoSettings });
   }
@@ -5958,7 +5958,7 @@ async function renderProject(projectId, options = {}) {
     project.avatarAssetId = avatarAssetId || project.avatarAssetId;
     const backgroundMusicAssetId = options.backgroundMusicAssetId || project.backgroundMusicAssetId || "";
     const backgroundMusic = (db.musicAssets || []).find((item) => item.id === backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
-    const backgroundMusicVolume = clampNumber(options.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.16);
+    const backgroundMusicVolume = clampNumber(options.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.2);
     project.backgroundMusicAssetId = backgroundMusic?.id || "";
     project.backgroundMusicVolume = backgroundMusicVolume;
     project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
