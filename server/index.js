@@ -3418,6 +3418,63 @@ async function mixBackgroundMusic(videoPath, musicPath, duration) {
   return true;
 }
 
+async function packageAvatarRenderVideo({
+  outPath,
+  avatarRenderPath,
+  audioPath,
+  backgroundMusicPath = "",
+  subtitlesPath = "",
+  duration
+}) {
+  if (!commandExists("ffmpeg") || !avatarRenderPath || !existsSync(avatarRenderPath)) return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false };
+  const hasAudio = audioPath && existsSync(audioPath);
+  const hasMusic = backgroundMusicPath && existsSync(backgroundMusicPath);
+  const hasSubtitles = subtitlesPath && existsSync(subtitlesPath);
+  const inputs = ["-i", avatarRenderPath];
+  if (hasAudio) inputs.push("-i", audioPath);
+  if (hasMusic) inputs.push("-stream_loop", "-1", "-i", backgroundMusicPath);
+  if (hasSubtitles) inputs.push("-i", subtitlesPath);
+
+  const args = ["-y", ...inputs];
+  const audioInputIndex = hasAudio ? 1 : -1;
+  const musicInputIndex = hasMusic ? (hasAudio ? 2 : 1) : -1;
+  const subtitleInputIndex = hasSubtitles ? 1 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0) : -1;
+
+  if (hasMusic && hasAudio) {
+    args.push(
+      "-filter_complex",
+      `[${musicInputIndex}:a]volume=0.16,atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm];[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+      "-map",
+      "0:v:0",
+      "-map",
+      "[a]"
+    );
+  } else if (hasAudio) {
+    args.push("-map", "0:v:0", "-map", `${audioInputIndex}:a:0`);
+  } else {
+    args.push("-map", "0:v:0", "-map", "0:a?");
+  }
+
+  if (hasSubtitles) args.push("-map", `${subtitleInputIndex}:0`);
+  args.push(
+    "-t",
+    String(duration),
+    "-shortest",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac"
+  );
+  if (hasSubtitles) args.push("-c:s", "mov_text");
+  args.push("-movflags", "+faststart", outPath);
+  try {
+    await execFileAsync("ffmpeg", args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+    return { ok: existsSync(outPath), backgroundMusicMixed: Boolean(hasMusic && hasAudio), subtitlesEmbedded: hasSubtitles };
+  } catch {
+    return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false };
+  }
+}
+
 async function embedSubtitlesInMp4(videoPath, subtitlesPath) {
   if (!videoPath || !subtitlesPath || !existsSync(videoPath) || !existsSync(subtitlesPath)) return false;
   const outPath = videoPath.replace(/\.mp4$/i, ".with-subtitles.mp4");
@@ -5657,16 +5714,25 @@ async function renderProject(projectId, options = {}) {
       updateQueueProgress(options.queueId, { percent: 82, label: message, stage: "video", stageStatus: "failed" });
       throw new Error(message);
     }
-    updateQueueProgress(options.queueId, { percent: 86, label: "正在封装视频、音频和字幕。", stage: "video" });
-    let rendered = await createPreviewVideo(videoPath, avatarRenderPath, project.artifacts.audio?.path || "", duration, srtPath, []).catch(() => false);
+    updateQueueProgress(options.queueId, { percent: 86, label: "正在一次性封装视频、音频、背景音和字幕。", stage: "video" });
+    const packaged = await packageAvatarRenderVideo({
+      outPath: videoPath,
+      avatarRenderPath,
+      audioPath: project.artifacts.audio?.path || "",
+      backgroundMusicPath: backgroundMusic?.path || "",
+      subtitlesPath: srtPath,
+      duration
+    });
+    let rendered = packaged.ok;
+    if (!rendered) {
+      rendered = await createPreviewVideo(videoPath, avatarRenderPath, project.artifacts.audio?.path || "", duration, srtPath, []).catch(() => false);
+    }
     if (!rendered && existsSync(avatarRenderPath)) {
       copyFileSync(avatarRenderPath, videoPath);
       rendered = true;
     }
-    const backgroundMusicMixed = rendered && backgroundMusic?.path
-      ? await mixBackgroundMusic(videoPath, backgroundMusic.path, duration).catch(() => false)
-      : false;
-    const subtitlesEmbedded = rendered ? await embedSubtitlesInMp4(videoPath, srtPath) : false;
+    const backgroundMusicMixed = packaged.backgroundMusicMixed;
+    const subtitlesEmbedded = packaged.subtitlesEmbedded || (rendered && !packaged.ok ? await embedSubtitlesInMp4(videoPath, srtPath) : false);
     const videoArtifact = {
       uri: publicPath(videoPath),
       path: videoPath,
