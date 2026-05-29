@@ -3386,19 +3386,15 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   const [pendingKey, setPendingKey] = useState("");
   const [pendingLabel, setPendingLabel] = useState("");
   const [draft, setDraft] = useState({
-    keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
-    keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
     videoConcurrency: settings.videoConcurrency || 1,
     avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
   });
   useEffect(() => {
     setDraft({
-      keepAsrModelWarm: Boolean(settings.keepAsrModelWarm),
-      keepAvatarModelWarm: Boolean(settings.keepAvatarModelWarm),
       videoConcurrency: settings.videoConcurrency || 1,
       avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
     });
-  }, [settings.keepAsrModelWarm, settings.keepAvatarModelWarm, settings.videoConcurrency, settings.avatarSegmentSeconds]);
+  }, [settings.videoConcurrency, settings.avatarSegmentSeconds]);
 
   async function update(next: Partial<typeof draft>, key = "runtime", label = "保存中") {
     const payload = { ...draft, ...next };
@@ -3417,91 +3413,16 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
     }
   }
 
-  async function toggleRuntimeModel(kind: "asr" | "avatar", enabled: boolean) {
-    const nextEnabled = !enabled;
-    setDraft((current) => ({
-      ...current,
-      ...(kind === "asr" ? { keepAsrModelWarm: nextEnabled } : { keepAvatarModelWarm: nextEnabled })
-    }));
-    setPendingKey(kind);
-    setPendingLabel(nextEnabled ? "启动中" : "关闭中");
-    try {
-      await action(nextEnabled ? "启动模型" : "关闭模型", () => request(`/api/runtime-models/${kind}/${nextEnabled ? "start" : "stop"}`, {
-        method: "POST"
-      }));
-    } finally {
-      setPendingKey("");
-      setPendingLabel("");
-    }
-  }
-
-  const asrRuntime = state.runtimeModels?.asr;
-  const avatarRuntime = state.runtimeModels?.avatar;
-  const asrEnabled = asrRuntime?.status === "running" || asrRuntime?.status === "starting";
-  const avatarEnabled = avatarRuntime?.status === "running" || avatarRuntime?.status === "starting";
-
   return (
     <section className="runtime-settings">
       <div>
         <strong>运行配置</strong>
-        <small>语音识别和视频合成可提前启动；音频合成按需运行，完成后释放。</small>
+        <small>模型按需运行，完成后释放；这里仅配置视频合成参数。</small>
       </div>
-      <RuntimeModelSwitch
-        label="语音识别模型"
-        enabled={asrEnabled}
-        status={asrRuntime}
-        pending={pendingKey === "asr" || asrRuntime?.status === "starting"}
-        pendingLabel={pendingKey === "asr" ? pendingLabel : ""}
-        onClick={() => toggleRuntimeModel("asr", asrEnabled)}
-      />
-      <RuntimeModelSwitch
-        label="视频合成模型"
-        enabled={avatarEnabled}
-        status={avatarRuntime}
-        pending={pendingKey === "avatar" || avatarRuntime?.status === "starting"}
-        pendingLabel={pendingKey === "avatar" ? pendingLabel : ""}
-        onClick={() => toggleRuntimeModel("avatar", avatarEnabled)}
-      />
       <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) }, "videoConcurrency")} /></label>
       <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} /></label>
+      {pendingKey && <small>{pendingLabel}</small>}
     </section>
-  );
-}
-
-function RuntimeModelSwitch({
-  label,
-  enabled,
-  status,
-  pending,
-  pendingLabel,
-  onClick
-}: {
-  label: string;
-  enabled: boolean;
-  status?: RuntimeModelStatus;
-  pending: boolean;
-  pendingLabel: string;
-  onClick: () => void;
-}) {
-  return (
-    <div className="runtime-switch-row">
-      <div>
-        <strong>{label}</strong>
-        <small>
-          {status?.status === "running"
-            ? `已启动${status.loadMs ? ` · 启动耗时 ${formatDurationMs(status.loadMs)}` : ""}`
-            : status?.status === "starting"
-              ? "正在加载模型"
-              : status?.status === "failed"
-                ? status.error || "启动失败"
-                : "未启动，使用时会临时启动"}
-        </small>
-      </div>
-      <button type="button" className={cx("runtime-switch-button", enabled && "enabled")} disabled={pending} onClick={onClick}>
-        {pending && <Loader2 className="spin" size={15} />}
-        {pending ? (pendingLabel || "启动中") : enabled ? "关闭" : "开启"}
-      </button>
-    </div>
   );
 }
 

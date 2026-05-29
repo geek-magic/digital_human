@@ -1618,44 +1618,6 @@ small { color: var(--muted); font-size: 12px; }
 .runtime-settings label {
   min-width: 0;
 }
-.runtime-switch-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: #fff;
-}
-.runtime-switch-row strong,
-.runtime-switch-row small {
-  display: block;
-}
-.runtime-switch-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-width: 76px;
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid #b9d5e2;
-  border-radius: var(--radius);
-  background: #eaf6fb;
-  color: var(--primary-strong);
-  font-weight: 800;
-  cursor: pointer;
-}
-.runtime-switch-button.enabled {
-  border-color: #efc8c5;
-  background: #fff5f4;
-  color: var(--red);
-}
-.runtime-switch-button:disabled {
-  cursor: wait;
-  opacity: .78;
-}
 .settings-fab {
   position: fixed;
   left: max(18px, env(safe-area-inset-left));

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 
@@ -21,10 +21,7 @@ const MODEL_HOME = process.env.MODEL_HOME || join(rootDir, "models");
 const LLM_TOOL_PATH = process.env.DH_LLM_TOOL_PATH || join(rootDir, "scripts", "llm-tool.mjs");
 const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "asr-tool.mjs");
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
-const ASR_WORKER_PATH = join(rootDir, "scripts", "qwen-asr-worker.py");
-const TTS_WORKER_PATH = join(rootDir, "scripts", "qwen-tts-worker.py");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
-const MUSETALK_WORKER_PATH = join(rootDir, "scripts", "musetalk-worker.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
 const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
   ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
@@ -393,9 +390,9 @@ function normalizeDb(db) {
       updatedAt: item.updatedAt || item.createdAt || now()
     }));
   db.settings ||= {};
-  db.settings.keepAsrModelWarm = Boolean(db.settings.keepAsrModelWarm);
+  db.settings.keepAsrModelWarm = false;
   db.settings.keepTtsModelWarm = false;
-  db.settings.keepAvatarModelWarm = Boolean(db.settings.keepAvatarModelWarm);
+  db.settings.keepAvatarModelWarm = false;
   db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
   db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
@@ -2018,239 +2015,11 @@ function parseJsonFromStdout(stdout = "") {
   }
 }
 
-const runtimeWorkers = {
-  asr: createRuntimeWorker("asr"),
-  avatar: createRuntimeWorker("avatar")
-};
-
-function appendTail(current = "", chunk = "", max = 6000) {
-  const next = `${current}${chunk}`;
-  return next.length > max ? next.slice(-max) : next;
-}
-
-async function inspectLocalRuntime(kind) {
-  const toolPath = kind === "asr" ? ASR_TOOL_PATH : TTS_TOOL_PATH;
-  if (!existsSync(toolPath)) throw new Error(kind === "asr" ? "缺少本地 ASR CLI 工具。" : "缺少本地 TTS CLI 工具。");
-  const { stdout } = await execFileAsync(process.execPath, [toolPath, "doctor"], {
-    timeout: 120000,
-    maxBuffer: 1024 * 1024 * 4,
-    env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
-  });
-  const runtime = parseJsonFromStdout(stdout);
-  if (!runtime.ready) throw new Error(`${kind === "asr" ? "ASR" : "TTS"} 运行环境未就绪：${(runtime.missing || []).join(", ")}`);
-  return runtime;
-}
-
-function createRuntimeWorker(kind) {
-  const label = kind === "asr" ? "语音识别模型" : kind === "tts" ? "音频合成模型" : "视频合成模型";
-  const workerPath = kind === "asr" ? ASR_WORKER_PATH : kind === "tts" ? TTS_WORKER_PATH : MUSETALK_WORKER_PATH;
-  const defaults = kind === "asr"
-    ? {
-        language: process.env.DH_ASR_LANGUAGE || "Chinese",
-        deviceMap: process.env.DH_ASR_DEVICE_MAP || "mps",
-        dtype: process.env.DH_ASR_DTYPE || "float16",
-        maxNewTokens: process.env.DH_ASR_MAX_NEW_TOKENS || "1024"
-      }
-    : kind === "tts" ? {
-        language: process.env.DH_TTS_LANGUAGE || "Chinese",
-        deviceMap: process.env.DH_TTS_DEVICE_MAP || "mps",
-        dtype: process.env.DH_TTS_DTYPE || "float16"
-      } : {};
-  return {
-    kind,
-    label,
-    process: null,
-    status: "stopped",
-    startedAt: "",
-    readyAt: "",
-    loadMs: 0,
-    error: "",
-    stderr: "",
-    stdoutBuffer: "",
-    pending: new Map(),
-    startPromise: null,
-    async start() {
-      if (this.status === "running") return this.publicStatus();
-      if (this.status === "starting" && this.startPromise) return this.startPromise;
-      if (!existsSync(workerPath)) throw new Error(`缺少 ${label} worker：${workerPath}`);
-      if (kind === "avatar") {
-        const check = validateMuseTalkInstall(join(MODEL_HOME, "avatar", "MuseTalk"));
-        if (!check.ok) throw new Error(`MuseTalk 运行环境未就绪：${check.missing.join(", ")}`);
-      }
-      const runtime = kind === "avatar" ? { python: process.execPath } : await inspectLocalRuntime(kind);
-      const args = kind === "avatar"
-        ? [workerPath]
-        : [
-            workerPath,
-            "--model",
-            runtime.model,
-            "--language",
-            defaults.language,
-            "--device-map",
-            defaults.deviceMap,
-            "--dtype",
-            defaults.dtype
-          ];
-      if (kind === "asr") args.push("--max-new-tokens", String(defaults.maxNewTokens));
-      this.stop(false);
-      this.status = "starting";
-      this.error = "";
-      this.stderr = "";
-      this.stdoutBuffer = "";
-      this.startedAt = now();
-      this.readyAt = "";
-      this.loadMs = 0;
-      const child = spawn(runtime.python, args, {
-        cwd: rootDir,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, TOKENIZERS_PARALLELISM: "false" }
-      });
-      this.process = child;
-      child.stderr.on("data", (chunk) => {
-        this.stderr = appendTail(this.stderr, chunk.toString());
-      });
-      child.stdout.on("data", (chunk) => {
-        this.stdoutBuffer += chunk.toString();
-        let index = this.stdoutBuffer.indexOf("\n");
-        while (index !== -1) {
-          const line = this.stdoutBuffer.slice(0, index).trim();
-          this.stdoutBuffer = this.stdoutBuffer.slice(index + 1);
-          if (line) this.handleLine(line);
-          index = this.stdoutBuffer.indexOf("\n");
-        }
-      });
-      child.on("exit", (code, signal) => {
-        for (const pending of this.pending.values()) pending.reject(new Error(`${label} worker 已退出。code=${code ?? ""} signal=${signal ?? ""}`));
-        this.pending.clear();
-        if (this.process === child) {
-          this.process = null;
-          this.status = "stopped";
-        }
-      });
-      this.startPromise = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error(`${label} 启动超时。${this.stderr ? `stderr: ${this.stderr}` : ""}`));
-        }, Number(process.env.DH_MODEL_WARM_TIMEOUT_MS || 1200000));
-        this.pending.set("__ready__", {
-          resolve: (payload) => {
-            clearTimeout(timer);
-            this.startPromise = null;
-            resolve(payload);
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            this.startPromise = null;
-            reject(error);
-          }
-        });
-      });
-      return this.startPromise;
-    },
-    handleLine(line) {
-      let payload;
-      try {
-        payload = JSON.parse(line);
-      } catch {
-        this.stderr = appendTail(this.stderr, `${line}\n`);
-        return;
-      }
-      if (payload.event === "ready") {
-        const pending = this.pending.get("__ready__");
-        this.pending.delete("__ready__");
-        if (payload.ok) {
-          this.status = "running";
-          this.readyAt = now();
-          this.loadMs = Number(payload.load_ms || 0);
-          pending?.resolve(this.publicStatus());
-        } else {
-          this.status = "failed";
-          this.error = payload.error || `${label} 启动失败。`;
-          pending?.reject(new Error(this.error));
-        }
-        return;
-      }
-      const pending = this.pending.get(payload.id);
-      if (!pending) return;
-      this.pending.delete(payload.id);
-      if (payload.ok) pending.resolve(payload);
-      else pending.reject(new Error(payload.error || `${label} 执行失败。`));
-    },
-    async request(payload, timeout = 1200000) {
-      await this.start();
-      if (!this.process?.stdin?.writable) throw new Error(`${label} worker 未运行。`);
-      const id = `runtime-${randomUUID()}`;
-      const command = { ...payload, id };
-      const response = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          this.pending.delete(id);
-          reject(new Error(`${label} 执行超时。`));
-        }, timeout);
-        this.pending.set(id, {
-          resolve: (result) => {
-            clearTimeout(timer);
-            resolve(result);
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            reject(error);
-          }
-        });
-      });
-      this.process.stdin.write(`${JSON.stringify(command)}\n`);
-      return response;
-    },
-    stop(markStopped = true) {
-      if (this.process) {
-        try {
-          if (this.process.stdin?.writable) this.process.stdin.write(`${JSON.stringify({ id: `shutdown-${randomUUID()}`, command: "shutdown" })}\n`);
-        } catch {
-          // Ignore shutdown pipe errors.
-        }
-        this.process.kill("SIGTERM");
-      }
-      this.process = null;
-      this.startPromise = null;
-      for (const pending of this.pending.values()) pending.reject(new Error(`${label} worker 已停止。`));
-      this.pending.clear();
-      if (markStopped) {
-        this.status = "stopped";
-        this.readyAt = "";
-        this.error = "";
-      }
-      return this.publicStatus();
-    },
-    publicStatus() {
-      return {
-        kind,
-        label,
-        status: this.status,
-        startedAt: this.startedAt,
-        readyAt: this.readyAt,
-        loadMs: this.loadMs,
-        error: this.error,
-        pid: this.process?.pid || null
-      };
-    }
-  };
-}
-
 function runtimeWorkerStatus() {
-  return {
-    asr: runtimeWorkers.asr.publicStatus(),
-    avatar: runtimeWorkers.avatar.publicStatus()
-  };
+  return {};
 }
 
 async function transcribeWithLocalAsr(audioPath, options = {}) {
-  if (runtimeWorkers.asr.status === "running" || runtimeWorkers.asr.status === "starting") {
-    const result = await runtimeWorkers.asr.request({
-      command: "transcribe",
-      audio: audioPath,
-      language: options.language || "Chinese"
-    }, options.asrTimeout || 1200000);
-    if (!result.ok) throw new Error(result.error || "本地 ASR 转写失败。");
-    return result;
-  }
   const args = [
     ASR_TOOL_PATH,
     "transcribe",
@@ -3293,15 +3062,6 @@ async function createExternalAvatarVideo(input, outPath) {
   const payloadPath = join(dirname(outPath), "avatar-render-input.json");
   writeFileSync(payloadPath, JSON.stringify(input, null, 2));
   const engine = input.videoSettings?.engine || defaultVideoSettings.engine;
-  if (engine === "musetalk" && (runtimeWorkers.avatar.status === "running" || runtimeWorkers.avatar.status === "starting")) {
-    const result = await runtimeWorkers.avatar.request({
-      command: "render",
-      payloadPath,
-      outPath
-    }, 1200000);
-    if (result.ok && existsSync(outPath)) return { ok: true, engine: result.engine || "musetalk-v15-worker" };
-    return { ok: false, engine: "musetalk-v15-worker", error: result.error || "MuseTalk 常驻 Adapter 未输出视频。" };
-  }
   const attempts = [];
   if (process.env.AVATAR_RENDER_COMMAND) {
     attempts.push({ command: process.env.AVATAR_RENDER_COMMAND, args: [payloadPath, outPath], engine: "configured-avatar-adapter" });
@@ -3984,30 +3744,24 @@ app.delete("/api/requirement-templates/:id", (req, res) => {
 
 app.post("/api/runtime-models/:kind/start", async (req, res, next) => {
   try {
-    const kind = req.params.kind;
-    if (!["asr", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
-    const status = await runtimeWorkers[kind].start();
     const db = readDb();
-    if (kind === "asr") db.settings.keepAsrModelWarm = true;
-    if (kind === "avatar") db.settings.keepAvatarModelWarm = true;
+    db.settings.keepAsrModelWarm = false;
     db.settings.keepTtsModelWarm = false;
+    db.settings.keepAvatarModelWarm = false;
     writeDb(db);
-    res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
+    res.status(410).json({ error: "模型预启动已移除；ASR、TTS、视频合成均按需运行。" });
   } catch (err) {
     next(err);
   }
 });
 
 app.post("/api/runtime-models/:kind/stop", (req, res) => {
-  const kind = req.params.kind;
-  if (!["asr", "avatar"].includes(kind)) return res.status(404).json({ error: "未知运行模型。" });
-  const status = runtimeWorkers[kind].stop();
   const db = readDb();
-  if (kind === "asr") db.settings.keepAsrModelWarm = false;
-  if (kind === "avatar") db.settings.keepAvatarModelWarm = false;
+  db.settings.keepAsrModelWarm = false;
   db.settings.keepTtsModelWarm = false;
+  db.settings.keepAvatarModelWarm = false;
   writeDb(db);
-  res.json({ ok: true, status, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
+  res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
 });
 
 app.get("/api/runtime-models", (_req, res) => {
@@ -4018,16 +3772,12 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   try {
   const db = readDb();
   const body = req.body || {};
-  if (body.keepAsrModelWarm !== undefined) db.settings.keepAsrModelWarm = Boolean(body.keepAsrModelWarm);
+  db.settings.keepAsrModelWarm = false;
   db.settings.keepTtsModelWarm = false;
-  if (body.keepAvatarModelWarm !== undefined) db.settings.keepAvatarModelWarm = Boolean(body.keepAvatarModelWarm);
+  db.settings.keepAvatarModelWarm = false;
   if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
   writeDb(db);
-  if (body.keepAsrModelWarm === true) await runtimeWorkers.asr.start();
-  if (body.keepAsrModelWarm === false) runtimeWorkers.asr.stop();
-  if (body.keepAvatarModelWarm === true) await runtimeWorkers.avatar.start();
-  if (body.keepAvatarModelWarm === false) runtimeWorkers.avatar.stop();
   res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
   } catch (err) {
     next(err);
@@ -6883,11 +6633,4 @@ recoverQueueOnBoot();
 
 app.listen(PORT, () => {
   console.log(`Digital human API listening on http://127.0.0.1:${PORT}`);
-  const db = readDb();
-  if (db.settings.keepAsrModelWarm) {
-    runtimeWorkers.asr.start().catch((error) => console.error(`[runtime-models] ASR 启动失败：${error.message}`));
-  }
-  if (db.settings.keepAvatarModelWarm) {
-    runtimeWorkers.avatar.start().catch((error) => console.error(`[runtime-models] MuseTalk 启动失败：${error.message}`));
-  }
 });
