@@ -638,7 +638,7 @@ function stageDurationMs(stage?: StageState[StageKey]) {
 }
 
 function taskDurationMs(project: Project) {
-  const stageTotal = stageOrder.reduce((sum, stage) => sum + (stageDurationMs(project.stageState?.[stage]) || 0), 0);
+  const stageTotal = (["voice", "video"] as StageKey[]).reduce((sum, stage) => sum + (stageDurationMs(project.stageState?.[stage]) || 0), 0);
   if (stageTotal > 0) return stageTotal;
   const active = ["queued", "running"].includes(project.status) || Object.values(project.stageState || {}).some((stage) => stageRunning(stage.status));
   const end = active ? new Date().toISOString() : project.updatedAt;

@@ -3036,14 +3036,40 @@ function buildScript(input) {
   };
 }
 
+function splitCaptionChunk(text, maxChars = 24) {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  if (!source) return [];
+  const chunks = [];
+  let current = "";
+  for (const ch of source) {
+    const next = current + ch;
+    const punctuationBreak = /[，。！？；、,.!?;]/.test(ch) && next.length >= Math.floor(maxChars * 0.58);
+    if ((next.length > maxChars && current) || punctuationBreak) {
+      chunks.push(current.trim());
+      current = punctuationBreak ? "" : ch;
+    } else {
+      current = next;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
 function buildCaptionSegments(script, duration) {
-  const lines = splitSentences(script);
-  const step = Math.max(2.5, duration / Math.max(lines.length, 1));
-  return lines.map((line, index) => {
-    const start = index * step;
-    const end = Math.min(duration, start + step - 0.2);
-    return { index: index + 1, start, end, text: line };
-  });
+  const chunks = splitSentences(script).flatMap((line) => splitCaptionChunk(line));
+  const safeChunks = chunks.length ? chunks : [compactChinese(script, 24)].filter(Boolean);
+  const totalWeight = safeChunks.reduce((sum, line) => sum + Math.max(1, line.length), 0) || 1;
+  let cursor = 0;
+  return safeChunks.map((line, index) => {
+    const isLast = index === safeChunks.length - 1;
+    const segmentDuration = isLast
+      ? Math.max(0.8, duration - cursor)
+      : Math.max(1.15, duration * (Math.max(1, line.length) / totalWeight));
+    const start = Math.min(duration, cursor);
+    const end = isLast ? duration : Math.min(duration, start + segmentDuration);
+    cursor = end;
+    return { index: index + 1, start, end: Math.min(duration, Math.max(start + 0.6, end)), text: line };
+  }).filter((segment) => segment.start < duration);
 }
 
 function buildSrt(script, duration) {
@@ -3331,7 +3357,7 @@ async function createSimpleSubtitleOverlays(segments, outDir, baseVideoPath) {
     height,
     segments: selectedSegments.map((segment) => ({
       ...segment,
-      text: compactChinese(segment.text, 68),
+      text: compactChinese(segment.text, 30),
       path: join(overlayDir, `subtitle-${String(segment.index).padStart(3, "0")}.png`)
     }))
   };
@@ -3390,7 +3416,6 @@ for segment in payload["segments"]:
   y0 = int(height - bottom_margin - box_height)
   x1 = x0 + box_width
   y1 = y0 + box_height
-  draw.rounded_rectangle((x0, y0, x1, y1), radius=max(10, int(font_size * 0.45)), fill=(0, 0, 0, 132))
   y = y0 + pad_y
   for line in lines:
     bbox = draw.textbbox((0, 0), line, font=caption_font, stroke_width=2)
