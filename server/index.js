@@ -6518,6 +6518,9 @@ async function appendDouyinTags(page, tags, steps, stepDetails) {
     await page.waitForTimeout(500);
     await confirmDouyinTagCandidate(page, tag);
   }
+  await page.keyboard.press("Enter").catch(() => undefined);
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await page.waitForTimeout(300);
   pushPublishStep(steps, stepDetails, "select_tags", "选择话题标签", "done", cleanTags.map((tag) => `#${tag}`).join(" "));
   return true;
 }

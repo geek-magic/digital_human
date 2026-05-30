@@ -1402,8 +1402,8 @@ function TaskComposer({
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
-    setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
-  }, [state.settings?.defaultTextModelId, state.models]);
+    setScriptModelId((current) => current || localTextModelId(state));
+  }, [state.settings?.defaultTextModelId, state.settings?.defaultModelIds?.llm, state.models]);
   useEffect(() => {
     setTtsModelId((current) => current || defaultModelIdForType(state, "tts"));
   }, [state.settings?.defaultModelIds?.tts, state.models]);
@@ -1444,7 +1444,7 @@ function TaskComposer({
     setTitle("");
     setInputText("");
     setRequirements("");
-    setScriptModelId(state.settings?.defaultTextModelId || "");
+    setScriptModelId(localTextModelId(state));
     setVoiceId("");
     setTtsModelId(defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(1);
@@ -1555,7 +1555,7 @@ function PolishDialog({
   const [draftInputText, setDraftInputText] = useState(inputText);
   const [draftRequirements, setDraftRequirements] = useState(requirements);
   const [draftTemplateId, setDraftTemplateId] = useState("");
-  const [draftModelId, setDraftModelId] = useState(scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
+  const draftModelId = scriptModelId || localTextModelId(state);
   const [versions, setVersions] = useState<Array<{ id: string; label: string; text: string; requirements: string; scriptModelId: string; createdAt: string }>>([]);
   const [activeVersionId, setActiveVersionId] = useState("");
   const polishing = busy === "AI润色";
@@ -1613,7 +1613,6 @@ function PolishDialog({
           <label><span>输入内容</span><textarea value={draftInputText} onChange={(event) => setDraftInputText(event.target.value)} placeholder="输入或粘贴需要润色的口播内容" /></label>
           <label><span>生成要求模板</span><select value={draftTemplateId} onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">不使用</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><textarea value={draftRequirements} onChange={(event) => setDraftRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
-          <TextModelSelect state={state} value={draftModelId} onChange={setDraftModelId} />
           <section className="polish-result-panel">
             <div className="section-head">
               <div><p className="eyebrow">润色结果</p><h3>版本输出</h3></div>
@@ -1664,8 +1663,12 @@ function providerTextModelValue(provider: ApiProviderRecord) {
   return `provider:${provider.id}`;
 }
 
+function localTextModelId(state: State) {
+  return state.models.find((model) => model.type === "llm" && !String(model.id).startsWith("provider:"))?.id || "";
+}
+
 function normalizeTextModelValue(state: State, value = "") {
-  const fallback = state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "";
+  const fallback = localTextModelId(state);
   const selected = value || fallback;
   if (!selected.startsWith("provider:")) return selected;
   const providerKey = selected.replace("provider:", "");
@@ -1674,7 +1677,7 @@ function normalizeTextModelValue(state: State, value = "") {
 }
 
 function defaultModelIdForType(state: State, type: ModelTypeKey) {
-  if (type === "llm") return normalizeTextModelValue(state, state.settings?.defaultTextModelId || state.settings?.defaultModelIds?.llm || "");
+  if (type === "llm") return localTextModelId(state);
   const configured = state.settings?.defaultModelIds?.[type] || "";
   if (configured.startsWith("provider:")) {
     const providerKey = configured.replace("provider:", "");
@@ -1697,29 +1700,6 @@ function defaultModelLabelForType(state: State, type: ModelTypeKey) {
 
 function providersForType(state: State, type: ModelTypeKey) {
   return state.apiProviders.filter((provider) => provider.hasKey && provider.model && provider.capabilities?.includes(type));
-}
-
-function TextModelSelect({ state, value, onChange }: { state: State; value: string; onChange: (value: string) => void }) {
-  const localModels = state.models.filter((model) => model.type === "llm");
-  const providers = providersForType(state, "llm");
-  const selected = normalizeTextModelValue(state, value);
-  return (
-    <label>
-      <span>文本模型</span>
-      <select value={selected} onChange={(event) => onChange(event.target.value)}>
-        {localModels.length > 0 && (
-          <optgroup label="本地模型">
-            {localModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-          </optgroup>
-        )}
-        {providers.length > 0 && (
-          <optgroup label="云端 Provider">
-            {providers.map((provider) => <option key={provider.id} value={providerTextModelValue(provider)}>{provider.name} · {provider.model}</option>)}
-          </optgroup>
-        )}
-      </select>
-    </label>
-  );
 }
 
 function TtsModelSelect({ state, value, onChange }: { state: State; value: string; onChange: (value: string) => void }) {
@@ -1836,7 +1816,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   useEffect(() => {
     setInputText(project?.inputText || "");
     setRequirements(project?.requirements || "");
-    setScriptModelId(project?.scriptModelId || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
+    const projectScriptModelId = project?.scriptModelId || "";
+    setScriptModelId(projectScriptModelId && !projectScriptModelId.startsWith("provider:") ? projectScriptModelId : localTextModelId(state));
     setVoiceId(project?.voiceId || "");
     setTtsModelId(project?.ttsModelId || defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(project?.audioPlaybackSpeed || 1);
@@ -2312,8 +2293,6 @@ function StageWorkspace({
           <label><span>输入内容</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
           <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
           <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
-          <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
-          {project.artifacts.script?.modelInfo && <small>生成模型：{project.artifacts.script.modelInfo.providerName || project.artifacts.script.modelInfo.modelName || project.artifacts.script.modelInfo.model || "文本模型"}</small>}
           <div className="step-actions">
             <button className="ghost-button" disabled={savingScript} onClick={saveScript}>
               {savingScript ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}
@@ -2700,7 +2679,7 @@ function ScriptVersionList({ project, versions, onSelect, action }: { project: P
           <article className="version-row" key={version.id}>
             <div>
               <strong>{version.label} · {version.title}</strong>
-              <small>{formatDate(version.createdAt)} · {version.modelInfo?.providerName || version.modelInfo?.modelName || version.modelInfo?.model || "文本模型"}</small>
+              <small>{formatDate(version.createdAt)}</small>
               <p>{version.scriptText}</p>
             </div>
             <div className="version-actions">
@@ -3593,7 +3572,7 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
   const [prompt, setPrompt] = useState("把这段内容润色成适合短视频口播的自然中文：今天店里来了很多老顾客，大家都说环境越来越舒服。");
   const [requirements, setRequirements] = useState("");
   const [templateId, setTemplateId] = useState("");
-  const [scriptModelId, setScriptModelId] = useState(state.settings?.defaultTextModelId || "");
+  const scriptModelId = localTextModelId(state);
   const [result, setResult] = useState("");
   const [testing, setTesting] = useState(false);
   const templates = getRequirementTemplates(state);
@@ -3602,10 +3581,6 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
     const template = templates.find((item) => item.id === nextTemplateId);
     setRequirements(template?.value || "");
   };
-  useEffect(() => {
-    setScriptModelId((current) => current || state.settings?.defaultTextModelId || state.models.find((model) => model.type === "llm")?.id || "");
-  }, [state.settings?.defaultTextModelId, state.models]);
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
@@ -3627,7 +3602,6 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
       <label><span>输入内容</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
       <label><span>生成要求模板</span><select value={templateId} onChange={(event) => applyTemplate(event.target.value)}><option value="">不使用</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
       <label><span>生成要求</span><textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
-      <TextModelSelect state={state} value={scriptModelId} onChange={setScriptModelId} />
       <button className="primary-button" disabled={testing || !prompt.trim()}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "润色中" : "开始润色"}</button>
       {result && <OutputItem title="润色结果" status="done"><p>{result}</p></OutputItem>}
     </form>
