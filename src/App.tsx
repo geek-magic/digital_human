@@ -2441,7 +2441,6 @@ function StageWorkspace({
                 {publishDraft.audioUri && <label><span>音频地址</span><input readOnly value={`${window.location.origin}${publishDraft.audioUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.audioUri}`)}>复制</button></label>}
                 {publishDraft.audioPath && <label><span>音频文件</span><input readOnly value={publishDraft.audioPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.audioPath || "")}>复制</button></label>}
                 {publishDraft.subtitlesUri && <label><span>字幕地址</span><input readOnly value={`${window.location.origin}${publishDraft.subtitlesUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.subtitlesUri}`)}>复制</button></label>}
-                <label className="publish-package-field"><span>发布包</span><textarea readOnly value={publishPackageText(publishDraft)} /><button className="ghost-button" onClick={() => copyPublishField(publishPackageText(publishDraft))}>复制</button></label>
               </div>
             </OutputItem>
           )}
