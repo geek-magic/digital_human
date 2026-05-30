@@ -72,7 +72,42 @@ function ensureMuseTalkInferencePatch(inferencePath) {
   if (patched.includes(legacyCoordLine)) {
     patched = patched.replace(legacyCoordLine, sidecarCoordBlock);
   }
-  patched = patched.replace("                    y2 = min(y2, frame.shape[0])", "                    y2 = min(y2, ori_frame.shape[0])");
+  patched = patched.replace(
+    [
+      "            for bbox, frame in zip(coord_list, frame_list):",
+      "                if bbox == coord_placeholder:",
+      "                    continue",
+      "                x1, y1, x2, y2 = bbox",
+      "                if args.version == \"v15\":",
+      "                    y2 = y2 + args.extra_margin",
+      "                    y2 = min(y2, ori_frame.shape[0])"
+    ].join("\n"),
+    [
+      "            for bbox, frame in zip(coord_list, frame_list):",
+      "                if bbox == coord_placeholder:",
+      "                    continue",
+      "                x1, y1, x2, y2 = bbox",
+      "                if args.version == \"v15\":",
+      "                    y2 = y2 + args.extra_margin",
+      "                    y2 = min(y2, frame.shape[0])"
+    ].join("\n")
+  );
+  patched = patched.replace(
+    [
+      "                ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])",
+      "                x1, y1, x2, y2 = bbox",
+      "                if args.version == \"v15\":",
+      "                    y2 = y2 + args.extra_margin",
+      "                    y2 = min(y2, frame.shape[0])"
+    ].join("\n"),
+    [
+      "                ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])",
+      "                x1, y1, x2, y2 = bbox",
+      "                if args.version == \"v15\":",
+      "                    y2 = y2 + args.extra_margin",
+      "                    y2 = min(y2, ori_frame.shape[0])"
+    ].join("\n")
+  );
   if (patched !== source) {
     writeFileSync(inferencePath, patched);
   }
