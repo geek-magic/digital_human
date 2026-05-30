@@ -1450,6 +1450,7 @@ function TaskComposer({
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
   const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
+  const selectedBackgroundMusic = state.musicAssets.find((asset) => asset.id === backgroundMusicAssetId);
 
   return (
     <section className="composer">
@@ -1485,7 +1486,12 @@ function TaskComposer({
           </label>
           <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
-          {backgroundMusicAssetId && <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />}
+          {selectedBackgroundMusic && (
+            <div className="media-control-block">
+              <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
+              <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
+            </div>
+          )}
           {mode === "auto" && (
             <>
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
@@ -1749,6 +1755,14 @@ function RangeField({
       <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
+}
+
+function VolumeAudioPreview({ src, volume }: { src: string; volume: number }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.volume = Math.max(0, Math.min(1, Number(volume) || 0));
+  }, [volume, src]);
+  return <audio ref={ref} className="inline-audio" controls src={src} />;
 }
 
 function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "llm" | "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
@@ -2362,7 +2376,7 @@ function StageWorkspace({
           </label>
           {selectedMusic && (
             <div className="media-control-block">
-              <audio className="inline-audio" controls src={selectedMusic.uri} />
+              <VolumeAudioPreview src={selectedMusic.uri} volume={backgroundMusicVolume} />
               <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
             </div>
           )}
