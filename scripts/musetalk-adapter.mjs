@@ -57,6 +57,27 @@ function tailText(value = "", max = 6000) {
   return text.length > max ? text.slice(-max) : text;
 }
 
+function ensureMuseTalkInferencePatch(inferencePath) {
+  let source = readFileSync(inferencePath, "utf-8");
+  let patched = source;
+  const legacyCoordLine = `            crop_coord_save_path = os.path.join(args.result_dir, "../", input_basename+".pkl")`;
+  const sidecarCoordBlock = [
+    `            legacy_crop_coord_save_path = os.path.join(args.result_dir, "../", input_basename+".pkl")`,
+    `            sidecar_crop_coord_save_path = os.path.splitext(video_path)[0] + ".pkl"`,
+    `            if args.use_saved_coord and os.path.exists(sidecar_crop_coord_save_path):`,
+    `                crop_coord_save_path = sidecar_crop_coord_save_path`,
+    `            else:`,
+    `                crop_coord_save_path = legacy_crop_coord_save_path`
+  ].join("\n");
+  if (patched.includes(legacyCoordLine)) {
+    patched = patched.replace(legacyCoordLine, sidecarCoordBlock);
+  }
+  patched = patched.replace("                    y2 = min(y2, frame.shape[0])", "                    y2 = min(y2, ori_frame.shape[0])");
+  if (patched !== source) {
+    writeFileSync(inferencePath, patched);
+  }
+}
+
 function pngFrameNames(dirPath) {
   if (!existsSync(dirPath)) return [];
   return readdirSync(dirPath)
@@ -131,7 +152,7 @@ async function repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAu
   return existsSync(outputPath);
 }
 
-async function prepareInputs(payload, workDir) {
+async function prepareInputs(payload, workDir, namePrefix = "musetalk") {
   const maxDuration = Math.max(1, Number(process.env.MUSETALK_MAX_SEGMENT_SECONDS || 120));
   const duration = Math.min(maxDuration, Math.max(1, Number(payload.duration || 45)));
   const videoStart = Math.max(0, Number(payload.videoStart || 0));
@@ -141,8 +162,8 @@ async function prepareInputs(payload, workDir) {
   assertFile(sourceVideo, "数字人原视频");
   assertFile(sourceAudio, "口播音频");
 
-  const preparedVideo = join(workDir, "musetalk-input.mp4");
-  const preparedAudio = join(workDir, "musetalk-audio.wav");
+  const preparedVideo = join(workDir, `${namePrefix}-input.mp4`);
+  const preparedAudio = join(workDir, `${namePrefix}-audio.wav`);
   const videoSeekArgs = videoStart > 0 ? ["-ss", String(videoStart)] : [];
   const audioSeekArgs = audioStart > 0 ? ["-ss", String(audioStart)] : [];
   await run(ffmpegBin, [
@@ -180,12 +201,13 @@ async function prepareSegmentInputs(payload, workDir, index) {
   const segment = payload.segments?.[index] || {};
   const segmentDir = join(workDir, "segments", `segment-${String(index + 1).padStart(3, "0")}`);
   mkdirSync(segmentDir, { recursive: true });
+  const namePrefix = `musetalk-segment-${String(index + 1).padStart(3, "0")}`;
   return prepareInputs({
     ...payload,
     duration: segment.duration || payload.duration,
     audioStart: segment.audioStart || 0,
     videoStart: segment.videoStart || 0
-  }, segmentDir);
+  }, segmentDir, namePrefix);
 }
 
 async function createMediapipeCoords(videoPath, coordPath, settings) {
@@ -274,7 +296,9 @@ print(json.dumps({"frames": len(coords), "validFrames": detected_valid, "skipped
 
 export async function render(payloadPath, outPath) {
   assertFile(payloadPath, "Adapter 输入");
-  assertFile(join(museTalkHome, "scripts", "inference.py"), "MuseTalk 推理脚本");
+  const inferencePath = join(museTalkHome, "scripts", "inference.py");
+  assertFile(inferencePath, "MuseTalk 推理脚本");
+  ensureMuseTalkInferencePatch(inferencePath);
   assertFile(join(museTalkHome, "models", "musetalkV15", "unet.pth"), "MuseTalk v1.5 权重");
   assertFile(join(museTalkHome, "models", "sd-vae"), "MuseTalk VAE");
   assertFile(join(museTalkHome, "models", "whisper"), "MuseTalk Whisper");
