@@ -1456,6 +1456,8 @@ function TaskComposer({
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
   const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
   const selectedBackgroundMusic = state.musicAssets.find((asset) => asset.id === backgroundMusicAssetId);
+  const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
+  const selectedAvatarAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
 
   return (
     <section className="composer">
@@ -1501,6 +1503,8 @@ function TaskComposer({
               <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+              <VoiceSample asset={selectedVoice} />
+              <AvatarSample asset={selectedAvatarAsset} />
               <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
             </>
           )}
@@ -3659,6 +3663,7 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
   const [text, setText] = useState("这是一次音色克隆测试，请生成自然清晰的中文口播。");
   const [audioUri, setAudioUri] = useState("");
   const [testing, setTesting] = useState(false);
+  const selectedVoice = voices.find((voice) => voice.id === voiceId);
   useEffect(() => {
     setVoiceId((current) => current || voices[0]?.id || "");
   }, [voices]);
@@ -3686,6 +3691,7 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
       <div><p className="eyebrow">体验</p><h3>音色试听</h3></div>
       <TtsModelSelect state={state} value={modelId} onChange={setModelId} />
       <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+      <VoiceSample asset={selectedVoice} />
       <label><span>合成文本</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
       <button className="primary-button" disabled={testing || !text.trim() || !voiceId || !modelId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
       {audioUri && <OutputItem title="试听音频" status="done"><audio controls src={audioUri} /></OutputItem>}
@@ -3700,6 +3706,7 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [videoUri, setVideoUri] = useState("");
   const [testing, setTesting] = useState(false);
+  const selectedAvatarAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
   useEffect(() => {
     setAvatarAssetId((current) => current || state.avatarAssets[0]?.id || "");
   }, [state.avatarAssets]);
@@ -3724,6 +3731,7 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>视频合成</h3></div>
       <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">使用上传素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      {!avatarFile && <AvatarSample asset={selectedAvatarAsset} />}
       <label><span>背景音</span><select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}><option value="">不使用背景音</option>{(state.musicAssets || []).map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <div className="test-file-row">
         <label className="file-chip"><Upload size={16} />{avatarFile ? avatarFile.name : "上传人物视频"}<input type="file" accept="video/*" onChange={(event) => setAvatarFile(event.target.files?.[0] || null)} /></label>
