@@ -1824,6 +1824,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [selectedAudioVersionId, setSelectedAudioVersionId] = useState("");
   const [selectedVideoVersionId, setSelectedVideoVersionId] = useState("");
   const [publishDraft, setPublishDraft] = useState<PublishRecord | null>(null);
+  const [publishingPlatform, setPublishingPlatform] = useState<Platform | "">("");
   const lastAutoStageRef = useRef<StageKey>(currentStage);
   const voiceDirtyRef = useRef(false);
   const currentVersionId = (project?.videoVersions || project?.versions || []).find((version) => version.isCurrent)?.id || "";
@@ -1983,13 +1984,18 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     });
 
   async function preparePublish(platform: Platform) {
-    const payload = await action("打开发布入口", () => request<PublishRecord>(`/api/projects/${currentProject.id}/publish/${platform}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoVersionId: selectedVideoVersionId })
-    }));
-    if (payload) {
-      setPublishDraft(payload);
+    setPublishingPlatform(platform);
+    try {
+      const payload = await action("打开发布入口", () => request<PublishRecord>(`/api/projects/${currentProject.id}/publish/${platform}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoVersionId: selectedVideoVersionId })
+      }));
+      if (payload) {
+        setPublishDraft(payload);
+      }
+    } finally {
+      setPublishingPlatform("");
     }
   }
 
@@ -2087,6 +2093,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         selectedVideoVersionId={selectedVideoVersionId}
         setSelectedVideoVersionId={setSelectedVideoVersionId}
         publishDraft={publishDraft}
+        publishingPlatform={publishingPlatform}
         preparePublish={preparePublish}
         recordPublished={recordPublished}
         onGoNext={goNextStage}
@@ -2173,6 +2180,7 @@ function StageWorkspace({
   selectedVideoVersionId,
   setSelectedVideoVersionId,
   publishDraft,
+  publishingPlatform,
   preparePublish,
   recordPublished,
   onGoNext
@@ -2224,6 +2232,7 @@ function StageWorkspace({
   selectedVideoVersionId: string;
   setSelectedVideoVersionId: (value: string) => void;
   publishDraft: PublishRecord | null;
+  publishingPlatform: Platform | "";
   preparePublish: (platform: Platform) => Promise<void>;
   recordPublished: (platform: Platform) => Promise<void>;
   onGoNext: () => void;
@@ -2250,7 +2259,6 @@ function StageWorkspace({
   const savingScript = busy === "保存口播文案";
   const savingVideoSetup = busy === "保存视频设置";
   const savingSourceAudio = busy === "使用原始音频";
-  const openingPublish = busy === "打开发布入口";
   const recordingPublish = busy === "记录发布结果";
   const templates = getRequirementTemplates(state);
   const applyRequirementTemplate = (templateId: string) => {
@@ -2410,9 +2418,9 @@ function StageWorkspace({
           </div>
           <div className="publish-buttons">
             {(Object.keys(platformLabels) as Platform[]).map((platform) => (
-              <button key={platform} className="primary-link" disabled={openingPublish || !selectedVideoVersion} onClick={() => preparePublish(platform)}>
-                {openingPublish ? <Loader2 className="spin" size={16} /> : <ExternalLink size={16} />}
-                {openingPublish ? "打开中" : platformLabels[platform]}
+              <button key={platform} className="primary-link" disabled={Boolean(publishingPlatform) || !selectedVideoVersion} onClick={() => preparePublish(platform)}>
+                {publishingPlatform === platform ? <Loader2 className="spin" size={16} /> : <ExternalLink size={16} />}
+                {publishingPlatform === platform ? "打开中" : platformLabels[platform]}
               </button>
             ))}
             {selectedVideoVersion && <a className="secondary-button" href={selectedVideoVersion.artifact.video.uri} download><Download size={16} />下载视频</a>}
