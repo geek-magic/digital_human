@@ -1453,6 +1453,7 @@ function TaskComposer({
   const selectedBackgroundMusic = state.musicAssets.find((asset) => asset.id === backgroundMusicAssetId);
   const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
   const selectedAvatarAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
+  const selectedTtsModel = state.models.find((model) => model.id === (ttsModelId || defaultModelIdForType(state, "tts")));
 
   return (
     <section className="composer">
@@ -1464,62 +1465,53 @@ function TaskComposer({
         <div className="task-create-toolbar">
           <button type="button" className="ghost-button extraction-entry-button" onClick={onOpenExtraction}><Download size={15} />链接解析</button>
         </div>
-        <label>
-          <span>任务标题</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选；不填会自动生成短标题" />
-        </label>
-        <label>
-          <span className="label-head">
-            <span>输入内容</span>
-            <button type="button" className="text-button" disabled={busy === "AI润色"} onClick={() => setPolishOpen(true)}>
+        <FieldCard title="任务标题" meta={title ? compactDisplay(title, 18) : "可选"}>
+          <label>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选；不填会自动生成短标题" />
+          </label>
+        </FieldCard>
+        <FieldCard title="输入内容" meta={inputText ? `${inputText.trim().length} 字` : "必填"}>
+          <label>
+            <div className="label-head">
+              <span>原始输入</span>
+              <button type="button" className="text-button" disabled={busy === "AI润色"} onClick={() => setPolishOpen(true)}>
               {busy === "AI润色" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
               AI润色
-            </button>
-          </span>
-          <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
-        </label>
+              </button>
+            </div>
+            <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
+          </label>
+        </FieldCard>
         {mode === "manual" ? (
           <div className="composer-grid compact">
-            <label>
-              <span>背景音乐</span>
-              <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
-                <option value="">不使用背景音乐</option>
-                {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
-              </select>
-            </label>
-            {selectedBackgroundMusic && (
-              <div className="media-control-block">
-                <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
-                <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
-              </div>
-            )}
-            <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
+            <BackgroundMusicField state={state} selectedBackgroundMusic={selectedBackgroundMusic} backgroundMusicAssetId={backgroundMusicAssetId} setBackgroundMusicAssetId={setBackgroundMusicAssetId} backgroundMusicVolume={backgroundMusicVolume} setBackgroundMusicVolume={setBackgroundMusicVolume} />
+            <FieldCard title="语音模型" meta={selectedTtsModel?.name || "默认"}>
+              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
+            </FieldCard>
           </div>
         ) : (
           <div className="composer-grid auto-layout">
             <div className="composer-audio-column">
-              <label>
-                <span>背景音乐</span>
-                <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
-                  <option value="">不使用背景音乐</option>
-                  {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
-                </select>
-              </label>
-              {selectedBackgroundMusic && (
-                <div className="media-control-block">
-                  <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
-                  <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
-                </div>
-              )}
-              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
-              <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
-              <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-              <VoiceSample asset={selectedVoice} />
-              <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
+              <BackgroundMusicField state={state} selectedBackgroundMusic={selectedBackgroundMusic} backgroundMusicAssetId={backgroundMusicAssetId} setBackgroundMusicAssetId={setBackgroundMusicAssetId} backgroundMusicVolume={backgroundMusicVolume} setBackgroundMusicVolume={setBackgroundMusicVolume} />
+              <FieldCard title="语音模型" meta={selectedTtsModel?.name || "默认"}>
+                <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
+              </FieldCard>
+              <FieldCard title="口播速度" meta={`${audioPlaybackSpeed}x`}>
+                <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} hideLabel />
+              </FieldCard>
+              <FieldCard title="音色" meta={selectedVoice?.name || "默认音色"}>
+                <label><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+                <VoiceSample asset={selectedVoice} />
+              </FieldCard>
+              <FieldCard title="字幕" meta={generateSubtitles ? "生成" : "不生成"}>
+                <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
+              </FieldCard>
             </div>
             <div className="composer-avatar-column">
-              <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-              <AvatarSample asset={selectedAvatarAsset} />
+              <FieldCard title="数字人素材" meta={selectedAvatarAsset?.name || "未选择"}>
+                <label><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+                <AvatarSample asset={selectedAvatarAsset} />
+              </FieldCard>
             </div>
           </div>
         )}
@@ -1548,6 +1540,62 @@ function TaskComposer({
         />
       )}
     </section>
+  );
+}
+
+function FieldCard({
+  title,
+  meta,
+  children,
+  defaultOpen = true
+}: {
+  title: string;
+  meta?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details className="field-card" open={defaultOpen}>
+      <summary>
+        <span>{title}</span>
+        {meta && <small>{meta}</small>}
+        <ChevronDown size={15} />
+      </summary>
+      <div className="field-card-body">{children}</div>
+    </details>
+  );
+}
+
+function BackgroundMusicField({
+  state,
+  selectedBackgroundMusic,
+  backgroundMusicAssetId,
+  setBackgroundMusicAssetId,
+  backgroundMusicVolume,
+  setBackgroundMusicVolume
+}: {
+  state: State;
+  selectedBackgroundMusic?: Asset;
+  backgroundMusicAssetId: string;
+  setBackgroundMusicAssetId: (value: string) => void;
+  backgroundMusicVolume: number;
+  setBackgroundMusicVolume: (value: number) => void;
+}) {
+  return (
+    <FieldCard title="背景音乐" meta={selectedBackgroundMusic?.name || "不使用"}>
+      <label>
+        <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
+          <option value="">不使用背景音乐</option>
+          {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+        </select>
+      </label>
+      {selectedBackgroundMusic && (
+        <div className="media-control-block">
+          <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
+          <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
+        </div>
+      )}
+    </FieldCard>
   );
 }
 
@@ -1720,11 +1768,11 @@ function providersForType(state: State, type: ModelTypeKey) {
   return state.apiProviders.filter((provider) => provider.hasKey && provider.model && provider.capabilities?.includes(type));
 }
 
-function TtsModelSelect({ state, value, onChange }: { state: State; value: string; onChange: (value: string) => void }) {
+function TtsModelSelect({ state, value, onChange, hideLabel = false }: { state: State; value: string; onChange: (value: string) => void; hideLabel?: boolean }) {
   const models = state.models.filter((model) => model.type === "tts");
   return (
     <label>
-      <span>语音模型</span>
+      {!hideLabel && <span>语音模型</span>}
       <select value={value || defaultModelIdForType(state, "tts")} onChange={(event) => onChange(event.target.value)}>
         {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
       </select>
@@ -1760,10 +1808,10 @@ function RangeField({
   );
 }
 
-function SpeedSelect({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function SpeedSelect({ value, onChange, hideLabel = false }: { value: number; onChange: (value: number) => void; hideLabel?: boolean }) {
   return (
     <div className="speed-field">
-      <span>口播速度</span>
+      {!hideLabel && <span>口播速度</span>}
       <div className="speed-options" role="group" aria-label="口播速度">
         {audioSpeedOptions.map((option) => (
           <button

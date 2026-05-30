@@ -533,6 +533,56 @@ small { color: var(--muted); font-size: 12px; }
 }
 .composer form { display: grid; gap: 10px; }
 .composer textarea { min-height: 140px; }
+.field-card {
+  min-width: 0;
+  border: 1px solid #d8e3ee;
+  border-radius: var(--radius);
+  background: #fbfcfe;
+  overflow: hidden;
+}
+.field-card + .field-card {
+  margin-top: 0;
+}
+.field-card summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  background: #f3f7fb;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+}
+.field-card summary::-webkit-details-marker {
+  display: none;
+}
+.field-card summary small {
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+.field-card summary svg {
+  color: var(--muted);
+  transition: transform .16s ease;
+}
+.field-card[open] summary {
+  border-bottom: 1px solid #dfe8f1;
+}
+.field-card[open] summary svg {
+  transform: rotate(180deg);
+}
+.field-card-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #fff;
+}
 .mode-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
