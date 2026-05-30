@@ -2434,10 +2434,6 @@ function StageWorkspace({
                 ) : publishDraft.automationSteps?.length ? (
                   <label className="publish-package-field"><span>自动化步骤</span><textarea readOnly value={publishDraft.automationSteps.join("\n")} /></label>
                 ) : null}
-                <label><span>标题</span><input readOnly value={publishDraft.title} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.title)}>复制</button></label>
-                <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
-                <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
-                {publishDraft.videoPath && <label><span>本地文件</span><input readOnly value={publishDraft.videoPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.videoPath || "")}>复制</button></label>}
               </div>
             </OutputItem>
           )}
