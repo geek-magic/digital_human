@@ -827,7 +827,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><UserRound size={22} /></div>
-          <div><strong>数字人视频工厂</strong><span>任务式内容生产</span></div>
+          <div><strong>口播智能体</strong><span>极客AI魔导院</span></div>
         </div>
         <nav className="nav-list" aria-label="主导航">
           {navItems.map((item) => {
