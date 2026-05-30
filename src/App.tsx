@@ -1485,7 +1485,6 @@ function TaskComposer({
             </select>
           </label>
           <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
-          <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
           {selectedBackgroundMusic && (
             <div className="media-control-block">
               <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
@@ -1494,6 +1493,7 @@ function TaskComposer({
           )}
           {mode === "auto" && (
             <>
+              <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
               <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
