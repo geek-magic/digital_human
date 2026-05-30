@@ -6353,34 +6353,137 @@ app.post("/api/projects/:id/ab-render", (req, res, next) => {
 
 const activePublishContexts = new Map();
 
-async function fillFirstMatchingField(page, selectors, value, steps, label) {
+function pushPublishStep(steps, stepDetails, id, label, status, message = "") {
+  const statusLabel = {
+    done: "完成",
+    failed: "失败",
+    skipped: "跳过",
+    running: "处理中"
+  }[status] || status;
+  steps.push(`${statusLabel}：${label}${message ? ` - ${message}` : ""}`);
+  stepDetails.push({ id, label, status, message, updatedAt: now() });
+}
+
+async function fillEditableLocator(locator, value) {
+  await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => undefined);
+  await locator.click({ timeout: 2500 }).catch(() => undefined);
+  const tagName = await locator.evaluate((node) => node.tagName.toLowerCase()).catch(() => "");
+  const isContentEditable = await locator.evaluate((node) => Boolean(node.isContentEditable)).catch(() => false);
+  if (tagName === "input" || tagName === "textarea") {
+    await locator.fill(value, { timeout: 5000 });
+  } else if (isContentEditable) {
+    await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
+    await locator.press("Backspace", { timeout: 1000 }).catch(() => undefined);
+    await locator.type(value, { delay: 1, timeout: 20000 }).catch(async () => {
+      await locator.evaluate((node, nextValue) => {
+        node.focus();
+        node.textContent = nextValue;
+        node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: nextValue }));
+        node.dispatchEvent(new Event("change", { bubbles: true }));
+      }, value);
+    });
+  } else {
+    await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
+    await locator.type(value, { delay: 1, timeout: 8000 });
+  }
+  const current = await locator.evaluate((node) => node.value || node.textContent || "").catch(() => "");
+  return String(current || "").includes(String(value).slice(0, Math.min(10, String(value).length)));
+}
+
+async function fillFirstMatchingField(page, selectors, value, steps, stepDetails, label) {
   if (!value) {
-    steps.push(`${label}为空，跳过填写。`);
+    pushPublishStep(steps, stepDetails, `fill_${label}`, `填写${label}`, "skipped", `${label}为空。`);
     return false;
   }
+  let foundAny = false;
+  let lastAttempt = "";
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
     try {
       if (await locator.count()) {
-        await locator.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => undefined);
-        await locator.click({ timeout: 1500 }).catch(() => undefined);
-        await locator.fill(value, { timeout: 2500 }).catch(async () => {
-          await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
-          await locator.type(value, { delay: 1, timeout: 5000 });
-        });
-        steps.push(`已尝试填写${label}。`);
-        return true;
+        foundAny = true;
+        const verified = await fillEditableLocator(locator, value);
+        if (verified) {
+          pushPublishStep(steps, stepDetails, `fill_${label}`, `填写${label}`, "done", `命中选择器：${selector}`);
+          return true;
+        }
+        lastAttempt = selector;
       }
     } catch {
       continue;
     }
   }
-  steps.push(`未找到${label}输入框，可能需要登录后手动补填。`);
+  pushPublishStep(steps, stepDetails, `fill_${label}`, `填写${label}`, "failed", foundAny ? `尝试过输入框但未能验证内容。最后选择器：${lastAttempt}` : `未找到${label}输入框。`);
   return false;
+}
+
+async function pageHasAnyText(page, texts = []) {
+  for (const text of texts) {
+    const count = await page.getByText(text, { exact: false }).count().catch(() => 0);
+    if (count > 0) return true;
+  }
+  return false;
+}
+
+async function findUploadInput(page) {
+  const selectors = [
+    "input[type='file'][accept*='video']",
+    "input[type='file'][accept*='mp4']",
+    "input[type='file']"
+  ];
+  for (const selector of selectors) {
+    const locators = page.locator(selector);
+    const count = await locators.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const locator = locators.nth(index);
+      const accepts = await locator.getAttribute("accept").catch(() => "");
+      if (!accepts || /video|mp4|mov|\*/i.test(accepts)) return locator;
+    }
+  }
+  return null;
+}
+
+async function clickUploadEntryIfNeeded(page) {
+  const candidates = [
+    "button:has-text('上传视频')",
+    "button:has-text('上传')",
+    "a:has-text('上传视频')",
+    "text=上传视频",
+    "text=发布视频",
+    "text=选择视频"
+  ];
+  for (const selector of candidates) {
+    const locator = page.locator(selector).first();
+    if (await locator.count().catch(() => 0)) {
+      await locator.click({ timeout: 2500 }).catch(() => undefined);
+      await page.waitForTimeout(1000);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function waitForUploadAccepted(page) {
+  const successTexts = ["上传成功", "重新上传", "更换视频", "视频处理中", "发布设置", "作品描述", "填写标题"];
+  for (let index = 0; index < 18; index += 1) {
+    if (await page.locator("video").count().catch(() => 0)) return true;
+    if (await pageHasAnyText(page, successTexts)) return true;
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
+async function detectPublishLoginRequired(page) {
+  const url = page.url();
+  if (/login|passport|sso/i.test(url)) return true;
+  const loginLike = await pageHasAnyText(page, ["扫码登录", "登录后", "手机号登录", "验证码登录", "请登录"]);
+  const uploadInput = await findUploadInput(page);
+  return Boolean(loginLike && !uploadInput);
 }
 
 async function automatePublishPlatform(platform, payload) {
   const steps = [];
+  const stepDetails = [];
   const profileDir = join(storageDir, "playwright-profiles", platform);
   mkdirSync(profileDir, { recursive: true });
   const { chromium } = await import("playwright");
@@ -6411,27 +6514,45 @@ async function automatePublishPlatform(platform, payload) {
   const page = context.pages()[0] || await context.newPage();
   page.setDefaultTimeout(8000);
   await page.goto(payload.publishUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-  steps.push(`已打开${payload.platformLabel}创作者后台。`);
+  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => undefined);
+  pushPublishStep(steps, stepDetails, "open_platform", `打开${payload.platformLabel}创作者后台`, "done", page.url());
+
+  if (await detectPublishLoginRequired(page)) {
+    pushPublishStep(steps, stepDetails, "login_required", "检查登录状态", "failed", "当前发布浏览器未登录或登录态失效。请在弹出的浏览器里登录后重试。");
+    return {
+      status: "login_required",
+      message: "发布浏览器未登录，已打开平台登录页，请登录后重试自动回填。",
+      steps,
+      stepDetails
+    };
+  }
+  pushPublishStep(steps, stepDetails, "login_check", "检查登录状态", "done", "未检测到登录拦截。");
 
   if (payload.videoPath && existsSync(payload.videoPath)) {
-    const fileInputs = page.locator("input[type='file']");
-    const count = await fileInputs.count().catch(() => 0);
-    if (count > 0) {
-      await fileInputs.first().setInputFiles(payload.videoPath, { timeout: 15000 });
-      steps.push("已尝试上传视频文件。");
+    let fileInput = await findUploadInput(page);
+    if (!fileInput) {
+      await clickUploadEntryIfNeeded(page);
+      fileInput = await findUploadInput(page);
+    }
+    if (fileInput) {
+      await fileInput.setInputFiles(payload.videoPath, { timeout: 30000 });
+      pushPublishStep(steps, stepDetails, "upload_video", "上传视频文件", "done", payload.videoPath);
+      const accepted = await waitForUploadAccepted(page);
+      pushPublishStep(steps, stepDetails, "wait_upload", "等待上传进入编辑页", accepted ? "done" : "failed", accepted ? "检测到上传后编辑区域。" : "未确认上传完成，但文件已提交给上传控件。");
     } else {
-      steps.push("未找到视频上传控件，可能需要登录或切换到发布页后再上传。");
+      pushPublishStep(steps, stepDetails, "upload_video", "上传视频文件", "failed", "未找到视频上传控件。可能页面未进入发布表单，或平台 DOM 已变化。");
     }
   } else {
-    steps.push("未找到本地视频文件，跳过上传。");
+    pushPublishStep(steps, stepDetails, "upload_video", "上传视频文件", "failed", "未找到本地视频文件。");
   }
 
   const titleSelectors = platform === "douyin"
     ? [
         "input[placeholder*='标题']",
         "textarea[placeholder*='标题']",
+        "[contenteditable='true'][placeholder*='标题']",
         "[contenteditable='true'][data-placeholder*='标题']",
-        "[contenteditable='true']:near(:text('标题'))"
+        "[contenteditable='true'][aria-label*='标题']"
       ]
     : [
         "input[placeholder*='标题']",
@@ -6441,11 +6562,16 @@ async function automatePublishPlatform(platform, payload) {
       ];
   const bodySelectors = platform === "douyin"
     ? [
+        "textarea[placeholder*='作品描述']",
+        "textarea[placeholder*='添加作品简介']",
         "textarea[placeholder*='描述']",
         "textarea[placeholder*='简介']",
         "textarea[placeholder*='正文']",
+        "[contenteditable='true'][placeholder*='作品描述']",
         "[contenteditable='true'][data-placeholder*='描述']",
+        "[contenteditable='true'][data-placeholder*='简介']",
         "[contenteditable='true'][data-placeholder*='正文']",
+        "[contenteditable='true'][aria-label*='描述']",
         "[contenteditable='true']"
       ]
     : [
@@ -6456,13 +6582,15 @@ async function automatePublishPlatform(platform, payload) {
         "[contenteditable='true'][data-placeholder*='内容']",
         "[contenteditable='true']"
       ];
-  await fillFirstMatchingField(page, titleSelectors, payload.title, steps, "标题");
-  await fillFirstMatchingField(page, bodySelectors, payload.body, steps, "正文");
-  steps.push("未点击最终发布，请在平台页面确认封面、合规项和账号状态后手动发布。");
+  const titleFilled = await fillFirstMatchingField(page, titleSelectors, payload.title, steps, stepDetails, "标题");
+  const bodyFilled = await fillFirstMatchingField(page, bodySelectors, payload.body, steps, stepDetails, "正文");
+  pushPublishStep(steps, stepDetails, "manual_confirm", "等待人工确认发布", "done", "未点击最终发布，请在平台页面确认封面、合规项和账号状态后手动发布。");
+  const status = titleFilled && bodyFilled ? "metadata_filled" : "metadata_fill_partial";
   return {
-    status: "automation_attempted",
-    message: "已打开平台并尝试回填视频、标题和正文。",
-    steps
+    status,
+    message: titleFilled && bodyFilled ? "视频已提交上传控件，并已回填标题和正文。" : "视频上传或文本回填部分完成，请查看步骤定位未完成项。",
+    steps,
+    stepDetails
   };
 }
 
@@ -6512,12 +6640,15 @@ app.post("/api/projects/:id/publish/:platform", async (req, res) => {
     publishPayload.automationStatus = automation.status;
     publishPayload.automationMessage = automation.message;
     publishPayload.automationSteps = automation.steps;
-    setStage(project, "publish", "ready", `${platformLabels[platform]} 已打开并尝试自动回填发布信息。`);
-    pushJob(db, project.id, "publish_automation", "completed", `${platformLabels[platform]} 已尝试自动回填。`, publishPayload);
+    publishPayload.automationStepDetails = automation.stepDetails || [];
+    const automationOk = ["metadata_filled", "metadata_fill_partial"].includes(automation.status);
+    setStage(project, "publish", "ready", automation.message || `${platformLabels[platform]} 发布自动化已执行。`);
+    pushJob(db, project.id, "publish_automation", automationOk ? "completed" : "failed", automation.message || `${platformLabels[platform]} 发布自动化已执行。`, publishPayload);
   } catch (error) {
     publishPayload.automationStatus = "automation_failed";
     publishPayload.automationMessage = error instanceof Error ? error.message : "自动回填失败。";
     publishPayload.automationSteps = ["自动打开或回填失败，可检查平台登录状态后重试。"];
+    publishPayload.automationStepDetails = [{ id: "automation_failed", label: "发布自动化", status: "failed", message: publishPayload.automationMessage, updatedAt: now() }];
     setStage(project, "publish", "ready", `${platformLabels[platform]} 自动回填失败，可重试。`);
     pushJob(db, project.id, "publish_automation", "failed", publishPayload.automationMessage, publishPayload);
   }

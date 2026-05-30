@@ -371,6 +371,7 @@ type PublishRecord = {
   automationStatus?: string;
   automationMessage?: string;
   automationSteps?: string[];
+  automationStepDetails?: Array<{ id: string; label: string; status: string; message?: string; updatedAt?: string }>;
   createdAt: string;
   publishedAt?: string;
   workUrl?: string;
@@ -2420,7 +2421,17 @@ function StageWorkspace({
           {publishDraft && (
             <OutputItem title={`${publishDraft.platformLabel}自动发布结果`} status={publishDraft.automationStatus || publishDraft.status} meta={publishDraft.automationMessage || publishDraft.videoVersionLabel || "当前视频版本"}>
               <div className="publish-draft-grid">
-                {publishDraft.automationSteps?.length ? (
+                {publishDraft.automationStepDetails?.length ? (
+                  <div className="publish-step-list">
+                    {publishDraft.automationStepDetails.map((step) => (
+                      <div key={step.id} className={cx("publish-step-item", step.status)}>
+                        <strong>{step.label}</strong>
+                        <span>{statusText(step.status)}</span>
+                        {step.message && <small>{step.message}</small>}
+                      </div>
+                    ))}
+                  </div>
+                ) : publishDraft.automationSteps?.length ? (
                   <label className="publish-package-field"><span>自动化步骤</span><textarea readOnly value={publishDraft.automationSteps.join("\n")} /></label>
                 ) : null}
                 <label><span>标题</span><input readOnly value={publishDraft.title} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.title)}>复制</button></label>

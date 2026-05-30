@@ -1427,6 +1427,39 @@ small { color: var(--muted); font-size: 12px; }
   color: var(--text);
   background: #fff;
 }
+.publish-step-list {
+  display: grid;
+  gap: 8px;
+}
+.publish-step-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 8px;
+}
+.publish-step-item strong {
+  font-size: 13px;
+}
+.publish-step-item span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.publish-step-item small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  word-break: break-word;
+}
+.publish-step-item.failed {
+  border-color: #f0b7b7;
+  background: #fff7f7;
+}
+.publish-step-item.done {
+  border-color: #b9d9c5;
+  background: #f7fff9;
+}
 .job-log { display: grid; gap: 8px; }
 .job-row {
   display: grid;
