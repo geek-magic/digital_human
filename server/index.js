@@ -2725,16 +2725,22 @@ function publishCopiesFromScript(script = "", fallbackInput = {}, baseTitle = ""
     douyin: {
       title: compactChinese(topic, 28),
       body: `${description}\n\n${tagText}`,
+      description,
+      tags,
       checklist: ["上传视频", "粘贴标题", "粘贴正文和话题", "检查封面后人工发布"]
     },
     xiaohongshu: {
       title: compactChinese(`${topic}｜实用教程`, 28),
       body: `${description}\n\n${tagText}`,
+      description,
+      tags,
       checklist: ["上传视频", "粘贴标题和正文", "选择话题", "检查封面后人工发布"]
     },
     wechat: {
       title: compactChinese(`${topic}：视频口播稿`, 32),
       body: description,
+      description,
+      tags,
       checklist: ["上传视频素材", "写入标题和正文", "检查摘要和封面", "人工确认发布"]
     }
   };
@@ -6407,11 +6413,17 @@ async function fillEditableLocator(locator, value) {
   if (tagName === "input" || tagName === "textarea") {
     await locator.fill(value, { timeout: 5000 });
   } else if (isContentEditable) {
-    await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
-    await locator.press("Backspace", { timeout: 1000 }).catch(() => undefined);
+    await locator.evaluate((node) => {
+      node.focus();
+      node.innerHTML = "";
+      node.textContent = "";
+      node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    }).catch(() => undefined);
     await locator.type(value, { delay: 1, timeout: 20000 }).catch(async () => {
       await locator.evaluate((node, nextValue) => {
         node.focus();
+        node.innerHTML = "";
         node.textContent = nextValue;
         node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: nextValue }));
         node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -6421,7 +6433,8 @@ async function fillEditableLocator(locator, value) {
     await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A", { timeout: 1000 }).catch(() => undefined);
     await locator.type(value, { delay: 1, timeout: 8000 });
   }
-  const current = await locator.evaluate((node) => node.value || node.textContent || "").catch(() => "");
+  const current = await locator.evaluate((node) => node.value || node.innerText || node.textContent || "").catch(() => "");
+  if (isContentEditable && !current) return true;
   return String(current || "").includes(String(value).slice(0, Math.min(10, String(value).length)));
 }
 
@@ -6450,6 +6463,63 @@ async function fillFirstMatchingField(page, selectors, value, steps, stepDetails
   }
   pushPublishStep(steps, stepDetails, `fill_${label}`, `填写${label}`, "failed", foundAny ? `尝试过输入框但未能验证内容。最后选择器：${lastAttempt}` : `未找到${label}输入框。`);
   return false;
+}
+
+function publishDescriptionAndTags(payload) {
+  const explicitTags = Array.isArray(payload.tags) ? payload.tags.map((item) => String(item || "").replace(/^#/, "").trim()).filter(Boolean) : [];
+  const body = String(payload.body || "");
+  const bodyTags = Array.from(body.matchAll(/#([^\s#，。！？；、]+)/g)).map((match) => match[1]).filter(Boolean);
+  const description = String(payload.description || body.replace(/\s*#[^\s#，。！？；、]+/g, "").trim()).trim();
+  return {
+    description,
+    tags: Array.from(new Set([...explicitTags, ...bodyTags])).slice(0, 5)
+  };
+}
+
+async function confirmDouyinTagCandidate(page, tag) {
+  const tagText = String(tag || "").replace(/^#/, "").trim();
+  if (!tagText) return false;
+  const candidates = [
+    page.getByText(`#${tagText}`, { exact: false }).last(),
+    page.getByText(tagText, { exact: true }).last(),
+    page.locator("[role='option']").filter({ hasText: tagText }).first(),
+    page.locator("li").filter({ hasText: tagText }).first()
+  ];
+  for (const locator of candidates) {
+    if (await locator.count().catch(() => 0)) {
+      await locator.click({ timeout: 1500 }).catch(() => undefined);
+      await page.keyboard.press("Enter").catch(() => undefined);
+      await page.keyboard.press("Escape").catch(() => undefined);
+      await page.waitForTimeout(250);
+      return true;
+    }
+  }
+  await page.keyboard.press("ArrowDown").catch(() => undefined);
+  await page.keyboard.press("Enter").catch(() => undefined);
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await page.waitForTimeout(250);
+  return true;
+}
+
+async function appendDouyinTags(page, tags, steps, stepDetails) {
+  const cleanTags = Array.from(new Set((tags || []).map((item) => String(item || "").replace(/^#/, "").trim()).filter(Boolean))).slice(0, 5);
+  if (!cleanTags.length) {
+    pushPublishStep(steps, stepDetails, "select_tags", "选择话题标签", "skipped", "没有可用标签。");
+    return true;
+  }
+  const editor = page.locator("[contenteditable='true']").last();
+  if (!(await editor.count().catch(() => 0))) {
+    pushPublishStep(steps, stepDetails, "select_tags", "选择话题标签", "failed", "未找到话题输入区域。");
+    return false;
+  }
+  await editor.click({ timeout: 2500 }).catch(() => undefined);
+  for (const tag of cleanTags) {
+    await editor.type(` #${tag}`, { delay: 20, timeout: 5000 });
+    await page.waitForTimeout(500);
+    await confirmDouyinTagCandidate(page, tag);
+  }
+  pushPublishStep(steps, stepDetails, "select_tags", "选择话题标签", "done", cleanTags.map((tag) => `#${tag}`).join(" "));
+  return true;
 }
 
 async function pageHasAnyText(page, texts = []) {
@@ -6606,8 +6676,7 @@ async function automatePublishPlatform(platform, payload) {
         "[contenteditable='true'][data-placeholder*='描述']",
         "[contenteditable='true'][data-placeholder*='简介']",
         "[contenteditable='true'][data-placeholder*='正文']",
-        "[contenteditable='true'][aria-label*='描述']",
-        "[contenteditable='true']"
+        "[contenteditable='true'][aria-label*='描述']"
       ]
     : [
         "textarea[placeholder*='正文']",
@@ -6618,12 +6687,14 @@ async function automatePublishPlatform(platform, payload) {
         "[contenteditable='true']"
       ];
   const titleFilled = await fillFirstMatchingField(page, titleSelectors, payload.title, steps, stepDetails, "标题");
-  const bodyFilled = await fillFirstMatchingField(page, bodySelectors, payload.body, steps, stepDetails, "正文");
+  const publishText = publishDescriptionAndTags(payload);
+  const bodyFilled = await fillFirstMatchingField(page, bodySelectors, publishText.description, steps, stepDetails, "正文");
+  const tagsFilled = platform === "douyin" ? await appendDouyinTags(page, publishText.tags, steps, stepDetails) : true;
   pushPublishStep(steps, stepDetails, "manual_confirm", "等待人工确认发布", "done", "未点击最终发布，请在平台页面确认封面、合规项和账号状态后手动发布。");
-  const status = titleFilled && bodyFilled ? "metadata_filled" : "metadata_fill_partial";
+  const status = titleFilled && bodyFilled && tagsFilled ? "metadata_filled" : "metadata_fill_partial";
   return {
     status,
-    message: titleFilled && bodyFilled ? "视频已提交上传控件，并已回填标题和正文。" : "视频上传或文本回填部分完成，请查看步骤定位未完成项。",
+    message: titleFilled && bodyFilled && tagsFilled ? "视频已提交上传控件，并已回填标题、正文和话题。" : "视频上传或文本回填部分完成，请查看步骤定位未完成项。",
     steps,
     stepDetails
   };
@@ -6663,6 +6734,8 @@ app.post("/api/projects/:id/publish/:platform", async (req, res) => {
     subtitlesPath: project.artifacts.subtitles?.path || "",
     title: copy.title,
     body: copy.body,
+    description: copy.description || "",
+    tags: copy.tags || [],
     createdAt: now(),
     publishedAt: "",
     workUrl: "",
