@@ -1487,13 +1487,13 @@ function TaskComposer({
                 {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
               </select>
             </label>
-            <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
             {selectedBackgroundMusic && (
               <div className="media-control-block">
                 <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
                 <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
               </div>
             )}
+            <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
         ) : (
           <div className="composer-grid auto-layout">
@@ -1505,13 +1505,13 @@ function TaskComposer({
                   {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
                 </select>
               </label>
-              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
               {selectedBackgroundMusic && (
                 <div className="media-control-block">
                   <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
                   <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
                 </div>
               )}
+              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
               <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
               <VoiceSample asset={selectedVoice} />
@@ -1724,7 +1724,7 @@ function TtsModelSelect({ state, value, onChange }: { state: State; value: strin
   const models = state.models.filter((model) => model.type === "tts");
   return (
     <label>
-      <span>TTS 模型</span>
+      <span>语音模型</span>
       <select value={value || defaultModelIdForType(state, "tts")} onChange={(event) => onChange(event.target.value)}>
         {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
       </select>

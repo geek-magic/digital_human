@@ -172,6 +172,9 @@ small { color: var(--muted); font-size: 12px; }
 .task-main.create-only {
   grid-template-rows: auto;
   align-content: start;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .task-main.list-only {
   grid-template-rows: auto minmax(0, 1fr);
@@ -560,7 +563,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 .composer-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .composer-grid.auto-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(168px, 220px);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   gap: 12px;
   align-items: start;
 }
