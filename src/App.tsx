@@ -1591,8 +1591,7 @@ function BackgroundMusicField({
       </label>
       {selectedBackgroundMusic && (
         <div className="media-control-block">
-          <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} />
-          <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
+          <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} onVolumeChange={setBackgroundMusicVolume} />
         </div>
       )}
     </FieldCard>
@@ -1828,12 +1827,12 @@ function SpeedSelect({ value, onChange, hideLabel = false }: { value: number; on
   );
 }
 
-function VolumeAudioPreview({ src, volume }: { src: string; volume: number }) {
+function VolumeAudioPreview({ src, volume, onVolumeChange }: { src: string; volume: number; onVolumeChange?: (value: number) => void }) {
   const ref = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     if (ref.current) ref.current.volume = Math.max(0, Math.min(1, Number(volume) || 0));
   }, [volume, src]);
-  return <audio ref={ref} className="inline-audio" controls src={src} />;
+  return <audio ref={ref} className="inline-audio" controls src={src} onVolumeChange={(event) => onVolumeChange?.(event.currentTarget.volume)} />;
 }
 
 function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "llm" | "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
@@ -2454,8 +2453,7 @@ function StageWorkspace({
           </label>
           {selectedMusic && (
             <div className="media-control-block">
-              <VolumeAudioPreview src={selectedMusic.uri} volume={backgroundMusicVolume} />
-              <RangeField label="背景音量" value={backgroundMusicVolume} min={0} max={1} step={0.01} format={(value) => `${Math.round(value * 100)}%`} onChange={setBackgroundMusicVolume} />
+              <VolumeAudioPreview src={selectedMusic.uri} volume={backgroundMusicVolume} onVolumeChange={setBackgroundMusicVolume} />
             </div>
           )}
           <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
