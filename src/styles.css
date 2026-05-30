@@ -545,11 +545,13 @@ small { color: var(--muted); font-size: 12px; }
 }
 .field-card summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 8px 10px;
+  column-gap: 8px;
+  row-gap: 3px;
+  min-height: 46px;
+  padding: 9px 10px;
   cursor: pointer;
   list-style: none;
   background: #f3f7fb;
@@ -560,14 +562,23 @@ small { color: var(--muted); font-size: 12px; }
 .field-card summary::-webkit-details-marker {
   display: none;
 }
+.field-card summary > span {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
 .field-card summary small {
-  max-width: 128px;
+  grid-column: 1;
+  grid-row: 2;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 700;
 }
 .field-card summary svg {
+  grid-column: 2;
+  grid-row: 1 / 3;
   color: var(--muted);
   transition: transform .16s ease;
 }
