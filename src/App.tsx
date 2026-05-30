@@ -2438,9 +2438,6 @@ function StageWorkspace({
                 <label><span>正文</span><textarea readOnly value={publishDraft.body} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.body)}>复制</button></label>
                 <label><span>视频地址</span><input readOnly value={`${window.location.origin}${publishDraft.videoUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.videoUri}`)}>复制</button></label>
                 {publishDraft.videoPath && <label><span>本地文件</span><input readOnly value={publishDraft.videoPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.videoPath || "")}>复制</button></label>}
-                {publishDraft.audioUri && <label><span>音频地址</span><input readOnly value={`${window.location.origin}${publishDraft.audioUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.audioUri}`)}>复制</button></label>}
-                {publishDraft.audioPath && <label><span>音频文件</span><input readOnly value={publishDraft.audioPath} /><button className="ghost-button" onClick={() => copyPublishField(publishDraft.audioPath || "")}>复制</button></label>}
-                {publishDraft.subtitlesUri && <label><span>字幕地址</span><input readOnly value={`${window.location.origin}${publishDraft.subtitlesUri}`} /><button className="ghost-button" onClick={() => copyPublishField(`${window.location.origin}${publishDraft.subtitlesUri}`)}>复制</button></label>}
               </div>
             </OutputItem>
           )}

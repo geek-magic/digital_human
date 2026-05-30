@@ -2682,24 +2682,59 @@ function stripTopicTags(text = "") {
     .trim();
 }
 
+function inferContentTags(text = "", fallbackTopic = "") {
+  const source = `${text} ${fallbackTopic}`;
+  const rules = [
+    [/柴火鸡|鸡肉|农家乐|火锅|餐|美食|口福|吃喝|菜|味道|香料|辣椒|聚餐|宴请|休闲园|家庭聚会/, ["柴火鸡", "美食", "农家乐"]],
+    [/成都|双流|天府新区|四川/, ["成都美食", "本地生活"]],
+    [/AI|模型|数字人|自动化|TTS|ASR|剪辑|视频生成|口播/, ["AI工具", "数字人", "视频生成"]],
+    [/旅游|景区|路线|周末|打卡|游玩/, ["旅行", "周末去哪儿", "打卡"]],
+    [/门店|生意|顾客|老板|服务|创业|实体店/, ["实体店", "创业", "生意经"]],
+    [/课程|教程|方法|实操|技巧|学习/, ["教程", "干货", "实操"]]
+  ];
+  const tags = [];
+  for (const [pattern, values] of rules) {
+    if (pattern.test(source)) tags.push(...values);
+  }
+  const topicWords = stripTopicTags(fallbackTopic)
+    .split(/[，。！？；、\s｜|:：-]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2 && item.length <= 8 && !/口播|文案|视频|内容|测试/.test(item));
+  tags.push(...topicWords.slice(0, 2));
+  if (!tags.length) tags.push("短视频", "生活分享");
+  return Array.from(new Set(tags)).slice(0, 5);
+}
+
+function publishDescriptionFromScript(script = "", topic = "") {
+  const cleanScript = stripTopicTags(script);
+  const sentences = cleanScript
+    .split(/[。！？!?；;\n]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 8 && !/大家好|今天给大家|这条视频/.test(item));
+  const first = sentences.find((item) => item.length <= 60) || sentences[0] || cleanScript;
+  if (first) return compactChinese(first, 72);
+  return compactChinese(topic || "这条内容值得看看", 72);
+}
+
 function publishCopiesFromScript(script = "", fallbackInput = {}, baseTitle = "") {
   const topic = compactChinese(baseTitle || deriveTopic(fallbackInput), 24) || "短视频口播";
-  const cleanScript = stripTopicTags(script);
-  const tags = ["AI工具", "短视频", "口播文案"];
+  const description = publishDescriptionFromScript(script, topic);
+  const tags = inferContentTags(script, topic);
+  const tagText = `#${tags.join(" #")}`;
   return {
     douyin: {
       title: compactChinese(topic, 28),
-      body: `${cleanScript}\n\n#${tags.join(" #")}`,
+      body: `${description}\n\n${tagText}`,
       checklist: ["上传视频", "粘贴标题", "粘贴正文和话题", "检查封面后人工发布"]
     },
     xiaohongshu: {
       title: compactChinese(`${topic}｜实用教程`, 28),
-      body: `${cleanScript}\n\n#${tags.join(" #")}`,
+      body: `${description}\n\n${tagText}`,
       checklist: ["上传视频", "粘贴标题和正文", "选择话题", "检查封面后人工发布"]
     },
     wechat: {
       title: compactChinese(`${topic}：视频口播稿`, 32),
-      body: cleanScript,
+      body: description,
       checklist: ["上传视频素材", "写入标题和正文", "检查摘要和封面", "人工确认发布"]
     }
   };
