@@ -493,6 +493,7 @@ const defaultVideoSettings: VideoSettings = {
   leftCheekWidth: 90,
   rightCheekWidth: 90
 };
+const audioSpeedOptions = [0.5, 1, 1.5, 2];
 const defaultRequirementTemplates: RequirementTemplate[] = [
   {
     id: "douyin-knowledge",
@@ -749,7 +750,6 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [, setClock] = useState(Date.now());
 
   function showToast(message: string, tone: ToastState["tone"] = "success") {
@@ -880,11 +880,6 @@ export function App() {
         {view === "models" && <ModelCenter state={state} action={action} />}
         {view === "publish" && <PublishHistory records={state.publishRecords} projects={state.projects} action={action} />}
       </main>
-      <button className="settings-fab" type="button" onClick={() => setSettingsOpen(true)} aria-label="运行配置">
-        <Settings2 size={20} />
-        <span>配置</span>
-      </button>
-      {settingsOpen && <RuntimeSettingsDialog state={state} action={action} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -1500,7 +1495,7 @@ function TaskComposer({
           )}
           {mode === "auto" && (
             <>
-              <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
+              <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
               <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
               <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
               <VoiceSample asset={selectedVoice} />
@@ -1743,6 +1738,26 @@ function RangeField({
       <span>{label}<strong>{display}</strong></span>
       <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
+  );
+}
+
+function SpeedSelect({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  return (
+    <div className="speed-field">
+      <span>口播速度</span>
+      <div className="speed-options" role="group" aria-label="口播速度">
+        {audioSpeedOptions.map((option) => (
+          <button
+            type="button"
+            key={option}
+            className={cx(Math.abs(value - option) < 0.01 && "active")}
+            onClick={() => onChange(option)}
+          >
+            {option}x
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2329,7 +2344,7 @@ function StageWorkspace({
             <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
             <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
-          <RangeField label="口播速度" value={audioPlaybackSpeed} min={0.5} max={2} step={0.05} unit="x" onChange={setAudioPlaybackSpeed} />
+          <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />

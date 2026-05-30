@@ -629,6 +629,13 @@ small { color: var(--muted); font-size: 12px; }
   font-size: 13px;
   font-weight: 800;
 }
+.toggle {
+  justify-self: start;
+  align-self: start;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
 .toggle input, .checkbox-pill input { width: auto; }
 .platform-select { display: flex; flex-wrap: wrap; gap: 8px; }
 .library-tabs {
@@ -1174,6 +1181,37 @@ small { color: var(--muted); font-size: 12px; }
 .range-field input[type="range"] {
   width: 100%;
   accent-color: var(--primary);
+}
+.speed-field {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+}
+.speed-options {
+  display: inline-grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: min(100%, 280px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f6f9fc;
+}
+.speed-options button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 800;
+}
+.speed-options button.active {
+  background: #fff;
+  color: var(--primary-strong);
+  box-shadow: inset 0 0 0 1px #c9dce6;
 }
 .media-control-block {
   display: grid;
