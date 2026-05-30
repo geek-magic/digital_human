@@ -613,7 +613,7 @@ small { color: var(--muted); font-size: 12px; }
 }
 .composer-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .composer-grid.auto-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-columns: minmax(180px, .82fr) minmax(340px, 1.18fr);
   gap: 12px;
   align-items: start;
 }
