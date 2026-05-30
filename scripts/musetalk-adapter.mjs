@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -431,7 +431,7 @@ export async function render(payloadPath, outPath) {
   assertFile(outputPath, "最终数字人视频");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [payloadPath, outPath] = process.argv.slice(2);
   if (!payloadPath || !outPath) {
     console.error("Usage: musetalk-adapter.mjs <payload.json> <output.mp4>");
