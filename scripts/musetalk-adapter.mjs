@@ -332,6 +332,9 @@ export async function render(payloadPath, outPath) {
     String(settings.rightCheekWidth),
     "--saved_coord"
   ];
+  if (["auto", "cpu", "mps", "cuda"].includes(process.env.MUSETALK_DEVICE || "")) {
+    args.push("--device", process.env.MUSETALK_DEVICE);
+  }
 
   if (settings.cropMode === "mediapipe") {
     let savedCoordCount = 0;
@@ -361,6 +364,8 @@ export async function render(payloadPath, outPath) {
       PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
     }
   });
+  const deviceLine = String(inference.stdout || "").split(/\r?\n/).find((line) => line.includes("Using device:"));
+  if (deviceLine) console.log(`MuseTalk ${deviceLine.trim()}`);
 
   const generatedPaths = resultNames.map((resultName) => join(resultDir, "v15", resultName));
   for (let index = 0; index < generatedPaths.length; index += 1) {

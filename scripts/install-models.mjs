@@ -312,13 +312,51 @@ function ensureMuseTalkRepo() {
 
 function patchMuseTalkCompatibility() {
   const resnetPath = join(museTalk.target, "musetalk", "utils", "face_parsing", "resnet.py");
-  if (!existsSync(resnetPath)) return;
-  const source = readFileSync(resnetPath, "utf-8");
-  const patched = source.replace(
-    "state_dict = torch.load(model_path) #modelzoo.load_url(resnet18_url)",
-    "state_dict = torch.load(model_path, weights_only=False) #modelzoo.load_url(resnet18_url)"
-  );
-  if (patched !== source) writeFileSync(resnetPath, patched);
+  if (existsSync(resnetPath)) {
+    const source = readFileSync(resnetPath, "utf-8");
+    const patched = source.replace(
+      "state_dict = torch.load(model_path) #modelzoo.load_url(resnet18_url)",
+      "state_dict = torch.load(model_path, weights_only=False) #modelzoo.load_url(resnet18_url)"
+    );
+    if (patched !== source) writeFileSync(resnetPath, patched);
+  }
+
+  const inferencePath = join(museTalk.target, "scripts", "inference.py");
+  if (!existsSync(inferencePath)) return;
+  let inference = readFileSync(inferencePath, "utf-8");
+  if (!inference.includes('requested_device = getattr(args, "device", "auto")')) {
+    const deviceBlock = `# Set computing device. Official MuseTalk targets CUDA; local macOS runs can
+    # use Apple GPU through MPS. --device is mainly for benchmark comparisons.
+    requested_device = getattr(args, "device", "auto")
+    if requested_device == "cpu":
+        device = torch.device("cpu")
+    elif requested_device == "mps":
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("Requested device mps, but PyTorch MPS is not available.")
+        device = torch.device("mps")
+    elif requested_device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"Requested device {requested_device}, but CUDA is not available.")
+        device = torch.device(requested_device if ":" in requested_device else f"cuda:{args.gpu_id}")
+    elif torch.cuda.is_available():
+        device = torch.device(f"cuda:{args.gpu_id}")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")`;
+    inference = inference.replace(
+      /# Set computing device[\s\S]*?print\(f"Using device: \{device\}"\)/,
+      deviceBlock
+    );
+  }
+  if (!inference.includes('parser.add_argument("--device"')) {
+    inference = inference.replace(
+      '    parser.add_argument("--version", type=str, default="v15", choices=["v1", "v15"], help="Model version to use")',
+      '    parser.add_argument("--version", type=str, default="v15", choices=["v1", "v15"], help="Model version to use")\n    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"], help="Device override for inference")'
+    );
+  }
+  writeFileSync(inferencePath, inference);
 }
 
 function installMuseTalkRuntime() {
