@@ -108,6 +108,21 @@ function ensureMuseTalkInferencePatch(inferencePath) {
       "                    y2 = min(y2, ori_frame.shape[0])"
     ].join("\n")
   );
+  patched = patched.replace(
+    [
+      "                bbox = coord_list_cycle[i%(len(coord_list_cycle))]",
+      "                ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])",
+      "                x1, y1, x2, y2 = bbox"
+    ].join("\n"),
+    [
+      "                bbox = coord_list_cycle[i%(len(coord_list_cycle))]",
+      "                ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])",
+      "                if bbox == coord_placeholder:",
+      "                    cv2.imwrite(f\"{result_img_save_path}/{str(i).zfill(8)}.png\", ori_frame)",
+      "                    continue",
+      "                x1, y1, x2, y2 = bbox"
+    ].join("\n")
+  );
   if (patched !== source) {
     writeFileSync(inferencePath, patched);
   }
