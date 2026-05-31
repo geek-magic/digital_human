@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -34,6 +34,22 @@ const models = {
       protocolVersion: "1.0",
       engine: "Qwen2.5-7B-Instruct 4bit MLX",
       weightSource: "https://huggingface.co/mlx-community/Qwen2.5-7B-Instruct-4bit",
+      license: "Apache-2.0"
+    }
+  },
+  llmGguf: {
+    repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
+    target: join(modelHome, "llm", "qwen2.5-7b-instruct-q4-k-m-gguf"),
+    runtime: join(runtimeHome, "llama.cpp"),
+    platforms: ["win32"],
+    packages: ["huggingface_hub[cli]"],
+    includes: ["*Q4_K_M*.gguf", "*q4_k_m*.gguf"],
+    required: [".gguf"],
+    protocol: {
+      protocolId: "digital-human.llm.script",
+      protocolVersion: "1.0",
+      engine: "Qwen2.5-7B-Instruct Q4_K_M GGUF + llama.cpp",
+      weightSource: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF",
       license: "Apache-2.0"
     }
   },
@@ -289,12 +305,26 @@ function writeManifest(target, manifest) {
 }
 
 function requiredFilesReady(target, files) {
+  if (files.includes(".gguf")) {
+    try {
+      return existsSync(target) && readdirSync(target).some((name) => name.toLowerCase().endsWith(".gguf"));
+    } catch {
+      return false;
+    }
+  }
   return files.every((file) => existsSync(join(target, file)));
 }
 
 function installCoreModel(model) {
   if (Array.isArray(model.platforms) && !model.platforms.includes(process.platform)) {
     console.log(`跳过 ${model.protocol.engine}：当前平台 ${process.platform} 不支持该本地运行时。`);
+    return "";
+  }
+  if (!model.packages?.length) {
+    if (!requiredFilesReady(model.target, model.required)) {
+      hfDownload(model.repo, model.target, model.includes || [], python);
+    }
+    writeManifest(model.target, model.protocol);
     return "";
   }
   const pythonBin = installPackages(model.runtime, model.packages);
@@ -467,6 +497,7 @@ function main() {
     return;
   }
   installCoreModel(models.llm);
+  installCoreModel(models.llmGguf);
   installCoreModel(models.asr);
   installCoreModel(models.ttsVoxcpm2);
   installCoreModel(models.ttsQwen3);

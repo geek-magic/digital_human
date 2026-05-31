@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
@@ -89,6 +89,7 @@ const modelCatalog = [
     id: "qwen2-5-7b-instruct-4bit-mlx",
     name: "Qwen2.5-7B-Instruct 4bit MLX",
     type: "llm",
+    supportedPlatforms: ["darwin"],
     runtime: "内置 LLM CLI",
     defaultPath: "llm/qwen2.5-7b-instruct-4bit-mlx",
     protocolId: "llmScriptV1",
@@ -97,6 +98,20 @@ const modelCatalog = [
     license: "Apache 2.0",
     description: "非 thinking 指令模型，用于链接整理、选题提炼、口播正文、标题和发布文案生成。该本地 MLX 运行时仅支持 Apple Silicon macOS。",
     installGuide: "macOS 执行 npm run install:models 会下载该模型。Windows 离线包请改用云端文本 Provider，或后续接入 GGUF/llama.cpp 文本模型。"
+  },
+  {
+    id: "qwen2-5-7b-instruct-q4-k-m-gguf",
+    name: "Qwen2.5-7B-Instruct Q4_K_M GGUF",
+    type: "llm",
+    supportedPlatforms: ["win32"],
+    runtime: "llama.cpp",
+    defaultPath: "llm/qwen2.5-7b-instruct-q4-k-m-gguf",
+    protocolId: "llmScriptV1",
+    recommended: true,
+    bundleRole: "Windows 默认口播文案模型",
+    license: "Apache 2.0",
+    description: "Windows 本地文本模型，使用 GGUF + llama.cpp 运行，可在 NVIDIA CUDA 环境下使用 GPU。",
+    installGuide: "Windows 离线包应内置该 GGUF 模型和 llama.cpp 的 llama-cli.exe；模型放到 MODEL_HOME/llm/qwen2.5-7b-instruct-q4-k-m-gguf。"
   },
   {
     id: "qwen3-asr-1-7b",
@@ -332,7 +347,7 @@ const defaultDb = {
   avatarAssets: [],
   musicAssets: [],
   voices: [],
-  models: modelCatalog.map(modelFromCatalog),
+  models: activeModelCatalog().map(modelFromCatalog),
   apiProviders: [],
   jobs: [],
   queueItems: [],
@@ -341,20 +356,34 @@ const defaultDb = {
   publishRecords: [],
   requirementTemplates: defaultRequirementTemplates,
   settings: {
-    defaultTextModelId: "model-qwen2-5-7b-instruct-4bit-mlx",
+    defaultTextModelId: defaultLocalModelId("llm"),
     keepAsrModelWarm: false,
     keepTtsModelWarm: false,
     keepAvatarModelWarm: false,
     videoConcurrency: 1,
     avatarSegmentSeconds: 30,
     defaultModelIds: {
-      llm: "model-qwen2-5-7b-instruct-4bit-mlx",
+      llm: defaultLocalModelId("llm"),
       asr: "model-qwen3-asr-1-7b",
       tts: "model-voxcpm2",
       avatar: "model-musetalk-v15"
     }
   }
 };
+
+function catalogSupportsCurrentPlatform(item) {
+  return !Array.isArray(item.supportedPlatforms) || item.supportedPlatforms.includes(process.platform);
+}
+
+function activeModelCatalog() {
+  return modelCatalog.filter(catalogSupportsCurrentPlatform);
+}
+
+function defaultLocalModelId(type) {
+  const item = activeModelCatalog().find((model) => model.type === type && model.recommended)
+    || activeModelCatalog().find((model) => model.type === type);
+  return item ? `model-${item.id}` : "";
+}
 
 function modelFromCatalog(item) {
   const adapterProtocol = adapterProtocols[item.protocolId];
@@ -409,13 +438,13 @@ function normalizeDb(db) {
   db.settings.keepAvatarModelWarm = false;
   db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
-  db.settings.defaultTextModelId ||= "model-qwen2-5-7b-instruct-4bit-mlx";
+  db.settings.defaultTextModelId ||= defaultLocalModelId("llm");
   if (db.settings.defaultTextModelId === "model-qwen3-5-27b-4bit-mlx") {
-    db.settings.defaultTextModelId = "model-qwen2-5-7b-instruct-4bit-mlx";
+    db.settings.defaultTextModelId = defaultLocalModelId("llm");
   }
   db.settings.defaultModelIds ||= {};
   if (db.settings.defaultModelIds.llm === "model-qwen3-5-27b-4bit-mlx") {
-    db.settings.defaultModelIds.llm = "model-qwen2-5-7b-instruct-4bit-mlx";
+    db.settings.defaultModelIds.llm = defaultLocalModelId("llm");
   }
   if (!db.settings.defaultModelIds.tts || db.settings.defaultModelIds.tts === "model-qwen3-tts-1-7b-base") {
     db.settings.defaultModelIds.tts = "model-voxcpm2";
@@ -438,8 +467,8 @@ function normalizeDb(db) {
       db.apiProviders.push(providerFromCatalog(item));
     }
   }
-  const fixedCatalogIds = new Set(modelCatalog.map((item) => item.id));
-  for (const item of modelCatalog) {
+  const fixedCatalogIds = new Set(activeModelCatalog().map((item) => item.id));
+  for (const item of activeModelCatalog()) {
     const id = `model-${item.id}`;
     const existing = db.models.find((model) => model.id === id || model.catalogId === item.id);
     if (existing) {
@@ -481,7 +510,10 @@ function normalizeDb(db) {
       if (recommended) db.settings.defaultModelIds[type] = recommended.id;
     }
   }
-  if (!db.settings.defaultTextModelId) db.settings.defaultTextModelId = db.settings.defaultModelIds.llm || "model-qwen2-5-7b-instruct-4bit-mlx";
+  if (!db.settings.defaultTextModelId) db.settings.defaultTextModelId = db.settings.defaultModelIds.llm || defaultLocalModelId("llm");
+  const defaultTextIsProvider = String(db.settings.defaultTextModelId || "").startsWith("provider:");
+  const defaultTextVisible = defaultTextIsProvider || db.models.some((model) => model.id === db.settings.defaultTextModelId && !model.hidden && model.type === "llm");
+  if (!defaultTextVisible) db.settings.defaultTextModelId = db.settings.defaultModelIds.llm || defaultLocalModelId("llm");
   if (!db.settings.defaultTextModelId.startsWith("provider:")) {
     db.settings.defaultModelIds.llm = db.settings.defaultTextModelId;
   } else {
@@ -898,6 +930,34 @@ function modelCandidatePaths(model) {
   return candidates.filter((item, index, arr) => item.path && arr.findIndex((other) => other.path === item.path) === index);
 }
 
+function findGgufFile(dirOrFile = "") {
+  if (!dirOrFile || !existsSync(dirOrFile)) return "";
+  if (/\.gguf$/i.test(dirOrFile)) return dirOrFile;
+  try {
+    return readdirSync(dirOrFile)
+      .filter((name) => /\.gguf$/i.test(name))
+      .sort((a, b) => {
+        const priority = (name) => /q4[_-]k[_-]m/i.test(name) ? 0 : /q5[_-]k[_-]m/i.test(name) ? 1 : 2;
+        return priority(a) - priority(b) || a.localeCompare(b);
+      })
+      .map((name) => join(dirOrFile, name))[0] || "";
+  } catch {
+    return "";
+  }
+}
+
+function llamaCppBin() {
+  const candidates = [
+    process.env.DH_LLAMA_CPP_BIN,
+    process.platform === "win32" ? join(rootDir, "runtime", "llama.cpp", "llama-cli.exe") : "",
+    process.platform === "win32" ? join(rootDir, "runtime", "llama", "llama-cli.exe") : "",
+    join(rootDir, "runtime", "llama.cpp", "llama-cli"),
+    join(rootDir, "runtime", "llama", "llama-cli"),
+    commandExists("llama-cli") ? "llama-cli" : ""
+  ].filter(Boolean);
+  return candidates.find((item) => item === "llama-cli" || existsSync(item)) || "";
+}
+
 function detectModel(model) {
   const adapterProtocol = model.adapterProtocol || adapterProtocols[model.protocolId] || {
     id: "digital-human.custom",
@@ -927,6 +987,21 @@ function detectModel(model) {
     };
   }
   const resolvedPath = installedCandidate.path;
+  if (model.catalogId === "qwen2-5-7b-instruct-q4-k-m-gguf") {
+    const gguf = findGgufFile(resolvedPath);
+    const llamaBin = llamaCppBin();
+    if (!gguf || !llamaBin) {
+      return {
+        status: "incomplete",
+        resolvedPath,
+        protocolStatus: "待补齐",
+        protocolMessage: !gguf ? "GGUF 模型文件缺失。" : "llama.cpp 运行时缺失。",
+        message: !gguf
+          ? "已检测到 GGUF 模型目录，但未找到 .gguf 文件。"
+          : "已检测到 GGUF 模型，但未找到 runtime/llama.cpp/llama-cli.exe 或 PATH 中的 llama-cli。"
+      };
+    }
+  }
   const museTalkCheck = model.catalogId === "musetalk-v15" ? validateMuseTalkInstall(resolvedPath) : null;
   if (museTalkCheck && !museTalkCheck.ok) {
     return {
@@ -2552,7 +2627,7 @@ function cleanGeneratedTitle(text = "", fallback = "") {
 
 async function generateProjectTitleWithTextModel(db, input = {}) {
   const fallback = deriveProjectTitle(input.inputText || input.sourceText || "", input.requirements || "");
-  const modelId = input.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const modelId = input.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
   const messages = titleGenerationMessages(input);
   try {
     let result;
@@ -2571,8 +2646,8 @@ async function generateProjectTitleWithTextModel(db, input = {}) {
       model.protocolMessage = detection.protocolMessage;
       model.healthMessage = detection.message;
       model.lastCheckedAt = now();
-      if (detection.status === "missing") return fallback;
-      result = await callLocalLlm(messages, { temperature: 0.35, llmTimeout: 120000 });
+      if (detection.status !== "installed") return fallback;
+      result = await callLocalLlm(messages, { temperature: 0.35, llmTimeout: 120000, modelPath: detection.resolvedPath });
     }
     return cleanGeneratedTitle(result.text || "", fallback);
   } catch (error) {
@@ -2815,6 +2890,9 @@ async function callLocalLlm(messages, options = {}) {
   if (options.maxTokens !== undefined && options.maxTokens !== null) {
     args.push("--max-tokens", String(options.maxTokens));
   }
+  if (options.modelPath) {
+    args.push("--model", String(options.modelPath));
+  }
   const { stdout } = await execFileAsync(process.execPath, args, {
     timeout: timeoutMs + 5000,
     maxBuffer: 1024 * 1024 * 16,
@@ -2918,7 +2996,7 @@ async function callCloudTts(provider, text, outPath, options = {}) {
 }
 
 async function generateScriptWithTextModel(db, project, payload = {}) {
-  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const modelId = payload.scriptModelId || project.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
   const input = { ...project, ...payload, scriptModelId: modelId };
   const messages = scriptGenerationMessages(input);
   let result;
@@ -2939,8 +3017,8 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
     model.protocolMessage = detection.protocolMessage;
     model.healthMessage = detection.message;
     model.lastCheckedAt = now();
-    if (detection.status === "missing") throw new Error(detection.message);
-    result = await callLocalLlm(messages, payload);
+    if (detection.status !== "installed") throw new Error(detection.message);
+    result = await callLocalLlm(messages, { ...payload, modelPath: detection.resolvedPath });
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
   const parsed = scriptArtifactFromModelText(result.text || "", input);
@@ -2948,7 +3026,7 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
 }
 
 async function polishTextWithTextModel(db, input = {}) {
-  const modelId = input.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const modelId = input.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
   const messages = scriptGenerationMessages({
     inputText: input.inputText || "",
     sourceText: input.inputText || "",
@@ -2972,8 +3050,8 @@ async function polishTextWithTextModel(db, input = {}) {
     model.protocolMessage = detection.protocolMessage;
     model.healthMessage = detection.message;
     model.lastCheckedAt = now();
-    if (detection.status === "missing") throw new Error(detection.message);
-    result = await callLocalLlm(messages, input);
+    if (detection.status !== "installed") throw new Error(detection.message);
+    result = await callLocalLlm(messages, { ...input, modelPath: detection.resolvedPath });
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
   const artifact = normalizeScriptArtifact(scriptArtifactFromModelText(result.text || "", input), input);
@@ -3849,7 +3927,7 @@ app.get("/api/state", (_req, res) => {
       .filter((record) => !record.deletedAt && record.status === "published")
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     apiProviders: (db.apiProviders || []).map(publicProvider),
-    modelCatalog: modelCatalog.filter((item) => item.type !== "media").map((item) => ({
+    modelCatalog: activeModelCatalog().filter((item) => item.type !== "media").map((item) => ({
       ...item,
       adapterProtocol: adapterProtocols[item.protocolId]
     })),
@@ -4472,7 +4550,7 @@ app.delete("/api/providers/:id", (req, res) => {
   const [provider] = db.apiProviders.splice(index, 1);
   const selectedValue = `provider:${provider.id}`;
   const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts"].includes(item)) || "llm";
-  const fallback = db.models.find((item) => item.type === capability && !item.hidden)?.id || (capability === "llm" ? "model-qwen2-5-7b-instruct-4bit-mlx" : "");
+  const fallback = db.models.find((item) => item.type === capability && !item.hidden)?.id || (capability === "llm" ? defaultLocalModelId("llm") : "");
   db.settings.defaultModelIds ||= {};
   if (capability === "llm" && (db.settings.defaultTextModelId === selectedValue || db.settings.defaultTextModelId === `provider:${provider.providerId}`)) {
     db.settings.defaultTextModelId = fallback;
@@ -4515,7 +4593,7 @@ app.post("/api/providers/:id/test", async (req, res, next) => {
 });
 
 function findTextModelTarget(db, modelId = "") {
-  const selected = String(modelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx");
+  const selected = String(modelId || db.settings.defaultTextModelId || defaultLocalModelId("llm"));
   if (selected.startsWith("provider:")) {
     const providerKey = selected.replace("provider:", "");
     const provider = db.apiProviders.find((item) => item.id === providerKey || item.providerId === providerKey);
@@ -4573,7 +4651,7 @@ app.post("/api/model-tests/llm", async (req, res, next) => {
     ];
     const result = target.type === "cloud"
       ? await callCloudLlm(target.provider, messages, { maxTokens: 600, temperature: 0.3 })
-      : await callLocalLlm(messages, { maxTokens: 600, temperature: 0.3 });
+      : await callLocalLlm(messages, { maxTokens: 600, temperature: 0.3, modelPath: detectModel(target.model).resolvedPath });
     res.json({
       ok: true,
       text: result.text,
@@ -5306,7 +5384,7 @@ app.post("/api/projects", async (req, res, next) => {
   const inputText = req.body.inputText || req.body.sourceText || "";
   const manualScript = Boolean(req.body.manualScript);
   const mode = req.body.mode === "auto" ? "auto" : "manual";
-  const scriptModelId = req.body.scriptModelId || db.settings.defaultTextModelId || "model-qwen2-5-7b-instruct-4bit-mlx";
+  const scriptModelId = req.body.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
   const title = String(req.body.title || "").trim() || await generateProjectTitleWithTextModel(db, {
     inputText,
     sourceText: inputText,
