@@ -10,6 +10,7 @@ const storageDir = join(rootDir, "storage");
 const uploadDir = join(storageDir, "uploads");
 const artifactDir = join(storageDir, "artifacts");
 const dbPath = join(storageDir, "db.json");
+const bundledFfmpeg = join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg");
 
 function rewriteUploadPath(value = "") {
   if (!value || typeof value !== "string") return value;
@@ -50,6 +51,7 @@ const env = {
   MUSETALK_HOME: join(rootDir, "models", "avatar", "MuseTalk"),
   MUSETALK_PYTHON: join(rootDir, "models", "avatar", "MuseTalk", ".venv", "bin", "python"),
   YT_DLP_BIN: join(rootDir, "runtime", "tools", "bin", "yt-dlp"),
+  FFMPEG_BIN: existsSync(bundledFfmpeg) ? bundledFfmpeg : (process.env.FFMPEG_BIN || "ffmpeg"),
   PORT: process.env.PORT || "8083"
 };
 

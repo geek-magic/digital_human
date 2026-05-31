@@ -27,6 +27,8 @@ const PYTHON_BIN = process.env.DH_PYTHON || (process.platform === "win32" ? "pyt
 const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
   ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
   : join(rootDir, "runtime", "tools", "bin", "yt-dlp"));
+const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
+const FFPROBE_BIN = process.env.FFPROBE_BIN || "ffprobe";
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -912,9 +914,14 @@ function commandExists(command) {
   }
 }
 
+function executableExists(command) {
+  if (!command) return false;
+  return isAbsolute(command) ? existsSync(command) : commandExists(command);
+}
+
 function resolvePathRef(pathRef) {
   if (!pathRef) return "";
-  if (pathRef === "PATH:ffmpeg") return "ffmpeg";
+  if (pathRef === "PATH:ffmpeg") return FFMPEG_BIN;
   if (pathRef.startsWith("MODEL_HOME/")) {
     return join(MODEL_HOME, pathRef.replace("MODEL_HOME/", ""));
   }
@@ -965,7 +972,7 @@ function detectModel(model) {
     label: "自定义 Adapter 协议"
   };
   if (model.pathRef === "PATH:ffmpeg") {
-    const installed = commandExists("ffmpeg") && commandExists("ffprobe");
+    const installed = executableExists(FFMPEG_BIN);
     return {
       status: installed ? "installed" : "missing",
       resolvedPath: installed ? "ffmpeg" : "",
@@ -2281,7 +2288,7 @@ async function extractDouyinLink(link, projectId, shareText, options = {}) {
         videoPath = join(outDir, "video.mp4");
         writeFileSync(videoPath, buffer);
         audioPath = join(outDir, "audio.wav");
-        await execFileAsync("ffmpeg", [
+        await execFileAsync(FFMPEG_BIN, [
           "-y",
           "-hide_banner",
           "-loglevel",
@@ -2377,7 +2384,7 @@ async function downloadLinkAudio(link, projectId, options = {}) {
   const audioPath = join(outDir, `${link.id}.wav`);
   try {
     if (isDirectMediaUrl(link.url)) {
-      await execFileAsync("ffmpeg", [
+      await execFileAsync(FFMPEG_BIN, [
         "-y",
         "-i",
         link.url,
@@ -3158,11 +3165,11 @@ function buildSrt(script, duration) {
 }
 
 async function createSilentAudio(outPath, duration) {
-  if (!commandExists("ffmpeg")) {
+  if (!executableExists(FFMPEG_BIN)) {
     writeFileSync(outPath, "Audio placeholder: configure TTS adapter to generate real speech.\n");
     return false;
   }
-  await execFileAsync("ffmpeg", [
+  await execFileAsync(FFMPEG_BIN, [
     "-y",
     "-f",
     "lavfi",
@@ -3179,21 +3186,24 @@ async function createSilentAudio(outPath, duration) {
 
 async function probeMediaDuration(filePath) {
   if (!filePath || !existsSync(filePath)) return 0;
-  if (!existsSync("/opt/homebrew/bin/ffprobe") && !existsSync("/usr/bin/ffprobe")) return 0;
-  try {
-    const { stdout } = await execFileAsync("ffprobe", [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "default=noprint_wrappers=1:nokey=1",
-      filePath
-    ]);
-    return Number.parseFloat(stdout.trim()) || 0;
-  } catch {
-    return 0;
+  if (executableExists(FFPROBE_BIN)) {
+    try {
+      const { stdout } = await execFileAsync(FFPROBE_BIN, [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        filePath
+      ]);
+      return Number.parseFloat(stdout.trim()) || 0;
+    } catch {
+      // Fall through to ffmpeg stderr probing for offline bundles without ffprobe.
+    }
   }
+  const info = await probeMediaInfoWithFfmpeg(filePath);
+  return info.duration || 0;
 }
 
 function resolveTtsVoice(db, project, requestedVoiceId = "") {
@@ -3261,9 +3271,9 @@ function atempoFilter(speed) {
 async function applyAudioPlaybackSpeed(inputPath, speed = 1) {
   const normalizedSpeed = clampNumber(speed, 0.5, 2, 1);
   if (Math.abs(normalizedSpeed - 1) < 0.01) return { applied: false, speed: 1 };
-  if (!commandExists("ffmpeg") || !inputPath || !existsSync(inputPath)) return { applied: false, speed: normalizedSpeed };
+  if (!executableExists(FFMPEG_BIN) || !inputPath || !existsSync(inputPath)) return { applied: false, speed: normalizedSpeed };
   const tmpPath = inputPath.replace(/(\.[^.]+)?$/, `.speed-${Date.now()}.wav`);
-  await execFileAsync("ffmpeg", [
+  await execFileAsync(FFMPEG_BIN, [
     "-y",
     "-i",
     inputPath,
@@ -3341,7 +3351,7 @@ async function concatVideoSegments(segmentPaths, outPath) {
   const listPath = join(dirname(outPath), "avatar-segments.txt");
   writeFileSync(listPath, segmentPaths.map((item) => `file '${shellQuoteForConcat(item)}'`).join("\n"));
   try {
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(FFMPEG_BIN, [
       "-y",
       "-f",
       "concat",
@@ -3358,7 +3368,7 @@ async function concatVideoSegments(segmentPaths, outPath) {
   } catch {
     const inputs = segmentPaths.flatMap((item) => ["-i", item]);
     const concatFilter = segmentPaths.map((_, index) => `[${index}:v:0][${index}:a:0]`).join("") + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(FFMPEG_BIN, [
       "-y",
       ...inputs,
       "-filter_complex",
@@ -3509,14 +3519,14 @@ for segment in payload["segments"]:
 
 async function runFfmpegWithSubtitleFallback(args, subtitlesPath) {
   try {
-    await execFileAsync("ffmpeg", args);
+    await execFileAsync(FFMPEG_BIN, args);
     return true;
   } catch (error) {
     if (!subtitlesPath) throw error;
     const fallbackArgs = args.map((arg) => (
       typeof arg === "string" && arg.includes("subtitles=") ? previewVideoFilter("") : arg
     ));
-    await execFileAsync("ffmpeg", fallbackArgs);
+    await execFileAsync(FFMPEG_BIN, fallbackArgs);
     return true;
   }
 }
@@ -3642,7 +3652,7 @@ function simpleSubtitleOverlayFilterGraph(captionOverlays, firstOverlayInputInde
 }
 
 async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subtitlesPath = "", captionOverlays = []) {
-  const hasFfmpeg = commandExists("ffmpeg");
+  const hasFfmpeg = executableExists(FFMPEG_BIN);
   if (!hasFfmpeg) {
     writeFileSync(outPath, "Video placeholder: install FFmpeg and configure avatar adapter.\n");
     return false;
@@ -3654,7 +3664,7 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
       ? ["-stream_loop", "-1", "-i", avatarPath]
       : ["-f", "lavfi", "-i", `color=c=0xf4f7fa:s=1080x1920:d=${duration}`];
     try {
-      await execFileAsync("ffmpeg", [
+      await execFileAsync(FFMPEG_BIN, [
         "-y",
         ...videoInput,
         ...audioInput,
@@ -3727,9 +3737,9 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
 }
 
 async function mixBackgroundMusic(videoPath, musicPath, duration) {
-  if (!commandExists("ffmpeg") || !videoPath || !musicPath || !existsSync(videoPath) || !existsSync(musicPath)) return false;
+  if (!executableExists(FFMPEG_BIN) || !videoPath || !musicPath || !existsSync(videoPath) || !existsSync(musicPath)) return false;
   const tmpPath = videoPath.replace(/\.mp4$/i, `-bgm-${randomUUID().slice(0, 8)}.mp4`);
-  await execFileAsync("ffmpeg", [
+  await execFileAsync(FFMPEG_BIN, [
     "-y",
     "-i",
     videoPath,
@@ -3765,7 +3775,7 @@ async function packageAvatarRenderVideo({
   burnSubtitles = false,
   captionOverlays = []
 }) {
-  if (!commandExists("ffmpeg") || !avatarRenderPath || !existsSync(avatarRenderPath)) return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false, visibleCaptions: false };
+  if (!executableExists(FFMPEG_BIN) || !avatarRenderPath || !existsSync(avatarRenderPath)) return { ok: false, backgroundMusicMixed: false, subtitlesEmbedded: false, visibleCaptions: false };
   const hasAudio = audioPath && existsSync(audioPath);
   const hasMusic = backgroundMusicPath && existsSync(backgroundMusicPath);
   const hasSubtitles = subtitlesPath && existsSync(subtitlesPath);
@@ -3837,7 +3847,7 @@ async function packageAvatarRenderVideo({
   if (hasSubtitles && !shouldBurnSubtitles) args.push("-c:s", "mov_text");
   args.push("-movflags", "+faststart", outPath);
   try {
-    await execFileAsync("ffmpeg", args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+    await execFileAsync(FFMPEG_BIN, args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
     const ok = existsSync(outPath);
     return {
       ok,
@@ -3854,7 +3864,7 @@ async function embedSubtitlesInMp4(videoPath, subtitlesPath) {
   if (!videoPath || !subtitlesPath || !existsSync(videoPath) || !existsSync(subtitlesPath)) return false;
   const outPath = videoPath.replace(/\.mp4$/i, ".with-subtitles.mp4");
   try {
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(FFMPEG_BIN, [
       "-y",
       "-i",
       videoPath,
@@ -4030,12 +4040,48 @@ function parseFps(value = "") {
   return left / right;
 }
 
+function parseDurationText(value = "") {
+  const match = String(value).match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
+  if (!match) return 0;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+async function probeMediaInfoWithFfmpeg(filePath) {
+  if (!executableExists(FFMPEG_BIN)) return { ok: false, error: "FFmpeg 不可用。" };
+  try {
+    await execFileAsync(FFMPEG_BIN, ["-hide_banner", "-i", filePath], { timeout: 30000, maxBuffer: 1024 * 1024 * 4 });
+    return { ok: false, error: "媒体信息读取失败。" };
+  } catch (error) {
+    const output = `${error?.stderr || ""}\n${error?.stdout || ""}`;
+    const videoLine = output.split("\n").find((line) => /Video:/i.test(line)) || "";
+    const audioLine = output.split("\n").find((line) => /Audio:/i.test(line)) || "";
+    const size = videoLine.match(/,\s*(\d{2,5})x(\d{2,5})(?:\s|,)/);
+    const fps = videoLine.match(/,\s*([\d.]+)\s*fps/i);
+    const videoCodec = videoLine.match(/Video:\s*([^,\s]+)/i);
+    const audioCodec = audioLine.match(/Audio:\s*([^,\s]+)/i);
+    return {
+      ok: Boolean(videoLine || audioLine),
+      width: Number(size?.[1] || 0),
+      height: Number(size?.[2] || 0),
+      fps: Number(fps?.[1] || 0),
+      duration: parseDurationText(output),
+      codec: videoCodec?.[1] || "",
+      hasAudio: Boolean(audioLine),
+      audioCodec: audioCodec?.[1] || "",
+      bitRate: 0
+    };
+  }
+}
+
 async function probeMediaInfo(filePath) {
   if (!filePath || !existsSync(filePath)) {
     return { ok: false, error: "文件不存在。" };
   }
+  if (!executableExists(FFPROBE_BIN)) {
+    return probeMediaInfoWithFfmpeg(filePath);
+  }
   try {
-    const { stdout } = await execFileAsync("ffprobe", [
+    const { stdout } = await execFileAsync(FFPROBE_BIN, [
       "-v",
       "error",
       "-print_format",
@@ -4059,7 +4105,8 @@ async function probeMediaInfo(filePath) {
       bitRate: Number(data.format?.bit_rate || 0)
     };
   } catch (error) {
-    return { ok: false, error: error?.message || "媒体信息读取失败。" };
+    const fallback = await probeMediaInfoWithFfmpeg(filePath);
+    return fallback.ok ? fallback : { ok: false, error: error?.message || "媒体信息读取失败。" };
   }
 }
 
@@ -4214,7 +4261,7 @@ app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
     if (end <= start) return res.status(400).json({ error: "结束时间必须大于开始时间。" });
     const name = String(req.body.name || `${asset.name}-片段`).trim();
     const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${name.replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")}.mp4`);
-    await execFileAsync("ffmpeg", [
+    await execFileAsync(FFMPEG_BIN, [
       "-y",
       "-ss",
       String(start),
@@ -4963,7 +5010,7 @@ async function clipMediaToUpload(sourcePath, fallbackName, options = {}) {
   } else {
     args.push("-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", targetPath);
   }
-  await execFileAsync("ffmpeg", args, { timeout: 120000, maxBuffer: 1024 * 1024 * 8 });
+  await execFileAsync(FFMPEG_BIN, args, { timeout: 120000, maxBuffer: 1024 * 1024 * 8 });
   return { targetPath, clipRange: { start, end, duration: end - start } };
 }
 

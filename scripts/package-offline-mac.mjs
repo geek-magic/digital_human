@@ -69,7 +69,10 @@ function writeStartScripts() {
     "cd \"$(dirname \"$0\")\"",
     "export PORT=${PORT:-8083}",
     "echo \"启动口播智能体：http://127.0.0.1:${PORT}\"",
-    "node scripts/boot-offline.mjs"
+    "NODE_BIN=\"./runtime/node/bin/node\"",
+    "if [ ! -x \"$NODE_BIN\" ]; then NODE_BIN=\"$(command -v node)\"; fi",
+    "if [ -z \"$NODE_BIN\" ]; then echo \"未找到 Node 运行时，请重新获取完整离线包。\"; exit 1; fi",
+    "\"$NODE_BIN\" scripts/boot-offline.mjs"
   ].join("\n");
   const startPath = join(packageDir, "start.command");
   writeFileSync(startPath, `${startCommand}\n`);
@@ -120,6 +123,8 @@ function main() {
   copyRsync(join(rootDir, "runtime", "asr"), join(packageDir, "runtime", "asr"), ["--exclude", "__pycache__", "--exclude", "*.pyc"]);
   copyRsync(join(rootDir, "runtime", "tts"), join(packageDir, "runtime", "tts"), ["--exclude", "__pycache__", "--exclude", "*.pyc"]);
   copyRsync(join(rootDir, "runtime", "tools"), join(packageDir, "runtime", "tools"), ["--exclude", "__pycache__", "--exclude", "*.pyc"]);
+  copyFile(process.execPath, join(packageDir, "runtime", "node", "bin", "node"));
+  chmodSync(join(packageDir, "runtime", "node", "bin", "node"), 0o755);
 
   const { db, keepUploadNames } = cleanDbForPackage();
   mkdirSync(join(packageDir, "storage", "uploads"), { recursive: true });
