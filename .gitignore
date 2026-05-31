@@ -7,6 +7,7 @@ venv/
 
 # Build output
 dist/
+dist-packages/
 
 # IDE and local config
 .idea/
