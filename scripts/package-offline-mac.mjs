@@ -35,17 +35,9 @@ function copyFile(source, target) {
 function cleanDbForPackage() {
   const db = JSON.parse(readFileSync(join(rootDir, "storage", "db.json"), "utf-8"));
   const keepUploadNames = new Set();
-  for (const collection of ["avatarAssets", "voices", "musicAssets"]) {
-    db[collection] = (db[collection] || []).filter((item) => !item.deletedAt);
-    for (const item of db[collection]) {
-      for (const key of ["path", "audioPath", "videoPath"]) {
-        if (!item[key]) continue;
-        keepUploadNames.add(basename(item[key]));
-        item[key] = join(packageDir, "storage", "uploads", basename(item[key]));
-      }
-      if (item.path) item.uri = `/storage/uploads/${basename(item.path)}`;
-    }
-  }
+  db.avatarAssets = [];
+  db.voices = [];
+  db.musicAssets = [];
   db.projects = [];
   db.jobs = [];
   db.queueItems = [];
@@ -53,6 +45,8 @@ function cleanDbForPackage() {
   db.publishPackages = [];
   db.publishRecords = [];
   db.runtimeModels = {};
+  db.apiProviders = [];
+  db.apiProviderCatalog = [];
   db.settings ||= {};
   db.settings.defaultTextModelId = "model-qwen2-5-7b-instruct-4bit-mlx";
   db.settings.defaultModelIds ||= {};
