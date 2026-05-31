@@ -2593,6 +2593,29 @@ function scriptGenerationMessages(input) {
   ];
 }
 
+function polishTextMessages(input) {
+  const payload = {
+    inputText: input.inputText || input.sourceText || "",
+    requirements: input.requirements || ""
+  };
+  return [
+    {
+      role: "system",
+      content: [
+        "你是专业的短视频口播文案润色助手。",
+        "根据用户的生成要求改写输入内容；如果要求指定输出语言、翻译成英文或其他语言，必须严格使用用户指定语言。",
+        "如果用户没有指定语言，则默认保持输入内容的语言。",
+        "只输出最终可直接朗读的正文纯文本，不要输出 JSON，不要输出 Markdown，不要输出标题、标签、大纲、解释说明或 Thinking Process。",
+        "不要展示推理过程，不要先列草稿。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: JSON.stringify(payload, null, 2)
+    }
+  ];
+}
+
 function titleGenerationMessages(input) {
   const sourceText = buildExtractedSourceText(input.inputText || input.sourceText || "", input.sourceAnalysis || {});
   return [
@@ -2756,6 +2779,23 @@ function scriptTextFromModelText(text = "") {
     .trim();
   if (!script || badMetaPattern.test(script)) return "";
   return script;
+}
+
+function cleanPolishedText(text = "", fallback = "") {
+  const cleaned = stripModelJsonFence(text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^(润色结果|最终结果|输出|正文|final output|result)\s*[:：]\s*/i, "")
+    .trim();
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/thinking process|final review|character count|critique|constraints|analyze the request|let's think/i.test(line))
+    .filter((line) => !/^(?:```|[-*#>`]|\d+\.\s*(?:标题|要求|分析|说明|note|analysis))/i.test(line));
+  const result = (lines.length ? lines.join("\n") : cleaned)
+    .replace(/^[“”"']+|[“”"']+$/g, "")
+    .trim();
+  return result || String(fallback || "").trim();
 }
 
 function stripTopicTags(text = "") {
@@ -3034,7 +3074,7 @@ async function generateScriptWithTextModel(db, project, payload = {}) {
 
 async function polishTextWithTextModel(db, input = {}) {
   const modelId = input.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
-  const messages = scriptGenerationMessages({
+  const messages = polishTextMessages({
     inputText: input.inputText || "",
     sourceText: input.inputText || "",
     requirements: input.requirements || ""
@@ -3061,10 +3101,9 @@ async function polishTextWithTextModel(db, input = {}) {
     result = await callLocalLlm(messages, { ...input, modelPath: detection.resolvedPath });
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
-  const artifact = normalizeScriptArtifact(scriptArtifactFromModelText(result.text || "", input), input);
   return {
-    text: artifact.script,
-    title: artifact.title,
+    text: cleanPolishedText(result.text || "", input.inputText || ""),
+    title: deriveProjectTitle(input.inputText || "", input.requirements || ""),
     modelInfo: { ...modelInfo, metrics: result.metrics || {} }
   };
 }
