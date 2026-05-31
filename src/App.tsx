@@ -175,6 +175,9 @@ type AudioVersion = {
   ttsModelId?: string;
   ttsModelName?: string;
   audioPlaybackSpeed?: number;
+  ttsStylePreset?: string;
+  ttsStyleIntensity?: string;
+  ttsStylePrompt?: string;
   audioUri: string;
   audioPath?: string;
   duration: number;
@@ -205,6 +208,9 @@ type Project = {
   scriptModelId?: string;
   ttsModelId?: string;
   audioPlaybackSpeed?: number;
+  ttsStylePreset?: string;
+  ttsStyleIntensity?: string;
+  ttsStylePrompt?: string;
   selectedScriptVersionId?: string;
   selectedAudioVersionId?: string;
   selectedVideoVersionId?: string;
@@ -494,6 +500,21 @@ const defaultVideoSettings: VideoSettings = {
   rightCheekWidth: 90
 };
 const audioSpeedOptions = [0.5, 1, 1.5, 2];
+const ttsStylePresets = [
+  { id: "natural", label: "自然", prompt: "" },
+  { id: "passionate", label: "慷慨激昂", prompt: "passionate, energetic, powerful tone, inspiring, slightly faster pace" },
+  { id: "sad_low", label: "低沉伤感", prompt: "deep, low voice, sad and restrained tone, slow pace, soft expression" },
+  { id: "gentle", label: "温柔亲切", prompt: "gentle, warm, friendly tone, soft expression, relaxed pace" },
+  { id: "professional", label: "专业稳重", prompt: "calm, professional, confident tone, steady pace" },
+  { id: "cheerful", label: "轻快活泼", prompt: "bright, cheerful, lively tone, friendly and upbeat" },
+  { id: "urgent", label: "紧张急促", prompt: "tense, urgent, fast pace, serious tone" },
+  { id: "custom", label: "自定义", prompt: "" }
+];
+const ttsStyleIntensities = [
+  { id: "light", label: "轻微" },
+  { id: "medium", label: "标准" },
+  { id: "strong", label: "强烈" }
+];
 const defaultRequirementTemplates: RequirementTemplate[] = [
   {
     id: "douyin-knowledge",
@@ -1391,6 +1412,9 @@ function TaskComposer({
   const [voiceId, setVoiceId] = useState("");
   const [ttsModelId, setTtsModelId] = useState("");
   const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
+  const [ttsStylePreset, setTtsStylePreset] = useState("natural");
+  const [ttsStyleIntensity, setTtsStyleIntensity] = useState("medium");
+  const [ttsStylePrompt, setTtsStylePrompt] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
@@ -1423,6 +1447,9 @@ function TaskComposer({
           voiceId: mode === "auto" ? voiceId : "",
           ttsModelId: ttsModelId || defaultModelIdForType(state, "tts"),
           audioPlaybackSpeed,
+          ttsStylePreset: isVoxCpmTtsModel(state, ttsModelId) ? ttsStylePreset : "natural",
+          ttsStyleIntensity,
+          ttsStylePrompt: isVoxCpmTtsModel(state, ttsModelId) ? ttsStylePrompt : "",
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           backgroundMusicAssetId,
           backgroundMusicVolume,
@@ -1443,6 +1470,9 @@ function TaskComposer({
     setVoiceId("");
     setTtsModelId(defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(1);
+    setTtsStylePreset("natural");
+    setTtsStyleIntensity("medium");
+    setTtsStylePrompt("");
     setAvatarAssetId("");
     setBackgroundMusicAssetId("");
     setBackgroundMusicVolume(0.2);
@@ -1495,6 +1525,16 @@ function TaskComposer({
               <BackgroundMusicField state={state} selectedBackgroundMusic={selectedBackgroundMusic} backgroundMusicAssetId={backgroundMusicAssetId} setBackgroundMusicAssetId={setBackgroundMusicAssetId} backgroundMusicVolume={backgroundMusicVolume} setBackgroundMusicVolume={setBackgroundMusicVolume} />
               <FieldCard title="语音模型" meta={selectedTtsModel?.name || "默认"}>
                 <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
+                <TtsStyleFields
+                  state={state}
+                  modelId={ttsModelId}
+                  preset={ttsStylePreset}
+                  intensity={ttsStyleIntensity}
+                  prompt={ttsStylePrompt}
+                  onPresetChange={setTtsStylePreset}
+                  onIntensityChange={setTtsStyleIntensity}
+                  onPromptChange={setTtsStylePrompt}
+                />
               </FieldCard>
               <FieldCard title="口播速度" meta={`${audioPlaybackSpeed}x`}>
                 <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} hideLabel />
@@ -1779,6 +1819,64 @@ function TtsModelSelect({ state, value, onChange, hideLabel = false }: { state: 
   );
 }
 
+function isVoxCpmTtsModel(state: State, modelId = "") {
+  const fallbackId = modelId || defaultModelIdForType(state, "tts");
+  const model = state.models.find((item) => item.id === fallbackId);
+  const key = `${model?.catalogId || ""} ${model?.id || fallbackId} ${model?.name || ""}`.toLowerCase();
+  return key.includes("voxcpm") || key.includes("vox-cpm") || key.includes("vocpm");
+}
+
+function stylePresetLabel(value = "natural") {
+  return ttsStylePresets.find((item) => item.id === value)?.label || "自然";
+}
+
+function TtsStyleFields({
+  state,
+  modelId,
+  preset,
+  intensity,
+  prompt,
+  onPresetChange,
+  onIntensityChange,
+  onPromptChange
+}: {
+  state: State;
+  modelId: string;
+  preset: string;
+  intensity: string;
+  prompt: string;
+  onPresetChange: (value: string) => void;
+  onIntensityChange: (value: string) => void;
+  onPromptChange: (value: string) => void;
+}) {
+  if (!isVoxCpmTtsModel(state, modelId)) return null;
+  const selectedPreset = preset || "natural";
+  return (
+    <div className="tts-style-panel">
+      <label>
+        <span>情绪风格</span>
+        <select value={selectedPreset} onChange={(event) => onPresetChange(event.target.value)}>
+          {ttsStylePresets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>风格强度</span>
+        <select value={intensity || "medium"} onChange={(event) => onIntensityChange(event.target.value)}>
+          {ttsStyleIntensities.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>
+      </label>
+      <label className="tts-style-prompt">
+        <span>自定义描述</span>
+        <textarea
+          value={prompt}
+          onChange={(event) => onPromptChange(event.target.value)}
+          placeholder={selectedPreset === "custom" ? "例如：calm, warm, slow pace, documentary style" : "可选，会叠加到当前风格；建议用英文描述"}
+        />
+      </label>
+    </div>
+  );
+}
+
 function RangeField({
   label,
   value,
@@ -1882,6 +1980,9 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [voiceId, setVoiceId] = useState("");
   const [ttsModelId, setTtsModelId] = useState("");
   const [audioPlaybackSpeed, setAudioPlaybackSpeed] = useState(1);
+  const [ttsStylePreset, setTtsStylePreset] = useState("natural");
+  const [ttsStyleIntensity, setTtsStyleIntensity] = useState("medium");
+  const [ttsStylePrompt, setTtsStylePrompt] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
@@ -1906,6 +2007,9 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setVoiceId(project?.voiceId || "");
     setTtsModelId(project?.ttsModelId || defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(project?.audioPlaybackSpeed || 1);
+    setTtsStylePreset(project?.ttsStylePreset || "natural");
+    setTtsStyleIntensity(project?.ttsStyleIntensity || "medium");
+    setTtsStylePrompt(project?.ttsStylePrompt || "");
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
@@ -1982,7 +2086,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存口播文案", () => request<Project>(`/api/projects/${project.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, scriptModelId, changedStage: "script" })
+      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, scriptModelId, changedStage: "script" })
     }));
 
   const saveVideoSetup = () =>
@@ -1997,19 +2101,19 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       const updated = await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, scriptModelId, changedStage: "script" })
+        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, scriptModelId, changedStage: "script" })
       });
       const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, ttsModelId, audioPlaybackSpeed, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
+        body: JSON.stringify({ voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
       });
       voiceDirtyRef.current = false;
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId, audioPlaybackSpeed })
+        body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt })
       });
     });
 
@@ -2140,6 +2244,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         setTtsModelId={setTtsModelId}
         audioPlaybackSpeed={audioPlaybackSpeed}
         setAudioPlaybackSpeed={setAudioPlaybackSpeed}
+        ttsStylePreset={ttsStylePreset}
+        setTtsStylePreset={setTtsStylePreset}
+        ttsStyleIntensity={ttsStyleIntensity}
+        setTtsStyleIntensity={setTtsStyleIntensity}
+        ttsStylePrompt={ttsStylePrompt}
+        setTtsStylePrompt={setTtsStylePrompt}
         selectedVoice={selectedVoice}
         generateVoice={generateVoice}
         importAudioVersion={importAudioVersion}
@@ -2227,6 +2337,12 @@ function StageWorkspace({
   setTtsModelId,
   audioPlaybackSpeed,
   setAudioPlaybackSpeed,
+  ttsStylePreset,
+  setTtsStylePreset,
+  ttsStyleIntensity,
+  setTtsStyleIntensity,
+  ttsStylePrompt,
+  setTtsStylePrompt,
   selectedVoice,
   generateVoice,
   importAudioVersion,
@@ -2279,6 +2395,12 @@ function StageWorkspace({
   setTtsModelId: (value: string) => void;
   audioPlaybackSpeed: number;
   setAudioPlaybackSpeed: (value: number) => void;
+  ttsStylePreset: string;
+  setTtsStylePreset: (value: string) => void;
+  ttsStyleIntensity: string;
+  setTtsStyleIntensity: (value: string) => void;
+  ttsStylePrompt: string;
+  setTtsStylePrompt: (value: string) => void;
   selectedVoice?: Asset;
   generateVoice: () => Promise<unknown>;
   importAudioVersion: (file?: File, voiceName?: string) => Promise<unknown>;
@@ -2411,6 +2533,16 @@ function StageWorkspace({
             <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
           <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
+          <TtsStyleFields
+            state={state}
+            modelId={ttsModelId}
+            preset={ttsStylePreset}
+            intensity={ttsStyleIntensity}
+            prompt={ttsStylePrompt}
+            onPresetChange={setTtsStylePreset}
+            onIntensityChange={setTtsStyleIntensity}
+            onPromptChange={setTtsStylePrompt}
+          />
           <VoiceSample asset={selectedVoice} />
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />
@@ -2812,7 +2944,10 @@ function AudioVersionList({ project, versions, selectedId, onSelect, action }: {
             <article className="audio-version-detail" role="tabpanel">
               <div>
                 <strong>{activeVersion.voiceName || "默认音色"}</strong>
-                <small>{formatDate(activeVersion.createdAt)} · {formatDurationMs(Number(activeVersion.duration || 0) * 1000)}</small>
+                <small>
+                  {formatDate(activeVersion.createdAt)} · {formatDurationMs(Number(activeVersion.duration || 0) * 1000)}
+                  {activeVersion.ttsStylePreset && activeVersion.ttsStylePreset !== "natural" ? ` · ${stylePresetLabel(activeVersion.ttsStylePreset)}` : ""}
+                </small>
               </div>
               <audio controls src={activeVersion.audioUri} />
               {activeVersion.transcriptText && <p>{activeVersion.transcriptText}</p>}
@@ -3741,6 +3876,9 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
   const [modelId, setModelId] = useState(defaultModelIdForType(state, "tts"));
   const [voiceId, setVoiceId] = useState("");
   const [text, setText] = useState("这是一次音色克隆测试，请生成自然清晰的中文口播。");
+  const [ttsStylePreset, setTtsStylePreset] = useState("natural");
+  const [ttsStyleIntensity, setTtsStyleIntensity] = useState("medium");
+  const [ttsStylePrompt, setTtsStylePrompt] = useState("");
   const [audioUri, setAudioUri] = useState("");
   const [testing, setTesting] = useState(false);
   const selectedVoice = voices.find((voice) => voice.id === voiceId);
@@ -3758,6 +3896,9 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
       const body = new FormData();
       body.append("text", text);
       body.append("modelId", modelId || defaultModelIdForType(state, "tts"));
+      body.append("ttsStylePreset", ttsStylePreset);
+      body.append("ttsStyleIntensity", ttsStyleIntensity);
+      body.append("ttsStylePrompt", ttsStylePrompt);
       if (voiceId) body.append("voiceId", voiceId);
       const response = await action("生成试听", () => request<{ audio?: { uri: string } }>("/api/model-tests/tts", { method: "POST", body }));
       if (response?.audio?.uri) setAudioUri(response.audio.uri);
@@ -3770,6 +3911,16 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>音色试听</h3></div>
       <TtsModelSelect state={state} value={modelId} onChange={setModelId} />
+      <TtsStyleFields
+        state={state}
+        modelId={modelId}
+        preset={ttsStylePreset}
+        intensity={ttsStyleIntensity}
+        prompt={ttsStylePrompt}
+        onPresetChange={setTtsStylePreset}
+        onIntensityChange={setTtsStyleIntensity}
+        onPromptChange={setTtsStylePrompt}
+      />
       <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
       <VoiceSample asset={selectedVoice} />
       <label><span>合成文本</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>

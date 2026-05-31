@@ -117,6 +117,26 @@ function print(payload) {
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
+const stylePrompts = {
+  natural: "",
+  passionate: "passionate, energetic, powerful tone, inspiring, slightly faster pace",
+  sad_low: "deep, low voice, sad and restrained tone, slow pace, soft expression",
+  gentle: "gentle, warm, friendly tone, soft expression, relaxed pace",
+  professional: "calm, professional, confident tone, steady pace",
+  cheerful: "bright, cheerful, lively tone, friendly and upbeat",
+  urgent: "tense, urgent, fast pace, serious tone",
+  custom: ""
+};
+
+function stylePrefix(args) {
+  const preset = Object.hasOwn(stylePrompts, args["style-preset"]) ? args["style-preset"] : "natural";
+  const prompt = [stylePrompts[preset], args["style-prompt"] || ""].filter(Boolean).join(", ").trim();
+  if (!prompt) return "";
+  const intensity = args["style-intensity"] || "medium";
+  const intensityText = intensity === "light" ? "subtle" : intensity === "strong" ? "strong, expressive" : "";
+  return `(${[intensityText, prompt].filter(Boolean).join(", ")})`;
+}
+
 async function synthesize(args) {
   const runtime = candidateRuntime({ python: args.python, model: args.model, engine: args.engine || args["model-id"] });
   if (!runtime.ready) {
@@ -144,7 +164,7 @@ async function synthesize(args) {
     "--model",
     runtime.model,
     "--text",
-    args.text,
+    runtime.engine === "voxcpm2" ? `${stylePrefix(args)}${args.text}` : args.text,
     "--ref-audio",
     args["ref-audio"],
     "--output",

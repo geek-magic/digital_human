@@ -1246,6 +1246,21 @@ small { color: var(--muted); font-size: 12px; }
 }
 .field-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
 .align-end { align-self: end; }
+.tts-style-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dfe8f1;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.tts-style-panel .tts-style-prompt {
+  grid-column: 1 / -1;
+}
+.tts-style-panel textarea {
+  min-height: 68px;
+}
 .range-field {
   display: grid;
   gap: 8px;
@@ -2475,6 +2490,7 @@ small { color: var(--muted); font-size: 12px; }
   .composer-grid,
   .composer-grid.auto-layout,
   .param-grid,
+  .tts-style-panel,
   .field-row {
     grid-template-columns: 1fr;
   }

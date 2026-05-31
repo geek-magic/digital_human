@@ -576,6 +576,9 @@ function audioArtifactFromVersion(version) {
     ttsModelId: version.ttsModelId || "",
     ttsModelName: version.ttsModelName || "",
     audioPlaybackSpeed: clampNumber(version.audioPlaybackSpeed, 0.5, 2, 1),
+    ttsStylePreset: version.ttsStylePreset || "natural",
+    ttsStyleIntensity: version.ttsStyleIntensity || "medium",
+    ttsStylePrompt: version.ttsStylePrompt || "",
     metrics: version.metrics || {}
   };
 }
@@ -634,6 +637,9 @@ function normalizeAudioVersion(project, version, index) {
     ttsModelId: version.ttsModelId || version.modelInfo?.modelId || "",
     ttsModelName: version.ttsModelName || version.modelInfo?.modelName || "",
     audioPlaybackSpeed: clampNumber(version.audioPlaybackSpeed || version.playbackSpeed || project.audioPlaybackSpeed, 0.5, 2, 1),
+    ttsStylePreset: version.ttsStylePreset || project.ttsStylePreset || "natural",
+    ttsStyleIntensity: version.ttsStyleIntensity || project.ttsStyleIntensity || "medium",
+    ttsStylePrompt: version.ttsStylePrompt || project.ttsStylePrompt || "",
     adapter: version.adapter || "tts",
     note: version.note || "",
     metrics: version.metrics || {},
@@ -689,6 +695,9 @@ function normalizeProject(project) {
   project.scriptModelId ||= "";
   project.ttsModelId ||= "";
   project.audioPlaybackSpeed = clampNumber(project.audioPlaybackSpeed, 0.5, 2, 1);
+  project.ttsStylePreset ||= "natural";
+  project.ttsStyleIntensity ||= "medium";
+  project.ttsStylePrompt ||= "";
   project.backgroundMusicAssetId ||= "";
   project.backgroundMusicVolume = clampNumber(project.backgroundMusicVolume, 0, 1, 0.2);
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
@@ -731,6 +740,9 @@ function normalizeProject(project) {
       ttsModelId: project.artifacts.audio.ttsModelId || project.ttsModelId || "",
       ttsModelName: project.artifacts.audio.ttsModelName || "",
       audioPlaybackSpeed: project.artifacts.audio.audioPlaybackSpeed || project.audioPlaybackSpeed || 1,
+      ttsStylePreset: project.artifacts.audio.ttsStylePreset || project.ttsStylePreset || "natural",
+      ttsStyleIntensity: project.artifacts.audio.ttsStyleIntensity || project.ttsStyleIntensity || "medium",
+      ttsStylePrompt: project.artifacts.audio.ttsStylePrompt || project.ttsStylePrompt || "",
       audioUri: project.artifacts.audio.uri || "",
       audioPath: project.artifacts.audio.path || "",
       duration: project.artifacts.audio.duration || 0,
@@ -1366,7 +1378,16 @@ function queueSignature(project, type, payload = {}) {
     return stableStringify({ type, inputText: payload.inputText ?? project.inputText ?? "", requirements: payload.requirements ?? project.requirements ?? "", modelId });
   }
   if (type === "synthesize_speech") {
-    return stableStringify({ type, scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "", voiceId: payload.voiceId || project.voiceId || "", ttsModelId: payload.ttsModelId || project.ttsModelId || "", audioPlaybackSpeed: clampNumber(payload.audioPlaybackSpeed ?? project.audioPlaybackSpeed, 0.5, 2, 1) });
+    return stableStringify({
+      type,
+      scriptVersionId: payload.scriptVersionId || project.selectedScriptVersionId || "",
+      voiceId: payload.voiceId || project.voiceId || "",
+      ttsModelId: payload.ttsModelId || project.ttsModelId || "",
+      audioPlaybackSpeed: clampNumber(payload.audioPlaybackSpeed ?? project.audioPlaybackSpeed, 0.5, 2, 1),
+      ttsStylePreset: payload.ttsStylePreset || project.ttsStylePreset || "natural",
+      ttsStyleIntensity: payload.ttsStyleIntensity || project.ttsStyleIntensity || "medium",
+      ttsStylePrompt: payload.ttsStylePrompt || project.ttsStylePrompt || ""
+    });
   }
   if (type === "render_video") {
     return stableStringify({
@@ -3257,6 +3278,44 @@ function ttsEngineFromModel(model) {
   return "voxcpm2";
 }
 
+const TTS_STYLE_PROMPTS = {
+  natural: "",
+  passionate: "passionate, energetic, powerful tone, inspiring, slightly faster pace",
+  sad_low: "deep, low voice, sad and restrained tone, slow pace, soft expression",
+  gentle: "gentle, warm, friendly tone, soft expression, relaxed pace",
+  professional: "calm, professional, confident tone, steady pace",
+  cheerful: "bright, cheerful, lively tone, friendly and upbeat",
+  urgent: "tense, urgent, fast pace, serious tone",
+  custom: ""
+};
+
+function normalizeTtsStyle(options = {}) {
+  const preset = String(options.ttsStylePreset || "natural").trim() || "natural";
+  const safePreset = Object.prototype.hasOwnProperty.call(TTS_STYLE_PROMPTS, preset) ? preset : "natural";
+  const intensity = ["light", "medium", "strong"].includes(options.ttsStyleIntensity) ? options.ttsStyleIntensity : "medium";
+  return {
+    preset: safePreset,
+    intensity,
+    prompt: String(options.ttsStylePrompt || "").trim()
+  };
+}
+
+function buildVoxCpmStylePrefix(style = {}) {
+  const normalized = normalizeTtsStyle(style);
+  const prompts = [];
+  const presetPrompt = TTS_STYLE_PROMPTS[normalized.preset] || "";
+  if (presetPrompt) prompts.push(presetPrompt);
+  if (normalized.prompt) prompts.push(normalized.prompt);
+  if (!prompts.length) return "";
+  const intensityPrefix = normalized.intensity === "light"
+    ? "subtle"
+    : normalized.intensity === "strong"
+      ? "strong, expressive"
+      : "";
+  const finalPrompt = [intensityPrefix, ...prompts].filter(Boolean).join(", ");
+  return finalPrompt ? `(${finalPrompt})` : "";
+}
+
 async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (!existsSync(TTS_TOOL_PATH)) throw new Error("缺少本地 TTS CLI 工具。");
   if (!voice?.path || !existsSync(voice.path)) {
@@ -3282,6 +3341,10 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (options.deviceMap) args.push("--device-map", options.deviceMap);
   if (options.dtype) args.push("--dtype", options.dtype);
   if (options.device) args.push("--device", options.device);
+  if (engine === "voxcpm2") {
+    const style = normalizeTtsStyle(options);
+    args.push("--style-preset", style.preset, "--style-intensity", style.intensity, "--style-prompt", style.prompt);
+  }
   const { stdout } = await execFileAsync(process.execPath, args, {
     timeout: options.ttsTimeout || 1200000,
     maxBuffer: 1024 * 1024 * 16,
@@ -4803,7 +4866,10 @@ app.post("/api/model-tests/tts", upload.single("referenceAudio"), async (req, re
       ? await callCloudTts(target.provider, text, outPath, { voice: body.cloudVoice || body.voice || "alloy", timeout: Number(body.timeout || 120000) })
       : await createLocalTtsAudio(text, voice, outPath, {
           ttsTimeout: Number(body.timeout || 1200000),
-          model: target.model
+          model: target.model,
+          ttsStylePreset: body.ttsStylePreset || "natural",
+          ttsStyleIntensity: body.ttsStyleIntensity || "medium",
+          ttsStylePrompt: body.ttsStylePrompt || ""
         });
     const duration = await probeMediaDuration(outPath);
     res.json({
@@ -5504,7 +5570,11 @@ app.post("/api/projects", async (req, res, next) => {
     backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
     backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.2),
     voiceId: req.body.voiceId || "",
+    ttsModelId: req.body.ttsModelId || "",
     audioPlaybackSpeed: clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1),
+    ttsStylePreset: req.body.ttsStylePreset || "natural",
+    ttsStyleIntensity: req.body.ttsStyleIntensity || "medium",
+    ttsStylePrompt: req.body.ttsStylePrompt || "",
     videoSettings: normalizeVideoSettings(req.body.videoSettings),
     status: "created",
     currentStep: "input",
@@ -5596,7 +5666,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "ttsStylePreset", "ttsStyleIntensity", "ttsStylePrompt", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.audioPlaybackSpeed !== undefined) project.audioPlaybackSpeed = clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1);
@@ -5718,6 +5788,8 @@ function createAudioVersion(project, audioArtifact, options = {}) {
     sourceScriptVersionId: options.sourceScriptVersionId || project.selectedScriptVersionId || "",
     voiceId: audioArtifact.voiceId || project.voiceId || "",
     voiceName: audioArtifact.voiceName || "",
+    ttsModelId: audioArtifact.ttsModelId || project.ttsModelId || "",
+    ttsModelName: audioArtifact.ttsModelName || "",
     audioUri: audioArtifact.uri || "",
     audioPath: audioArtifact.path || "",
     duration: audioArtifact.duration || 0,
@@ -5727,6 +5799,9 @@ function createAudioVersion(project, audioArtifact, options = {}) {
     note: audioArtifact.note || "",
     metrics: audioArtifact.metrics || {},
     audioPlaybackSpeed: options.audioPlaybackSpeed || audioArtifact.audioPlaybackSpeed || project.audioPlaybackSpeed || 1,
+    ttsStylePreset: options.ttsStylePreset || audioArtifact.ttsStylePreset || project.ttsStylePreset || "natural",
+    ttsStyleIntensity: options.ttsStyleIntensity || audioArtifact.ttsStyleIntensity || project.ttsStyleIntensity || "medium",
+    ttsStylePrompt: options.ttsStylePrompt || audioArtifact.ttsStylePrompt || project.ttsStylePrompt || "",
     createdAt: now(),
     status: options.status || "done",
     isCurrent: true
@@ -5988,6 +6063,12 @@ async function synthesizeProject(projectId, options = {}) {
     const voice = resolveTtsVoice(db, project, options.payload?.voiceId || "");
     const ttsTarget = findTypedModelTarget(db, "tts", options.payload?.ttsModelId || project.ttsModelId || "");
     const audioPlaybackSpeed = clampNumber(options.payload?.audioPlaybackSpeed ?? project.audioPlaybackSpeed, 0.5, 2, 1);
+    const ttsStyle = normalizeTtsStyle({
+      ttsStylePreset: options.payload?.ttsStylePreset ?? project.ttsStylePreset,
+      ttsStyleIntensity: options.payload?.ttsStyleIntensity ?? project.ttsStyleIntensity,
+      ttsStylePrompt: options.payload?.ttsStylePrompt ?? project.ttsStylePrompt
+    });
+    const isVoxCpm = ttsEngineFromModel(ttsTarget.model) === "voxcpm2";
     if (ttsTarget.type !== "local") {
       const err = new Error("任务生成口播音频暂只支持本地 TTS 模型。");
       err.status = 400;
@@ -5995,6 +6076,9 @@ async function synthesizeProject(projectId, options = {}) {
     }
     project.ttsModelId = ttsTarget.model.id;
     project.audioPlaybackSpeed = audioPlaybackSpeed;
+    project.ttsStylePreset = isVoxCpm ? ttsStyle.preset : "natural";
+    project.ttsStyleIntensity = isVoxCpm ? ttsStyle.intensity : "medium";
+    project.ttsStylePrompt = isVoxCpm ? ttsStyle.prompt : "";
     project.status = "running";
     setStage(project, "voice", "running", "正在生成口播音频。");
     setProjectProgress(project, {
@@ -6013,7 +6097,13 @@ async function synthesizeProject(projectId, options = {}) {
     writeDb(db);
     let ttsResult;
     try {
-      ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, { ...options, model: ttsTarget.model });
+      ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, {
+        ...options,
+        model: ttsTarget.model,
+        ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
+        ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
+        ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : ""
+      });
       const speedResult = await applyAudioPlaybackSpeed(modelAudioPath, audioPlaybackSpeed);
       ttsResult.metrics = { ...(ttsResult.metrics || {}), audioPlaybackSpeed, speedAdjusted: speedResult.applied };
     } catch (error) {
@@ -6050,6 +6140,9 @@ async function synthesizeProject(projectId, options = {}) {
       ttsModelId: ttsTarget.model.id,
       ttsModelName: ttsTarget.model.name,
       audioPlaybackSpeed,
+      ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
+      ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
+      ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : "",
       metrics: ttsResult?.metrics || {}
     };
     const latestDb = readDb();
@@ -6058,10 +6151,16 @@ async function synthesizeProject(projectId, options = {}) {
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.ttsModelId = ttsTarget.model.id;
     latestProject.audioPlaybackSpeed = audioPlaybackSpeed;
+    latestProject.ttsStylePreset = isVoxCpm ? ttsStyle.preset : "natural";
+    latestProject.ttsStyleIntensity = isVoxCpm ? ttsStyle.intensity : "medium";
+    latestProject.ttsStylePrompt = isVoxCpm ? ttsStyle.prompt : "";
     const version = createAudioVersion(latestProject, audioArtifact, {
       sourceScriptVersionId: scriptVersion.id,
       audioPlaybackSpeed,
-      modelInfo: { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: ttsResult?.metrics || {} }
+      ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
+      ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
+      ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : "",
+      modelInfo: { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: { ...(ttsResult?.metrics || {}), ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural", ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium" } }
     });
     latestProject.status = "voice_ready";
     setStage(latestProject, "voice", "done", `${version.label} 口播音频已生成。`);
