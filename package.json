@@ -14,6 +14,7 @@
     "install:system": "node scripts/install-models.mjs --system-only",
     "install:models": "node scripts/install-models.mjs",
     "package:offline:mac": "node scripts/package-offline-mac.mjs",
+    "package:offline:win": "node scripts/package-offline-win.mjs",
     "doctor:gpu": "node scripts/windows-gpu-doctor.mjs",
     "asr": "node scripts/asr-tool.mjs",
     "llm": "node scripts/llm-tool.mjs",

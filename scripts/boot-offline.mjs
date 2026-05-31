@@ -10,7 +10,12 @@ const storageDir = join(rootDir, "storage");
 const uploadDir = join(storageDir, "uploads");
 const artifactDir = join(storageDir, "artifacts");
 const dbPath = join(storageDir, "db.json");
-const bundledFfmpeg = join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg");
+const bundledFfmpeg = process.platform === "win32"
+  ? join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg.exe")
+  : join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg");
+const scriptBinDir = process.platform === "win32" ? "Scripts" : "bin";
+const pythonExe = process.platform === "win32" ? "python.exe" : "python";
+const ytDlpExe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
 
 function rewriteUploadPath(value = "") {
   if (!value || typeof value !== "string") return value;
@@ -45,12 +50,12 @@ fixDbPaths();
 const env = {
   ...process.env,
   MODEL_HOME: join(rootDir, "models"),
-  DH_LLM_PYTHON: join(rootDir, "runtime", "llm", "bin", "python"),
-  DH_ASR_PYTHON: join(rootDir, "runtime", "asr", "bin", "python"),
-  DH_TTS_PYTHON: join(rootDir, "runtime", "tts", "bin", "python"),
+  DH_LLM_PYTHON: join(rootDir, "runtime", "llm", scriptBinDir, pythonExe),
+  DH_ASR_PYTHON: join(rootDir, "runtime", "asr", scriptBinDir, pythonExe),
+  DH_TTS_PYTHON: join(rootDir, "runtime", "tts", scriptBinDir, pythonExe),
   MUSETALK_HOME: join(rootDir, "models", "avatar", "MuseTalk"),
-  MUSETALK_PYTHON: join(rootDir, "models", "avatar", "MuseTalk", ".venv", "bin", "python"),
-  YT_DLP_BIN: join(rootDir, "runtime", "tools", "bin", "yt-dlp"),
+  MUSETALK_PYTHON: join(rootDir, "models", "avatar", "MuseTalk", ".venv", scriptBinDir, pythonExe),
+  YT_DLP_BIN: join(rootDir, "runtime", "tools", scriptBinDir, ytDlpExe),
   FFMPEG_BIN: existsSync(bundledFfmpeg) ? bundledFfmpeg : (process.env.FFMPEG_BIN || "ffmpeg"),
   PORT: process.env.PORT || "8083"
 };
