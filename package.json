@@ -13,6 +13,7 @@
     "install:all": "node scripts/setup.mjs",
     "install:system": "node scripts/install-models.mjs --system-only",
     "install:models": "node scripts/install-models.mjs",
+    "doctor:gpu": "node scripts/windows-gpu-doctor.mjs",
     "asr": "node scripts/asr-tool.mjs",
     "llm": "node scripts/llm-tool.mjs",
     "tts": "node scripts/tts-tool.mjs",

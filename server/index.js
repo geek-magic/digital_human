@@ -23,6 +23,7 @@ const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
+const PYTHON_BIN = process.env.DH_PYTHON || (process.platform === "win32" ? "python" : "python3");
 const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
   ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
   : join(rootDir, "runtime", "tools", "bin", "yt-dlp"));
@@ -94,8 +95,8 @@ const modelCatalog = [
     recommended: true,
     bundleRole: "默认口播文案模型",
     license: "Apache 2.0",
-    description: "非 thinking 指令模型，用于链接整理、选题提炼、口播正文、标题和发布文案生成。",
-    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen2.5-7b-instruct-4bit-mlx，或通过 DH_LLM_MODEL_PATH 指定权重目录。"
+    description: "非 thinking 指令模型，用于链接整理、选题提炼、口播正文、标题和发布文案生成。该本地 MLX 运行时仅支持 Apple Silicon macOS。",
+    installGuide: "macOS 执行 npm run install:models 会下载该模型。Windows 离线包请改用云端文本 Provider，或后续接入 GGUF/llama.cpp 文本模型。"
   },
   {
     id: "qwen3-asr-1-7b",
@@ -3424,7 +3425,7 @@ for segment in payload["segments"]:
     y += line_gap
   img.save(segment["path"])
 `;
-  await execFileAsync("python3", ["-c", script, JSON.stringify(payload)], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
+  await execFileAsync(PYTHON_BIN, ["-c", script, JSON.stringify(payload)], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
   return payload.segments.filter((segment) => existsSync(segment.path));
 }
 
@@ -3521,7 +3522,7 @@ for segment in payload["segments"]:
   draw.text((96, 1801), payload.get("cta", ""), fill=(15, 79, 99, 255), font=meta_font)
   img.save(segment["path"])
 `;
-  await execFileAsync("python3", ["-c", script, JSON.stringify(payload)], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
+  await execFileAsync(PYTHON_BIN, ["-c", script, JSON.stringify(payload)], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
   return payload.segments.filter((segment) => existsSync(segment.path));
 }
 
@@ -3985,8 +3986,10 @@ async function probeMediaInfo(filePath) {
 }
 
 async function detectFaceSignal(filePath) {
-  const museTalkPython = join(MODEL_HOME, "avatar", "MuseTalk", ".venv", "bin", "python");
-  const python = process.env.MUSETALK_PYTHON || (existsSync(museTalkPython) ? museTalkPython : "python3");
+  const museTalkPython = process.platform === "win32"
+    ? join(MODEL_HOME, "avatar", "MuseTalk", ".venv", "Scripts", "python.exe")
+    : join(MODEL_HOME, "avatar", "MuseTalk", ".venv", "bin", "python");
+  const python = process.env.MUSETALK_PYTHON || (existsSync(museTalkPython) ? museTalkPython : PYTHON_BIN);
   const script = `
 import json, sys
 try:

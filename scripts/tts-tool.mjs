@@ -15,7 +15,7 @@ const synthesizers = {
 
 const defaults = {
   language: process.env.DH_TTS_LANGUAGE || "Chinese",
-  deviceMap: process.env.DH_TTS_DEVICE_MAP || "mps",
+  deviceMap: process.env.DH_TTS_DEVICE_MAP || "auto",
   dtype: process.env.DH_TTS_DTYPE || "float16"
 };
 
@@ -44,7 +44,9 @@ function candidateRuntime(overrides = {}) {
   const pythonCandidates = unique([
     overrides.python,
     process.env.DH_TTS_PYTHON,
+    process.platform === "win32" ? join(rootDir, "runtime", "tts", "Scripts", "python.exe") : "",
     join(rootDir, "runtime", "tts", "bin", "python"),
+    process.platform === "win32" ? join(rootDir, ".venv-tts", "Scripts", "python.exe") : "",
     join(rootDir, ".venv-tts", "bin", "python")
   ]);
   const modelCandidates = engine === "voxcpm2"

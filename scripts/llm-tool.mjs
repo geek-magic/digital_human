@@ -34,7 +34,9 @@ function candidateRuntime(overrides = {}) {
   const pythonCandidates = unique([
     overrides.python,
     process.env.DH_LLM_PYTHON,
+    process.platform === "win32" ? join(rootDir, "runtime", "llm", "Scripts", "python.exe") : "",
     join(rootDir, "runtime", "llm", "bin", "python"),
+    process.platform === "win32" ? join(rootDir, ".venv-llm", "Scripts", "python.exe") : "",
     join(rootDir, ".venv-llm", "bin", "python")
   ]);
   const modelCandidates = unique([

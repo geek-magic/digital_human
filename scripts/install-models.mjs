@@ -14,6 +14,7 @@ const ytDlpBin = process.platform === "win32"
   ? join(toolsRuntime, "Scripts", "yt-dlp.exe")
   : join(toolsRuntime, "bin", "yt-dlp");
 const python = process.env.DH_INSTALL_PYTHON || (process.platform === "win32" ? "python" : "python3");
+const torchCudaIndex = process.env.DH_TORCH_CUDA_INDEX || "https://download.pytorch.org/whl/cu118";
 const hfEndpoint = process.env.HF_ENDPOINT || "";
 const args = new Set(process.argv.slice(2));
 const systemOnly = args.has("--system-only");
@@ -26,6 +27,7 @@ const models = {
     target: join(modelHome, "llm", "qwen2.5-7b-instruct-4bit-mlx"),
     runtime: join(runtimeHome, "llm"),
     packages: ["mlx-lm", "huggingface_hub[cli]"],
+    platforms: ["darwin"],
     required: ["config.json", "tokenizer.json"],
     protocol: {
       protocolId: "digital-human.llm.script",
@@ -109,9 +111,6 @@ const museTalkRuntimePackages = [
   "huggingface_hub[cli]",
   "gdown",
   "requests",
-  "torch==2.0.1",
-  "torchvision==0.15.2",
-  "torchaudio==2.0.2",
   "diffusers==0.30.2",
   "accelerate==0.28.0",
   "numpy==1.26.4",
@@ -201,8 +200,8 @@ function ensureSystemDependencies() {
       label: "Python 3",
       commands: [process.platform === "win32" ? "python" : "python3"],
       brew: "python",
-      winget: "Python.Python.3.12",
-      install: "macOS: brew install python | Windows: winget install --id Python.Python.3.12 -e | Linux: sudo apt-get install python3 python3-venv"
+      winget: "Python.Python.3.10",
+      install: "macOS: brew install python | Windows: winget install --id Python.Python.3.10 -e | Linux: sudo apt-get install python3 python3-venv"
     },
     {
       label: "FFmpeg/FFprobe",
@@ -269,7 +268,10 @@ function installPackages(venv, packages, options = {}) {
   const marker = runtimeMarker(venv, packages);
   if (existsSync(existingBin) && existsSync(marker)) return existingBin;
   const bin = ensureVenv(venv, options.python || python);
-  run(bin, ["-m", "pip", "install", "-U", ...packages]);
+  const pipArgs = ["-m", "pip", "install", "-U"];
+  if (options.indexUrl) pipArgs.push("--index-url", options.indexUrl);
+  if (options.extraIndexUrl) pipArgs.push("--extra-index-url", options.extraIndexUrl);
+  run(bin, [...pipArgs, ...packages]);
   writeFileSync(marker, `${new Date().toISOString()}\n`);
   return bin;
 }
@@ -291,6 +293,10 @@ function requiredFilesReady(target, files) {
 }
 
 function installCoreModel(model) {
+  if (Array.isArray(model.platforms) && !model.platforms.includes(process.platform)) {
+    console.log(`跳过 ${model.protocol.engine}：当前平台 ${process.platform} 不支持该本地运行时。`);
+    return "";
+  }
   const pythonBin = installPackages(model.runtime, model.packages);
   if (!requiredFilesReady(model.target, model.required)) {
     hfDownload(model.repo, model.target, [], pythonBin);
@@ -362,7 +368,42 @@ function patchMuseTalkCompatibility() {
 function installMuseTalkRuntime() {
   const venv = join(museTalk.target, ".venv");
   const installPython = process.env.MUSETALK_PYTHON || python;
-  return installPackages(venv, museTalkRuntimePackages, { python: installPython });
+  const pythonBin = ensureVenv(venv, installPython);
+  const torchPackages = ["torch==2.0.1", "torchvision==0.15.2", "torchaudio==2.0.2"];
+  const torchMarker = runtimeMarker(venv, [...torchPackages, process.platform === "win32" ? torchCudaIndex : "default"]);
+  if (!existsSync(torchMarker)) {
+    if (process.platform === "win32") {
+      run(pythonBin, ["-m", "pip", "install", "-U", ...torchPackages, "--index-url", torchCudaIndex]);
+    } else {
+      run(pythonBin, ["-m", "pip", "install", "-U", ...torchPackages]);
+    }
+    writeFileSync(torchMarker, `${new Date().toISOString()}\n`);
+  }
+  const runtimePython = installPackages(venv, museTalkRuntimePackages, { python: installPython });
+  verifyTorchDevice(runtimePython);
+  return runtimePython;
+}
+
+function verifyTorchDevice(pythonBin) {
+  const script = [
+    "import json, torch",
+    "print(json.dumps({",
+    "  'torch': torch.__version__,",
+    "  'cuda_available': torch.cuda.is_available(),",
+    "  'cuda_version': getattr(torch.version, 'cuda', None),",
+    "  'device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,",
+    "  'device_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''",
+    "}, ensure_ascii=False))"
+  ].join("\\n");
+  try {
+    const output = execFileSync(pythonBin, ["-c", script], { encoding: "utf8" }).trim();
+    console.log(`PyTorch 设备检查：${output}`);
+    if (process.platform === "win32" && !output.includes('"cuda_available": true')) {
+      console.warn("警告：当前 Windows MuseTalk 环境没有检测到 CUDA。请确认 NVIDIA 驱动可用，或设置 DH_TORCH_CUDA_INDEX 后重新安装 MuseTalk 运行时。");
+    }
+  } catch (error) {
+    console.warn(`PyTorch 设备检查失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function curlDownload(url, outputPath) {

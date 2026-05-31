@@ -18,7 +18,7 @@ def main() -> int:
     parser.add_argument("--text", required=True, help="Text to synthesize.")
     parser.add_argument("--ref-audio", required=True, help="Reference voice audio path.")
     parser.add_argument("--output", required=True, help="Output wav path.")
-    parser.add_argument("--device", default="mps")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--inference-timesteps", type=int, default=10)
     parser.add_argument("--cfg-value", type=float, default=2.0)
     args = parser.parse_args()
@@ -34,14 +34,16 @@ def main() -> int:
         raise ValueError("Text is empty.")
 
     import soundfile as sf
+    import torch
     from voxcpm import VoxCPM
 
+    device = resolve_device(args.device, torch)
     start = time.perf_counter()
     model = VoxCPM.from_pretrained(
         str(model_path),
         load_denoiser=False,
         optimize=False,
-        device=args.device,
+        device=device,
         local_files_only=True,
     )
     load_ms = int((time.perf_counter() - start) * 1000)
@@ -64,9 +66,25 @@ def main() -> int:
         "metrics": {
             "load_ms": load_ms,
             "infer_ms": int((time.perf_counter() - infer_start) * 1000),
+            "device": device,
         },
     })
     return 0
+
+
+def resolve_device(value: str, torch_module) -> str:
+    requested = (value or "auto").lower()
+    if requested == "auto":
+        if torch_module.cuda.is_available():
+            return "cuda"
+        if getattr(torch_module.backends, "mps", None) and torch_module.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if requested.startswith("cuda") and not torch_module.cuda.is_available():
+        return "cpu"
+    if requested == "mps" and (not getattr(torch_module.backends, "mps", None) or not torch_module.backends.mps.is_available()):
+        return "cpu"
+    return requested
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Persistent Qwen3-ASR worker.")
     parser.add_argument("--model", required=True)
     parser.add_argument("--language", default="Chinese")
-    parser.add_argument("--device-map", default="mps")
+    parser.add_argument("--device-map", default="auto")
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     args = parser.parse_args()
@@ -29,6 +29,7 @@ def main() -> int:
     import torch
     from qwen_asr import Qwen3ASRModel
 
+    device_map = resolve_device(args.device_map, torch)
     dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -39,12 +40,12 @@ def main() -> int:
     model = Qwen3ASRModel.from_pretrained(
         str(model_path),
         dtype=dtype,
-        device_map=args.device_map,
+        device_map=device_map,
         max_inference_batch_size=1,
         max_new_tokens=args.max_new_tokens,
     )
     load_ms = int((time.perf_counter() - load_start) * 1000)
-    emit({"event": "ready", "ok": True, "load_ms": load_ms, "model": str(model_path)})
+    emit({"event": "ready", "ok": True, "load_ms": load_ms, "model": str(model_path), "device": device_map})
 
     for line in sys.stdin:
         try:
@@ -81,6 +82,21 @@ def main() -> int:
                 "traceback": traceback.format_exc(),
             })
     return 0
+
+
+def resolve_device(value: str, torch_module) -> str:
+    requested = (value or "auto").lower()
+    if requested == "auto":
+        if torch_module.cuda.is_available():
+            return "cuda"
+        if getattr(torch_module.backends, "mps", None) and torch_module.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if requested.startswith("cuda") and not torch_module.cuda.is_available():
+        return "cpu"
+    if requested == "mps" and (not getattr(torch_module.backends, "mps", None) or not torch_module.backends.mps.is_available()):
+        return "cpu"
+    return requested
 
 
 if __name__ == "__main__":

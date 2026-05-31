@@ -12,7 +12,7 @@ const transcriberPath = join(__dirname, "qwen-asr-transcribe.py");
 
 const defaults = {
   language: process.env.DH_ASR_LANGUAGE || "Chinese",
-  deviceMap: process.env.DH_ASR_DEVICE_MAP || "mps",
+  deviceMap: process.env.DH_ASR_DEVICE_MAP || "auto",
   dtype: process.env.DH_ASR_DTYPE || "float16",
   maxNewTokens: process.env.DH_ASR_MAX_NEW_TOKENS || "1024"
 };
@@ -45,7 +45,9 @@ function candidateRuntime(overrides = {}) {
   const pythonCandidates = unique([
     overrides.python,
     process.env.DH_ASR_PYTHON,
+    process.platform === "win32" ? join(rootDir, "runtime", "asr", "Scripts", "python.exe") : "",
     join(rootDir, "runtime", "asr", "bin", "python"),
+    process.platform === "win32" ? join(rootDir, ".venv-asr", "Scripts", "python.exe") : "",
     join(rootDir, ".venv-asr", "bin", "python")
   ]);
   const modelCandidates = unique([

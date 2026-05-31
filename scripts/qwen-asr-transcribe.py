@@ -18,7 +18,7 @@ def main() -> int:
     parser.add_argument("--model", required=True, help="Local Qwen3-ASR model directory.")
     parser.add_argument("--audio", required=True, help="Audio file path.")
     parser.add_argument("--language", default="Chinese")
-    parser.add_argument("--device-map", default="mps")
+    parser.add_argument("--device-map", default="auto")
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     args = parser.parse_args()
@@ -33,6 +33,7 @@ def main() -> int:
     import torch
     from qwen_asr import Qwen3ASRModel
 
+    device_map = resolve_device(args.device_map, torch)
     dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -43,7 +44,7 @@ def main() -> int:
     model = Qwen3ASRModel.from_pretrained(
         str(model_path),
         dtype=dtype,
-        device_map=args.device_map,
+        device_map=device_map,
         max_inference_batch_size=1,
         max_new_tokens=args.max_new_tokens,
     )
@@ -59,9 +60,25 @@ def main() -> int:
         "metrics": {
             "load_ms": load_ms,
             "infer_ms": int((time.perf_counter() - infer_start) * 1000),
+            "device": device_map,
         },
     })
     return 0
+
+
+def resolve_device(value: str, torch_module) -> str:
+    requested = (value or "auto").lower()
+    if requested == "auto":
+        if torch_module.cuda.is_available():
+            return "cuda"
+        if getattr(torch_module.backends, "mps", None) and torch_module.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if requested.startswith("cuda") and not torch_module.cuda.is_available():
+        return "cpu"
+    if requested == "mps" and (not getattr(torch_module.backends, "mps", None) or not torch_module.backends.mps.is_available()):
+        return "cpu"
+    return requested
 
 
 if __name__ == "__main__":
