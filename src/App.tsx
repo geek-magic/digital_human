@@ -204,6 +204,8 @@ type Project = {
   avatarAssetId: string;
   backgroundMusicAssetId?: string;
   backgroundMusicVolume?: number;
+  smartSceneEnabled?: boolean;
+  smartScenePrompt?: string;
   voiceId: string;
   scriptModelId?: string;
   ttsModelId?: string;
@@ -349,6 +351,8 @@ type VideoVersion = {
   isCurrent?: boolean;
   createdAt: string;
   videoSettings: VideoSettings;
+  smartSceneEnabled?: boolean;
+  smartScenePrompt?: string;
   artifact: {
     video: { uri: string; path: string; duration: number; adapter: string };
     subtitles?: { uri: string; path: string; format: string } | null;
@@ -1418,6 +1422,8 @@ function TaskComposer({
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
+  const [smartSceneEnabled, setSmartSceneEnabled] = useState(false);
+  const [smartScenePrompt, setSmartScenePrompt] = useState("");
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
@@ -1453,6 +1459,8 @@ function TaskComposer({
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
           backgroundMusicAssetId,
           backgroundMusicVolume,
+          smartSceneEnabled: mode === "auto" ? smartSceneEnabled : false,
+          smartScenePrompt: mode === "auto" ? smartScenePrompt : "",
           platforms: Object.keys(platformLabels)
         })
       });
@@ -1476,6 +1484,8 @@ function TaskComposer({
     setAvatarAssetId("");
     setBackgroundMusicAssetId("");
     setBackgroundMusicVolume(0.2);
+    setSmartSceneEnabled(false);
+    setSmartScenePrompt("");
     setGenerateSubtitles(false);
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
@@ -1545,6 +1555,15 @@ function TaskComposer({
               </FieldCard>
               <FieldCard title="字幕" meta={generateSubtitles ? "生成" : "不生成"}>
                 <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
+              </FieldCard>
+              <FieldCard title="智能布景" meta={smartSceneEnabled ? "开启" : "关闭"} defaultOpen={smartSceneEnabled}>
+                <Toggle checked={smartSceneEnabled} onChange={setSmartSceneEnabled} label="开启智能布景" />
+                {smartSceneEnabled && (
+                  <label>
+                    <span>布景要求</span>
+                    <textarea value={smartScenePrompt} onChange={(event) => setSmartScenePrompt(event.target.value)} placeholder="例如：商品讲解风格，主画面突出卖点卡片和使用场景，右下角留出讲解员位置" />
+                  </label>
+                )}
               </FieldCard>
             </div>
             <div className="composer-avatar-column">
@@ -1986,6 +2005,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
+  const [smartSceneEnabled, setSmartSceneEnabled] = useState(false);
+  const [smartScenePrompt, setSmartScenePrompt] = useState("");
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
@@ -2014,6 +2035,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setAvatarAssetId(project?.avatarAssetId || "");
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
     setBackgroundMusicVolume(project?.backgroundMusicVolume ?? 0.2);
+    setSmartSceneEnabled(Boolean(project?.smartSceneEnabled));
+    setSmartScenePrompt(project?.smartScenePrompt || "");
     setGenerateSubtitles(Boolean(project?.generateSubtitles));
   }, [project?.id]);
 
@@ -2093,7 +2116,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, videoSettings, changedStage: "video" })
+      body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, videoSettings, changedStage: "video" })
       }));
 
   const generateVoice = () =>
@@ -2134,12 +2157,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt })
       });
     });
 
@@ -2148,12 +2171,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt })
       });
     });
 
@@ -2263,6 +2286,10 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         backgroundMusicVolume={backgroundMusicVolume}
         setBackgroundMusicVolume={setBackgroundMusicVolume}
         selectedMusic={selectedMusic}
+        smartSceneEnabled={smartSceneEnabled}
+        setSmartSceneEnabled={setSmartSceneEnabled}
+        smartScenePrompt={smartScenePrompt}
+        setSmartScenePrompt={setSmartScenePrompt}
         generateSubtitles={generateSubtitles}
         setGenerateSubtitles={setGenerateSubtitles}
         videoSettings={videoSettings}
@@ -2356,6 +2383,10 @@ function StageWorkspace({
   backgroundMusicVolume,
   setBackgroundMusicVolume,
   selectedMusic,
+  smartSceneEnabled,
+  setSmartSceneEnabled,
+  smartScenePrompt,
+  setSmartScenePrompt,
   generateSubtitles,
   setGenerateSubtitles,
   videoSettings,
@@ -2414,6 +2445,10 @@ function StageWorkspace({
   backgroundMusicVolume: number;
   setBackgroundMusicVolume: (value: number) => void;
   selectedMusic?: Asset;
+  smartSceneEnabled: boolean;
+  setSmartSceneEnabled: (value: boolean) => void;
+  smartScenePrompt: string;
+  setSmartScenePrompt: (value: string) => void;
   generateSubtitles: boolean;
   setGenerateSubtitles: (value: boolean) => void;
   videoSettings: VideoSettings;
@@ -2587,6 +2622,23 @@ function StageWorkspace({
             <div className="media-control-block">
               <VolumeAudioPreview src={selectedMusic.uri} volume={backgroundMusicVolume} onVolumeChange={setBackgroundMusicVolume} />
             </div>
+          )}
+          <div className="smart-scene-card">
+            <div>
+              <strong>智能布景</strong>
+              <small>{smartSceneEnabled ? "开启后会生成主讲解画面，并把数字人放到右下角。" : "关闭时使用普通数字人口播视频。"}</small>
+            </div>
+            <Toggle checked={smartSceneEnabled} onChange={setSmartSceneEnabled} label={smartSceneEnabled ? "已开启" : "开启"} />
+          </div>
+          {smartSceneEnabled && (
+            <label>
+              <span>布景要求</span>
+              <textarea
+                value={smartScenePrompt}
+                onChange={(event) => setSmartScenePrompt(event.target.value)}
+                placeholder="例如：商品讲解风格，主画面突出卖点卡片和使用场景，右下角留出讲解员位置"
+              />
+            </label>
           )}
           <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
           <div className="preset-row">

@@ -29,6 +29,11 @@ const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
   : join(rootDir, "runtime", "tools", "bin", "yt-dlp"));
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "ffprobe";
+const SMART_SCENE_WIDTH = 720;
+const SMART_SCENE_HEIGHT = 1280;
+const SMART_SCENE_FPS = 24;
+const SMART_SCENE_PIP_WIDTH = 220;
+const SMART_SCENE_PIP_HEIGHT = 310;
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -668,6 +673,8 @@ function normalizeVideoVersion(project, version, index) {
     createdAt: version.createdAt || project.updatedAt || project.createdAt || now(),
     status: version.status || "done",
     videoSettings: normalizeVideoSettings(version.videoSettings || project.videoSettings),
+    smartSceneEnabled: Boolean(version.smartSceneEnabled || artifactVideo.smartSceneEnabled),
+    smartScenePrompt: version.smartScenePrompt || artifactVideo.smartScenePrompt || "",
     artifact: {
       video: {
         ...artifactVideo,
@@ -691,6 +698,8 @@ function normalizeProject(project) {
   project.reviewEnabled = project.reviewEnabled ?? ["review", "manual"].includes(project.mode);
   project.mode = project.reviewEnabled ? "manual" : "auto";
   project.generateSubtitles = Boolean(project.generateSubtitles);
+  project.smartSceneEnabled = Boolean(project.smartSceneEnabled);
+  project.smartScenePrompt ||= "";
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
   project.ttsModelId ||= "";
@@ -773,6 +782,8 @@ function normalizeProject(project) {
       videoPath: project.artifacts.video.path || "",
       duration: project.artifacts.video.duration || 0,
       videoSettings: project.videoSettings,
+      smartSceneEnabled: project.artifacts.video.smartSceneEnabled || project.smartSceneEnabled,
+      smartScenePrompt: project.artifacts.video.smartScenePrompt || project.smartScenePrompt || "",
       artifact: {
         video: project.artifacts.video,
         subtitles: project.artifacts.subtitles || null
@@ -1396,6 +1407,8 @@ function queueSignature(project, type, payload = {}) {
       avatarAssetId: payload.avatarAssetId || project.avatarAssetId || "",
       backgroundMusicAssetId: payload.backgroundMusicAssetId || project.backgroundMusicAssetId || "",
       backgroundMusicVolume: clampNumber(payload.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.2),
+      smartSceneEnabled: Boolean(payload.smartSceneEnabled ?? project.smartSceneEnabled),
+      smartScenePrompt: payload.smartScenePrompt || project.smartScenePrompt || "",
       previewDuration: Number(payload.previewDuration || 0),
       variantLabel: payload.variantLabel || "",
       videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
@@ -1715,7 +1728,10 @@ async function executeQueueItem(item) {
     audioVersionId: item.payload?.audioVersionId,
     avatarAssetId: item.payload?.avatarAssetId,
     backgroundMusicAssetId: item.payload?.backgroundMusicAssetId,
+    backgroundMusicVolume: item.payload?.backgroundMusicVolume,
     generateSubtitles: item.payload?.generateSubtitles,
+    smartSceneEnabled: item.payload?.smartSceneEnabled,
+    smartScenePrompt: item.payload?.smartScenePrompt,
     previewDuration: item.payload?.previewDuration,
     variantLabel: item.payload?.variantLabel
   });
@@ -3993,6 +4009,291 @@ async function embedSubtitlesInMp4(videoPath, subtitlesPath) {
   }
 }
 
+function extractJsonObject(text = "") {
+  const trimmed = String(text || "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+      try {
+        return JSON.parse(fenced[1].trim());
+      } catch {
+        // Continue to object scanning below.
+      }
+    }
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first >= 0 && last > first) return JSON.parse(trimmed.slice(first, last + 1));
+    throw new Error("智能布景 Agent 未返回可解析 JSON。");
+  }
+}
+
+function safeSmartSceneFiles(payload = {}) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const allowed = new Set(["index.html"]);
+  const cleaned = [];
+  for (const file of files) {
+    const path = String(file.path || "").replace(/^\.\/+/, "");
+    const content = String(file.content || "");
+    if (!allowed.has(path) || !content.trim()) continue;
+    cleaned.push({ path, content });
+  }
+  if (!cleaned.some((file) => file.path === "index.html")) {
+    throw new Error("智能布景 Agent 没有生成 index.html。");
+  }
+  return cleaned;
+}
+
+function smartSceneSystemPrompt() {
+  return [
+    "你是一个 HyperFrames 视频工程智能体，负责为数字人口播视频生成主画面布景代码。",
+    "你只能输出 JSON，不要输出 Markdown。",
+    "你要生成一个 720x1280 竖屏 HTML/CSS/JS 视频工程，适合逐帧渲染成 MP4。",
+    "只生成一个自包含 index.html，CSS 和 JS 都内联在 HTML 中。",
+    "必须包含 window.setFrameTime(t) 函数，t 为秒；渲染器会从 0 秒逐帧调用到视频结束。",
+    "右下角必须预留 260x350 的数字人画中画安全区，重要文字和核心元素不要放进右下角。",
+    "字幕会由平台在最外层统一烧录，不要把口播字幕写进右下角数字人画面。",
+    "不要引用外网资源，不要使用 fetch，不要使用 import，不要使用 eval，不要访问 localStorage/sessionStorage。",
+    "只允许返回 files 数组，文件名只能是 index.html。"
+  ].join("\n");
+}
+
+function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0 }) {
+  const script = project.artifacts?.script?.script || project.inputText || "";
+  const title = project.artifacts?.script?.title || project.title || "智能布景视频";
+  const requirements = [
+    project.requirements || "",
+    smartScenePrompt || "",
+    previewDuration > 0 ? `这是 ${previewDuration} 秒预览版，但代码要能适配完整视频时长。` : ""
+  ].filter(Boolean).join("\n");
+  return [
+    `视频标题：${title}`,
+    `视频时长：${Math.max(1, Math.round(duration))} 秒`,
+    `口播文案：${script}`,
+    `用户生成要求：${requirements || "无"}`,
+    "",
+    "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片和进度动效。",
+    "代码输出 JSON 格式：",
+    "{\"files\":[{\"path\":\"index.html\",\"content\":\"...\"}],\"notes\":\"...\"}",
+    "index.html 必须是单文件可运行工程。"
+  ].join("\n");
+}
+
+async function callSmartSceneAgent(db, project, options = {}) {
+  const provider = (db.apiProviders || []).find((item) => (item.providerId === "deepseek" || item.id === "provider-deepseek") && item.hasKey !== false && (item.apiKey || process.env[item.envKey]));
+  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
+  const messages = [
+    { role: "system", content: smartSceneSystemPrompt() },
+    { role: "user", content: smartSceneUserPrompt(options) }
+  ];
+  const result = await callCloudLlm(provider, messages, { temperature: 0.35, timeout: 180000, maxTokens: 6000 });
+  const payload = extractJsonObject(result.text);
+  return {
+    files: safeSmartSceneFiles(payload),
+    notes: payload.notes || "",
+    modelInfo: result.metrics || {}
+  };
+}
+
+async function reviseSmartSceneAgent(db, previous, errorMessage, options = {}) {
+  const provider = (db.apiProviders || []).find((item) => (item.providerId === "deepseek" || item.id === "provider-deepseek") && item.hasKey !== false && (item.apiKey || process.env[item.envKey]));
+  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
+  const previousFiles = previous.files.map((file) => `--- ${file.path} ---\n${file.content}`).join("\n\n");
+  const messages = [
+    { role: "system", content: smartSceneSystemPrompt() },
+    { role: "user", content: smartSceneUserPrompt(options) },
+    {
+      role: "user",
+      content: [
+        "你上一次生成的代码运行失败，请根据错误修复后重新输出完整 files JSON。",
+        `错误信息：${errorMessage}`,
+        "上一次代码：",
+        previousFiles
+      ].join("\n")
+    }
+  ];
+  const result = await callCloudLlm(provider, messages, { temperature: 0.25, timeout: 180000, maxTokens: 6000 });
+  const payload = extractJsonObject(result.text);
+  return {
+    files: safeSmartSceneFiles(payload),
+    notes: payload.notes || "",
+    modelInfo: result.metrics || {}
+  };
+}
+
+function writeSmartSceneFiles(workspaceDir, files) {
+  mkdirSync(workspaceDir, { recursive: true });
+  for (const file of files) {
+    writeFileSync(join(workspaceDir, file.path), file.content);
+  }
+}
+
+async function renderSmartSceneHtml({ htmlPath, outPath, framesDir, duration, fps = SMART_SCENE_FPS, width = SMART_SCENE_WIDTH, height = SMART_SCENE_HEIGHT }) {
+  const { chromium } = await import("playwright");
+  mkdirSync(framesDir, { recursive: true });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    page.on("pageerror", (error) => {
+      throw error;
+    });
+    await page.goto(`file://${htmlPath}`);
+    const hasTimeline = await page.evaluate(() => typeof window.setFrameTime === "function");
+    if (!hasTimeline) throw new Error("index.html 必须暴露 window.setFrameTime(t)。");
+    const totalFrames = Math.max(1, Math.round(duration * fps));
+    for (let frame = 0; frame < totalFrames; frame += 1) {
+      await page.evaluate((time) => window.setFrameTime(time), frame / fps);
+      await page.screenshot({ path: join(framesDir, `${String(frame + 1).padStart(5, "0")}.png`), type: "png" });
+    }
+  } finally {
+    await browser.close();
+  }
+  await execFileAsync(FFMPEG_BIN, [
+    "-y",
+    "-framerate",
+    String(fps),
+    "-i",
+    join(framesDir, "%05d.png"),
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-crf",
+    "18",
+    "-movflags",
+    "+faststart",
+    outPath
+  ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  if (!existsSync(outPath)) throw new Error("智能布景主画面渲染失败。");
+  return outPath;
+}
+
+async function createSmartSceneMainVideo(db, project, options = {}) {
+  const outDir = options.outDir;
+  const workspaceDir = join(outDir, "smart-scene", "workspace");
+  const previewDir = join(outDir, "smart-scene", "preview-frames");
+  const framesDir = join(outDir, "smart-scene", "frames");
+  const mainVideoPath = join(outDir, "smart-scene-main.mp4");
+  mkdirSync(workspaceDir, { recursive: true });
+  let agent = await callSmartSceneAgent(db, project, options);
+  writeSmartSceneFiles(workspaceDir, agent.files);
+  writeFileSync(join(outDir, "smart-scene", "agent-response.json"), JSON.stringify(agent, null, 2));
+  const htmlPath = join(workspaceDir, "index.html");
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await renderSmartSceneHtml({
+        htmlPath,
+        outPath: attempt === 3 ? mainVideoPath : join(outDir, "smart-scene", `preview-attempt-${attempt}.mp4`),
+        framesDir: attempt === 3 ? framesDir : join(previewDir, `attempt-${attempt}`),
+        duration: attempt === 3 ? options.duration : Math.min(3, options.duration),
+        fps: SMART_SCENE_FPS
+      });
+      if (attempt < 3) {
+        await renderSmartSceneHtml({
+          htmlPath,
+          outPath: mainVideoPath,
+          framesDir,
+          duration: options.duration,
+          fps: SMART_SCENE_FPS
+        });
+      }
+      return {
+        ok: true,
+        path: mainVideoPath,
+        workspaceDir,
+        agentNotes: agent.notes || "",
+        modelInfo: agent.modelInfo || {}
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (attempt >= 3) break;
+      agent = await reviseSmartSceneAgent(db, agent, lastError, options);
+      writeSmartSceneFiles(workspaceDir, agent.files);
+      writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt + 1}.json`), JSON.stringify(agent, null, 2));
+    }
+  }
+  throw new Error(`智能布景 Agent 渲染失败：${lastError}`);
+}
+
+function smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex) {
+  const pipX = `W-w-28`;
+  const pipY = `H-h-28`;
+  let graph = [
+    `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=yuv420p[base]`,
+    `[1:v]scale=${SMART_SCENE_PIP_WIDTH}:-1,crop=${SMART_SCENE_PIP_WIDTH}:${SMART_SCENE_PIP_HEIGHT}:(iw-${SMART_SCENE_PIP_WIDTH})/2:40,setsar=1[pip]`,
+    `[base][pip]overlay=${pipX}:${pipY},drawbox=x=iw-${SMART_SCENE_PIP_WIDTH}-28:y=ih-${SMART_SCENE_PIP_HEIGHT}-28:w=${SMART_SCENE_PIP_WIDTH}:h=${SMART_SCENE_PIP_HEIGHT}:color=white@0.85:t=3[v0]`
+  ].join(";");
+  let previous = "v0";
+  captionOverlays.forEach((item, index) => {
+    const inputIndex = firstOverlayInputIndex + index;
+    const output = index === captionOverlays.length - 1 ? "vout" : `vsmart${index + 1}`;
+    const start = Number(item.start || 0).toFixed(2);
+    const end = Number(item.end || 0).toFixed(2);
+    graph += `;[${inputIndex}:v]format=rgba[smartov${index}];[${previous}][smartov${index}]overlay=0:0:enable='between(t,${start},${end})'[${output}]`;
+    previous = output;
+  });
+  if (!captionOverlays.length) graph += ";[v0]copy[vout]";
+  return graph;
+}
+
+async function packageSmartSceneVideo({
+  outPath,
+  mainScenePath,
+  avatarRenderPath,
+  audioPath,
+  backgroundMusicPath = "",
+  backgroundMusicVolume = 0.2,
+  duration,
+  captionOverlays = []
+}) {
+  const hasAudio = audioPath && existsSync(audioPath);
+  const hasMusic = backgroundMusicPath && existsSync(backgroundMusicPath);
+  const inputs = ["-i", mainScenePath, "-stream_loop", "-1", "-i", avatarRenderPath];
+  if (hasAudio) inputs.push("-i", audioPath);
+  if (hasMusic) inputs.push("-stream_loop", "-1", "-i", backgroundMusicPath);
+  for (const overlay of captionOverlays) inputs.push("-loop", "1", "-i", overlay.path);
+  const audioInputIndex = hasAudio ? 2 : -1;
+  const musicInputIndex = hasMusic ? (hasAudio ? 3 : 2) : -1;
+  const firstOverlayInputIndex = 2 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0);
+  const filters = [smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex)];
+  if (hasMusic && hasAudio) {
+    filters.push(`[${musicInputIndex}:a]volume=${clampNumber(backgroundMusicVolume, 0, 1, 0.2).toFixed(3)},atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
+    filters.push(`[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`);
+  }
+  const args = [
+    "-y",
+    ...inputs,
+    "-filter_complex",
+    filters.join(";"),
+    "-map",
+    "[vout]"
+  ];
+  if (hasMusic && hasAudio) args.push("-map", "[a]");
+  else if (hasAudio) args.push("-map", `${audioInputIndex}:a:0`);
+  args.push(
+    "-t",
+    String(duration),
+    "-shortest",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-movflags",
+    "+faststart",
+    outPath
+  );
+  await execFileAsync(FFMPEG_BIN, args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  return { ok: existsSync(outPath), backgroundMusicMixed: Boolean(hasMusic && hasAudio), visibleCaptions: captionOverlays.length > 0 };
+}
+
 async function zipDirectory(sourceDir, zipPath) {
   await execFileAsync("zip", ["-qr", zipPath, "."], { cwd: sourceDir });
 }
@@ -5569,6 +5870,8 @@ app.post("/api/projects", async (req, res, next) => {
     avatarAssetId: req.body.avatarAssetId || "",
     backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
     backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.2),
+    smartSceneEnabled: Boolean(req.body.smartSceneEnabled),
+    smartScenePrompt: req.body.smartScenePrompt || "",
     voiceId: req.body.voiceId || "",
     ttsModelId: req.body.ttsModelId || "",
     audioPlaybackSpeed: clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1),
@@ -5666,7 +5969,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "ttsStylePreset", "ttsStyleIntensity", "ttsStylePrompt", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "smartSceneEnabled", "smartScenePrompt", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "ttsStylePreset", "ttsStyleIntensity", "ttsStylePrompt", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.audioPlaybackSpeed !== undefined) project.audioPlaybackSpeed = clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1);
@@ -5843,6 +6146,8 @@ function createVideoVersion(db, project, options = {}) {
       isCurrent: true,
       createdAt: now(),
       videoSettings: normalizeVideoSettings(options.videoSettings || project.videoSettings),
+      smartSceneEnabled: Boolean(project.artifacts.video.smartSceneEnabled),
+      smartScenePrompt: project.artifacts.video.smartScenePrompt || "",
       videoUri: publicPath(versionVideoPath),
       videoPath: versionVideoPath,
       duration: project.artifacts.video.duration || 0,
@@ -6293,19 +6598,23 @@ async function renderProject(projectId, options = {}) {
     const backgroundMusicVolume = clampNumber(options.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.2);
     project.backgroundMusicAssetId = backgroundMusic?.id || "";
     project.backgroundMusicVolume = backgroundMusicVolume;
+    const smartSceneEnabled = Boolean(options.smartSceneEnabled ?? project.smartSceneEnabled);
+    const smartScenePrompt = String(options.smartScenePrompt ?? project.smartScenePrompt ?? "");
+    project.smartSceneEnabled = smartSceneEnabled;
+    project.smartScenePrompt = smartScenePrompt;
     project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
     const generateSubtitles = Boolean(options.generateSubtitles ?? project.generateSubtitles);
     project.generateSubtitles = generateSubtitles;
     project.status = "running";
-    setStage(project, "video", "running", "正在生成数字人视频。");
+    setStage(project, "video", "running", smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。");
     setProjectProgress(project, {
       percent: options.queueId ? 68 : 0,
-      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : "正在生成数字人视频。",
+      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。",
       stage: "video",
       status: "running",
       queueId: options.queueId || ""
     });
-    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration });
+    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : smartSceneEnabled ? "开始生成智能布景视频。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration, smartSceneEnabled });
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: generateSubtitles ? "正在生成字幕文件。" : "正在准备视频素材。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human.mp4");
@@ -6320,7 +6629,7 @@ async function renderProject(projectId, options = {}) {
         script: project.artifacts.script.script,
         audioPath: project.artifacts.audio?.path || "",
         avatarPath: avatar?.path || "",
-        subtitlesPath: srtPath,
+        subtitlesPath: smartSceneEnabled ? "" : srtPath,
         duration,
         videoSettings: project.videoSettings
       },
@@ -6352,21 +6661,48 @@ async function renderProject(projectId, options = {}) {
       updateQueueProgress(options.queueId, { percent: 82, label: message, stage: "video", stageStatus: "failed" });
       throw new Error(message);
     }
-    const captionOverlays = generateSubtitles
-      ? await createSimpleSubtitleOverlays(captionSegments, outDir, avatarRenderPath).catch(() => [])
-      : [];
-    updateQueueProgress(options.queueId, { percent: 86, label: generateSubtitles ? "正在一次性封装视频、音频、背景音和可见字幕。" : "正在一次性封装视频、音频和背景音。", stage: "video" });
-    const packaged = await packageAvatarRenderVideo({
-      outPath: videoPath,
-      avatarRenderPath,
-      audioPath: project.artifacts.audio?.path || "",
-      backgroundMusicPath: backgroundMusic?.path || "",
-      backgroundMusicVolume,
-      subtitlesPath: srtPath,
-      duration,
-      burnSubtitles: generateSubtitles,
-      captionOverlays
-    });
+    let packaged;
+    let smartSceneMain = null;
+    let captionOverlays = [];
+    if (smartSceneEnabled) {
+      updateQueueProgress(options.queueId, { percent: 84, label: "DeepSeek Agent 正在编写智能布景工程。", stage: "video" });
+      smartSceneMain = await createSmartSceneMainVideo(db, project, {
+        outDir,
+        duration,
+        previewDuration,
+        smartScenePrompt
+      });
+      captionOverlays = generateSubtitles
+        ? await createSimpleSubtitleOverlays(captionSegments, outDir, smartSceneMain.path).catch(() => [])
+        : [];
+      updateQueueProgress(options.queueId, { percent: 90, label: generateSubtitles ? "正在合成智能布景、数字人、口播音频和外层字幕。" : "正在合成智能布景、数字人和口播音频。", stage: "video" });
+      packaged = await packageSmartSceneVideo({
+        outPath: videoPath,
+        mainScenePath: smartSceneMain.path,
+        avatarRenderPath,
+        audioPath: project.artifacts.audio?.path || "",
+        backgroundMusicPath: backgroundMusic?.path || "",
+        backgroundMusicVolume,
+        duration,
+        captionOverlays
+      });
+    } else {
+      captionOverlays = generateSubtitles
+        ? await createSimpleSubtitleOverlays(captionSegments, outDir, avatarRenderPath).catch(() => [])
+        : [];
+      updateQueueProgress(options.queueId, { percent: 86, label: generateSubtitles ? "正在一次性封装视频、音频、背景音和可见字幕。" : "正在一次性封装视频、音频和背景音。", stage: "video" });
+      packaged = await packageAvatarRenderVideo({
+        outPath: videoPath,
+        avatarRenderPath,
+        audioPath: project.artifacts.audio?.path || "",
+        backgroundMusicPath: backgroundMusic?.path || "",
+        backgroundMusicVolume,
+        subtitlesPath: srtPath,
+        duration,
+        burnSubtitles: generateSubtitles,
+        captionOverlays
+      });
+    }
     let rendered = packaged.ok;
     if (!rendered) {
       rendered = await createPreviewVideo(videoPath, avatarRenderPath, project.artifacts.audio?.path || "", duration, srtPath, []).catch(() => false);
@@ -6382,17 +6718,21 @@ async function renderProject(projectId, options = {}) {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
-      adapter: `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
+      adapter: smartSceneEnabled ? "deepseek-smart-scene-agent" : `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
+      smartSceneEnabled,
+      smartScenePrompt,
       subtitlesEmbedded,
       visibleCaptions,
       qualityReport: {
-        status: `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
+        status: smartSceneEnabled ? "rendered_by_deepseek_smart_scene_agent" : `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
+          smartSceneEnabled ? "已启用智能布景：DeepSeek Agent 编写主画面工程，平台渲染后叠加数字人画中画。" : "",
           `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
+          smartSceneMain?.agentNotes ? `Agent 说明：${smartSceneMain.agentNotes}` : "",
           avatarRender.segmentCount ? `长视频已自动切成 ${avatarRender.segmentCount} 段渲染，每段约 ${avatarRender.segmentSeconds} 秒。` : "",
           `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
           backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}，音量 ${Math.round(backgroundMusicVolume * 100)}%。` : "未使用背景音乐。",
-          generateSubtitles ? (visibleCaptions ? "字幕已烧录到视频画面。" : subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频画面。") : "未生成字幕。",
+          generateSubtitles ? (smartSceneEnabled && visibleCaptions ? "字幕已烧录到最终外层视频画面。" : visibleCaptions ? "字幕已烧录到视频画面。" : subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频画面。") : "未生成字幕。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
         ].filter(Boolean)
       }
@@ -6412,6 +6752,8 @@ async function renderProject(projectId, options = {}) {
     latestProject.backgroundMusicAssetId = backgroundMusic?.id || "";
     latestProject.backgroundMusicVolume = backgroundMusicVolume;
     latestProject.generateSubtitles = generateSubtitles;
+    latestProject.smartSceneEnabled = smartSceneEnabled;
+    latestProject.smartScenePrompt = smartScenePrompt;
     latestProject.videoSettings = project.videoSettings;
     latestProject.artifacts.video = videoArtifact;
     if (subtitlesArtifact) latestProject.artifacts.subtitles = subtitlesArtifact;
@@ -6452,7 +6794,9 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
     avatarAssetId: req.body?.avatarAssetId || "",
     backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
     backgroundMusicVolume: req.body?.backgroundMusicVolume,
-    generateSubtitles: Boolean(req.body?.generateSubtitles)
+    generateSubtitles: Boolean(req.body?.generateSubtitles),
+    smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
+    smartScenePrompt: req.body?.smartScenePrompt || ""
   });
 });
 
@@ -6464,6 +6808,8 @@ app.post("/api/projects/:id/render-preview", async (req, res, next) => {
     backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
     backgroundMusicVolume: req.body?.backgroundMusicVolume,
     generateSubtitles: Boolean(req.body?.generateSubtitles),
+    smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
+    smartScenePrompt: req.body?.smartScenePrompt || "",
     previewDuration: 3,
     variantLabel: "3秒预览"
   });
@@ -6474,7 +6820,11 @@ app.post("/api/projects/:id/video-versions", async (req, res, next) => {
     videoSettings: req.body?.videoSettings || null,
     audioVersionId: req.body?.audioVersionId || "",
     avatarAssetId: req.body?.avatarAssetId || "",
-    generateSubtitles: Boolean(req.body?.generateSubtitles)
+    backgroundMusicAssetId: req.body?.backgroundMusicAssetId || "",
+    backgroundMusicVolume: req.body?.backgroundMusicVolume,
+    generateSubtitles: Boolean(req.body?.generateSubtitles),
+    smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
+    smartScenePrompt: req.body?.smartScenePrompt || ""
   });
 });
 

@@ -1261,6 +1261,25 @@ small { color: var(--muted); font-size: 12px; }
 .tts-style-panel textarea {
   min-height: 68px;
 }
+.smart-scene-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #c9e3dd;
+  border-radius: 8px;
+  background: #f4fbf8;
+}
+.smart-scene-card strong {
+  display: block;
+  font-size: 13px;
+}
+.smart-scene-card small {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.45;
+}
 .range-field {
   display: grid;
   gap: 8px;
