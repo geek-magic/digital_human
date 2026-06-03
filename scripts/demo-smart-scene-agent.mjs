@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -9,23 +9,31 @@ import { chromium } from "playwright";
 const execFileAsync = promisify(execFile);
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const db = JSON.parse(readFileSync(join(rootDir, "storage", "db.json"), "utf8"));
-const outDir = join(rootDir, "storage", "artifacts", "smart-scene-agent-demo");
+const outDir = process.env.DEMO_OUTPUT_DIR || join(rootDir, "storage", "artifacts", "smart-scene-agent-demo");
 const workspaceDir = join(outDir, "workspace");
 const framesDir = join(outDir, "frames");
+const subtitleDir = join(outDir, "subtitle-overlays");
 const width = 720;
 const height = 1280;
 const fps = 24;
-const projectId = process.env.DEMO_PROJECT_ID || "project-cf948e17-d065-42a5-9271-88cb7189592d";
+const projectId = process.env.DEMO_PROJECT_ID || "project-7c9c17b3-d3d0-4d44-8631-233d2c50f5ab";
 const project = db.projects.find((item) => item.id === projectId);
 if (!project) throw new Error(`Project not found: ${projectId}`);
 const provider = db.apiProviders?.find((item) => item.providerId === "deepseek" || item.id === "provider-deepseek");
 if (!provider?.apiKey) throw new Error("DeepSeek provider is not configured.");
 
-const audio = project.audioVersions?.[0];
+const audio = project.audioVersions?.find((item) => item.isCurrent) || project.audioVersions?.[0];
 const audioPath = audio?.audioPath || audio?.path || project.artifacts?.audio?.path;
-const presenterPath = project.videoVersions?.[0]?.videoPath || project.artifacts?.video?.path;
+const presenterPath = process.env.DEMO_PRESENTER_PATH || project.videoVersions?.find((item) => item.isCurrent)?.videoPath || project.videoVersions?.[0]?.videoPath || project.artifacts?.video?.path;
 const scriptText = project.artifacts?.script?.script || project.inputText || "";
-const duration = Math.min(32, Math.max(8, Math.ceil(Number(audio?.duration || project.artifacts?.audio?.duration || 24))));
+const duration = Number(process.env.DEMO_DURATION || 0) || Math.min(30, Math.max(8, Math.ceil(Number(audio?.duration || project.artifacts?.audio?.duration || 24))));
+const demoTopic = process.env.DEMO_TOPIC || "AI卖货视频引擎：30秒生成一条能讲清卖点的商品讲解视频";
+const demoRequirements = process.env.DEMO_REQUIREMENTS || [
+  "做成炫酷的科技商品发布会风格，主视觉是一个 AI 商品讲解工作台/智能营销引擎。",
+  "画面要包含产品扫描、卖点拆解、价格转化漏斗、短视频成片预览、数据仪表盘和能量光效。",
+  "整体节奏要快，像高端 SaaS 产品发布片，不要餐饮、柴火鸡、探店元素。",
+  "右下角必须给数字人画中画留白，字幕由平台最外层统一烧录。"
+].join("\n");
 
 function jsonFromText(text = "") {
   const trimmed = text.trim();
@@ -75,16 +83,16 @@ function agentSystemPrompt() {
     "不要引用外网，不要 fetch，不要 import，不要 eval。",
     "右下角必须预留 260x350 数字人画中画区域，任何主标题、卖点卡、CTA 都不要进入右下角。",
     "字幕由平台最外层统一烧录，你不要在右下角数字人小窗里放字幕。",
-    "画面要适合宣传：有餐饮烟火气、柴火鸡、聚餐、卖点拆解、进度条、动态卡片。"
+    "画面要适合产品讲解：科技感、商品卖点拆解、扫描线、粒子、HUD、数据图表、动态卡片、进度条。"
   ].join("\n");
 }
 
 function agentUserPrompt() {
   return [
-    `任务标题：${project.title}`,
+    `任务标题：${demoTopic}`,
     `视频时长：${duration}秒`,
     `口播内容：${scriptText}`,
-    "业务要求：生成餐饮探店/商品讲解风格的智能布景主画面。主画面要展示柴火鸡卖点、传统柴火烹饪、聚餐场景、香料和烟火气。右下角放数字人口播画中画，所以右下角避让。",
+    `业务要求：${demoRequirements}`,
     "请直接写可以运行的单文件 index.html。字体不要过大到溢出；中文要能显示；必须有清晰分镜切换；代码尽量简洁。"
   ].join("\n");
 }
@@ -111,6 +119,7 @@ function writeFiles(files) {
 }
 
 async function renderVideo(htmlPath, outPath, seconds) {
+  rmSync(framesDir, { recursive: true, force: true });
   mkdirSync(framesDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   try {
@@ -139,47 +148,86 @@ async function renderVideo(htmlPath, outPath, seconds) {
   ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
 }
 
-function srtTime(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds - Math.floor(seconds)) * 1000);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
-}
-
 function splitCaptions(text) {
-  const parts = String(text || "").split(/(?<=[。！？!?])/).map((item) => item.trim()).filter(Boolean);
+  const parts = String(text || "")
+    .replace(/\s+/g, " ")
+    .split(/(?<=[。！？!?.!?])\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
   return parts.length ? parts : [text.slice(0, 36)];
 }
 
-function buildSrt(text, seconds) {
-  const parts = splitCaptions(text).slice(0, 10);
+function buildCaptionSegments(text, seconds) {
+  const parts = splitCaptions(text).slice(0, Math.max(4, Math.ceil(seconds / 4)));
   const segment = seconds / parts.length;
-  return parts.map((part, index) => {
-    const start = index * segment;
-    const end = index === parts.length - 1 ? seconds : (index + 1) * segment;
-    return `${index + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${part}\n`;
-  }).join("\n");
+  return parts.map((part, index) => ({
+    index,
+    text: part,
+    start: index * segment,
+    end: index === parts.length - 1 ? seconds : (index + 1) * segment
+  }));
 }
 
-function escapeFilterPath(filePath) {
-  return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+async function createSubtitleOverlays(segments) {
+  rmSync(subtitleDir, { recursive: true, force: true });
+  mkdirSync(subtitleDir, { recursive: true });
+  const payloadPath = join(outDir, "caption-segments.json");
+  writeFileSync(payloadPath, JSON.stringify({ width, height, segments, outDir: subtitleDir }, null, 2));
+  const py = String.raw`
+import json, os, textwrap
+from PIL import Image, ImageDraw, ImageFont
+payload=json.load(open(r"${payloadPath}", "r", encoding="utf-8"))
+w=payload["width"]; h=payload["height"]; out=payload["outDir"]
+font_paths=[
+  "/System/Library/Fonts/PingFang.ttc",
+  "/System/Library/Fonts/STHeiti Light.ttc",
+  "/Library/Fonts/Arial Unicode.ttf",
+  "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+]
+font_path=next((p for p in font_paths if os.path.exists(p)), None)
+font=ImageFont.truetype(font_path, 32) if font_path else ImageFont.load_default()
+for seg in payload["segments"]:
+  img=Image.new("RGBA", (w,h), (0,0,0,0))
+  draw=ImageDraw.Draw(img)
+  text=seg["text"]
+  max_chars=18 if any(ord(c)>127 for c in text) else 21
+  lines=textwrap.wrap(text, width=max_chars)[:3]
+  block="\n".join(lines)
+  bbox=draw.multiline_textbbox((0,0), block, font=font, spacing=8, stroke_width=3)
+  x=44
+  y=1010 - (bbox[3]-bbox[1])
+  draw.multiline_text((x,y), block, font=font, fill=(255,255,255,245), spacing=8, stroke_width=3, stroke_fill=(0,0,0,190))
+  img.save(os.path.join(out, f"subtitle-{seg['index']+1:03d}.png"))
+`;
+  await execFileAsync("python3", ["-c", py], { timeout: 120000, maxBuffer: 1024 * 1024 * 4 });
+  return segments.map((segment) => ({
+    ...segment,
+    path: join(subtitleDir, `subtitle-${String(segment.index + 1).padStart(3, "0")}.png`)
+  }));
 }
 
-async function compose(mainPath, outPath, srtPath) {
+async function compose(mainPath, outPath, captionSegments) {
   if (!existsSync(audioPath)) throw new Error(`Audio not found: ${audioPath}`);
   if (!existsSync(presenterPath)) throw new Error(`Presenter video not found: ${presenterPath}`);
+  const captionInputs = captionSegments.flatMap((segment) => ["-i", segment.path]);
+  const captionFilters = captionSegments.reduce((filters, segment, index) => {
+    const inputIndex = 3 + index;
+    const from = index === 0 ? "composed" : `cap${index}`;
+    const to = index === captionSegments.length - 1 ? "v" : `cap${index + 1}`;
+    return `${filters}[${from}][${inputIndex}:v]overlay=0:0:enable='between(t,${segment.start.toFixed(3)},${segment.end.toFixed(3)})'[${to}];`;
+  }, "");
   await execFileAsync("ffmpeg", [
     "-y",
     "-i", mainPath,
     "-stream_loop", "-1",
     "-i", presenterPath,
     "-i", audioPath,
+    ...captionInputs,
     "-filter_complex",
     `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[base];` +
       `[1:v]scale=220:-1,crop=220:310:(iw-220)/2:40,setsar=1[pip];` +
       `[base][pip]overlay=W-w-28:H-h-28,drawbox=x=iw-220-28:y=ih-310-28:w=220:h=310:color=white@0.85:t=3,` +
-      `subtitles=filename='${escapeFilterPath(srtPath)}':force_style='Fontsize=20,MarginV=90,PrimaryColour=&H00FFFFFF&,OutlineColour=&HAA000000&,BorderStyle=1,Outline=2'[v]`,
+      `format=yuv420p[composed];${captionFilters}`,
     "-map", "[v]",
     "-map", "2:a:0",
     "-t", String(duration),
@@ -207,11 +255,13 @@ async function main() {
   writeFileSync(join(outDir, "agent-output.json"), JSON.stringify(agent, null, 2));
   const mainPath = join(outDir, "smart-scene-main.mp4");
   const finalPath = join(outDir, "smart-scene-agent-with-audio.mp4");
-  const srtPath = join(outDir, "captions.srt");
-  writeFileSync(srtPath, buildSrt(scriptText, duration));
+  const captionsPath = join(outDir, "captions.json");
+  const captions = buildCaptionSegments(scriptText, duration);
+  writeFileSync(captionsPath, JSON.stringify(captions, null, 2));
+  const overlays = await createSubtitleOverlays(captions);
   await renderVideo(join(workspaceDir, "index.html"), mainPath, duration);
-  await compose(mainPath, finalPath, srtPath);
-  process.stdout.write(JSON.stringify({ ok: true, finalPath, mainPath, srtPath, workspaceDir, duration }, null, 2) + "\n");
+  await compose(mainPath, finalPath, overlays);
+  process.stdout.write(JSON.stringify({ ok: true, finalPath, mainPath, captionsPath, workspaceDir, duration, projectId, audioPath, presenterPath, topic: demoTopic }, null, 2) + "\n");
 }
 
 main().catch((error) => {
