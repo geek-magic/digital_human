@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
@@ -34,6 +34,7 @@ const SMART_SCENE_HEIGHT = 1280;
 const SMART_SCENE_FPS = 24;
 const SMART_SCENE_PIP_WIDTH = 220;
 const SMART_SCENE_PIP_HEIGHT = 310;
+const SMART_SCENE_MODEL = process.env.DH_SMART_SCENE_MODEL || "";
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -3551,20 +3552,25 @@ function previewVideoFilter(subtitlesPath) {
   return `${base},subtitles='${escapeFilterPath(subtitlesPath)}':force_style='Fontsize=18,MarginV=150,PrimaryColour=&H00FFFFFF&,OutlineColour=&HAA000000&,BorderStyle=1,Outline=2'`;
 }
 
-async function createSimpleSubtitleOverlays(segments, outDir, baseVideoPath) {
+async function createSimpleSubtitleOverlays(segments, outDir, baseVideoPath, options = {}) {
   const selectedSegments = segments.filter((segment) => segment.text).slice(0, 120);
   if (!selectedSegments.length) return [];
   const media = await probeMediaInfo(baseVideoPath).catch(() => ({}));
   const width = Math.max(320, Math.ceil(Number(media.width || 1080) / 2) * 2);
   const height = Math.max(240, Math.ceil(Number(media.height || 1920) / 2) * 2);
+  const layout = options.layout === "smart_scene" ? "smart_scene" : "center_bottom";
   const overlayDir = join(outDir, "subtitle-overlays");
+  rmSync(overlayDir, { recursive: true, force: true });
   mkdirSync(overlayDir, { recursive: true });
   const payload = {
     width,
     height,
+    layout,
+    pipWidth: options.pipWidth || SMART_SCENE_PIP_WIDTH,
+    pipHeight: options.pipHeight || SMART_SCENE_PIP_HEIGHT,
     segments: selectedSegments.map((segment) => ({
       ...segment,
-      text: compactChinese(segment.text, 30),
+      text: compactChinese(segment.text, layout === "smart_scene" ? 42 : 30),
       path: join(overlayDir, `subtitle-${String(segment.index).padStart(3, "0")}.png`)
     }))
   };
@@ -3575,6 +3581,9 @@ from PIL import Image, ImageDraw, ImageFont
 payload = json.loads(sys.argv[1])
 width = int(payload["width"])
 height = int(payload["height"])
+layout = payload.get("layout", "center_bottom")
+pip_width = int(payload.get("pipWidth", 220))
+pip_height = int(payload.get("pipHeight", 310))
 font_paths = [
   "/System/Library/Fonts/PingFang.ttc",
   "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -3601,10 +3610,10 @@ def wrap_text(draw, text, fnt, max_width):
     lines.append(current)
   return lines[:2]
 
-font_size = max(22, min(52, int(height * 0.045)))
+font_size = max(22, min(52, int(height * (0.034 if layout == "smart_scene" else 0.045))))
 caption_font = font(font_size)
 line_gap = int(font_size * 1.35)
-max_width = int(width * 0.84)
+max_width = int(width * (0.43 if layout == "smart_scene" else 0.84))
 pad_x = int(width * 0.045)
 pad_y = int(font_size * 0.42)
 bottom_margin = max(28, int(height * 0.07))
@@ -3617,16 +3626,24 @@ for segment in payload["segments"]:
     img.save(segment["path"])
     continue
   text_width = max(draw.textbbox((0, 0), line, font=caption_font, stroke_width=2)[2] for line in lines)
-  box_width = min(width - pad_x * 2, text_width + pad_x * 2)
+  box_width = min(width - pad_x * 2, max_width + pad_x if layout == "smart_scene" else text_width + pad_x * 2)
   box_height = len(lines) * line_gap + pad_y * 2
-  x0 = int((width - box_width) / 2)
-  y0 = int(height - bottom_margin - box_height)
+  if layout == "smart_scene":
+    x0 = max(24, int(width * 0.06))
+    safe_bottom = height - pip_height - 34
+    y0 = max(int(height * 0.58), min(int(height - bottom_margin - box_height), safe_bottom - box_height))
+  else:
+    x0 = int((width - box_width) / 2)
+    y0 = int(height - bottom_margin - box_height)
   x1 = x0 + box_width
   y1 = y0 + box_height
   y = y0 + pad_y
   for line in lines:
     bbox = draw.textbbox((0, 0), line, font=caption_font, stroke_width=2)
-    x = int((width - (bbox[2] - bbox[0])) / 2)
+    if layout == "smart_scene":
+      x = x0 + int(pad_x * 0.35)
+    else:
+      x = int((width - (bbox[2] - bbox[0])) / 2)
     draw.text((x, y), line, font=caption_font, fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0, 220))
     y += line_gap
   img.save(segment["path"])
@@ -4047,13 +4064,15 @@ function safeSmartSceneFiles(payload = {}) {
 
 function smartSceneSystemPrompt() {
   return [
-    "你是一个 HyperFrames 视频工程智能体，负责为数字人口播视频生成主画面布景代码。",
+    "你是一个智能布景视频工程智能体，负责为数字人口播视频生成主画面布景代码。",
     "你只能输出 JSON，不要输出 Markdown。",
     "你要生成一个 720x1280 竖屏 HTML/CSS/JS 视频工程，适合逐帧渲染成 MP4。",
     "只生成一个自包含 index.html，CSS 和 JS 都内联在 HTML 中。",
     "必须包含 window.setFrameTime(t) 函数，t 为秒；渲染器会从 0 秒逐帧调用到视频结束。",
-    "右下角必须预留 260x350 的数字人画中画安全区，重要文字和核心元素不要放进右下角。",
+    "右下角必须预留 260x350 的数字人画中画安全区，重要文字、按钮、卖点卡、字幕占位和核心元素都不要放进右下角。",
     "字幕会由平台在最外层统一烧录，不要把口播字幕写进右下角数字人画面。",
+    "画面应服务商品讲解、知识讲解或方案讲解：可以使用产品扫描、卖点拆解、流程箭头、数据仪表盘、对比卡片、短视频成片预览、进度条、光效和分镜转场。",
+    "不要生成纯静态海报；每 3-5 秒需要有明显画面变化。",
     "不要引用外网资源，不要使用 fetch，不要使用 import，不要使用 eval，不要访问 localStorage/sessionStorage。",
     "只允许返回 files 数组，文件名只能是 index.html。"
   ].join("\n");
@@ -4073,15 +4092,22 @@ function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previe
     `口播文案：${script}`,
     `用户生成要求：${requirements || "无"}`,
     "",
-    "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片和进度动效。",
+    "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片、场景化示意和进度动效。",
+    "如果用户没有指定具体商品，就根据标题和口播内容推断一个最贴合的讲解对象，不要使用与口播无关的主题。",
     "代码输出 JSON 格式：",
     "{\"files\":[{\"path\":\"index.html\",\"content\":\"...\"}],\"notes\":\"...\"}",
     "index.html 必须是单文件可运行工程。"
   ].join("\n");
 }
 
-async function callSmartSceneAgent(db, project, options = {}) {
+function smartSceneProvider(db) {
   const provider = (db.apiProviders || []).find((item) => (item.providerId === "deepseek" || item.id === "provider-deepseek") && item.hasKey !== false && (item.apiKey || process.env[item.envKey]));
+  if (!provider) return null;
+  return SMART_SCENE_MODEL ? { ...provider, model: SMART_SCENE_MODEL } : provider;
+}
+
+async function callSmartSceneAgent(db, project, options = {}) {
+  const provider = smartSceneProvider(db);
   if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
   const messages = [
     { role: "system", content: smartSceneSystemPrompt() },
@@ -4097,7 +4123,7 @@ async function callSmartSceneAgent(db, project, options = {}) {
 }
 
 async function reviseSmartSceneAgent(db, previous, errorMessage, options = {}) {
-  const provider = (db.apiProviders || []).find((item) => (item.providerId === "deepseek" || item.id === "provider-deepseek") && item.hasKey !== false && (item.apiKey || process.env[item.envKey]));
+  const provider = smartSceneProvider(db);
   if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
   const previousFiles = previous.files.map((file) => `--- ${file.path} ---\n${file.content}`).join("\n\n");
   const messages = [
@@ -4131,6 +4157,7 @@ function writeSmartSceneFiles(workspaceDir, files) {
 
 async function renderSmartSceneHtml({ htmlPath, outPath, framesDir, duration, fps = SMART_SCENE_FPS, width = SMART_SCENE_WIDTH, height = SMART_SCENE_HEIGHT }) {
   const { chromium } = await import("playwright");
+  rmSync(framesDir, { recursive: true, force: true });
   mkdirSync(framesDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   try {
@@ -6673,7 +6700,11 @@ async function renderProject(projectId, options = {}) {
         smartScenePrompt
       });
       captionOverlays = generateSubtitles
-        ? await createSimpleSubtitleOverlays(captionSegments, outDir, smartSceneMain.path).catch(() => [])
+        ? await createSimpleSubtitleOverlays(captionSegments, outDir, smartSceneMain.path, {
+          layout: "smart_scene",
+          pipWidth: SMART_SCENE_PIP_WIDTH,
+          pipHeight: SMART_SCENE_PIP_HEIGHT
+        }).catch(() => [])
         : [];
       updateQueueProgress(options.queueId, { percent: 90, label: generateSubtitles ? "正在合成智能布景、数字人、口播音频和外层字幕。" : "正在合成智能布景、数字人和口播音频。", stage: "video" });
       packaged = await packageSmartSceneVideo({
