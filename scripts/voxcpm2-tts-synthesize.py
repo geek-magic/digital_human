@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 import traceback
 from pathlib import Path
@@ -21,6 +22,9 @@ def main() -> int:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--inference-timesteps", type=int, default=10)
     parser.add_argument("--cfg-value", type=float, default=2.0)
+    parser.add_argument("--seed", type=int, default=20260606)
+    parser.add_argument("--prompt-audio", default="")
+    parser.add_argument("--prompt-text", default="")
     args = parser.parse_args()
 
     model_path = Path(args.model).expanduser().resolve()
@@ -34,8 +38,15 @@ def main() -> int:
         raise ValueError("Text is empty.")
 
     import soundfile as sf
+    import numpy as np
     import torch
     from voxcpm import VoxCPM
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = resolve_device(args.device, torch)
     start = time.perf_counter()
@@ -51,6 +62,8 @@ def main() -> int:
     infer_start = time.perf_counter()
     wav = model.generate(
         text=args.text,
+        prompt_wav_path=str(Path(args.prompt_audio).expanduser().resolve()) if args.prompt_audio else None,
+        prompt_text=args.prompt_text if args.prompt_audio else None,
         reference_wav_path=str(ref_audio_path),
         inference_timesteps=args.inference_timesteps,
         cfg_value=args.cfg_value,
@@ -67,6 +80,8 @@ def main() -> int:
             "load_ms": load_ms,
             "infer_ms": int((time.perf_counter() - infer_start) * 1000),
             "device": device,
+            "seed": args.seed,
+            "continuation": bool(args.prompt_audio and args.prompt_text),
         },
     })
     return 0

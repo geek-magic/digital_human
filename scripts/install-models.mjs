@@ -37,6 +37,21 @@ const models = {
       license: "Apache-2.0"
     }
   },
+  llmQwen3b: {
+    repo: "mlx-community/Qwen2.5-3B-Instruct-4bit",
+    target: join(modelHome, "llm", "qwen2.5-3b-instruct-4bit-mlx"),
+    runtime: join(runtimeHome, "llm"),
+    packages: ["mlx-lm", "huggingface_hub[cli]"],
+    platforms: ["darwin"],
+    required: ["config.json", "tokenizer.json"],
+    protocol: {
+      protocolId: "digital-human.llm.script",
+      protocolVersion: "1.0",
+      engine: "Qwen2.5-3B-Instruct 4bit MLX",
+      weightSource: "https://huggingface.co/mlx-community/Qwen2.5-3B-Instruct-4bit",
+      license: "Apache-2.0"
+    }
+  },
   llmGguf: {
     repo: "Qwen/Qwen2.5-7B-Instruct-GGUF",
     target: join(modelHome, "llm", "qwen2.5-7b-instruct-q4-k-m-gguf"),
@@ -78,20 +93,6 @@ const models = {
       protocolVersion: "1.0",
       engine: "VoxCPM2",
       weightSource: "https://huggingface.co/openbmb/VoxCPM2",
-      license: "Apache-2.0"
-    }
-  },
-  ttsQwen3: {
-    repo: "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-    target: join(modelHome, "tts", "qwen3-tts-12hz-1.7b-base"),
-    runtime: join(runtimeHome, "tts"),
-    packages: ["qwen-tts", "voxcpm==2.0.3", "addict", "simplejson", "sortedcontainers", "soundfile", "huggingface_hub[cli]"],
-    required: ["config.json", "model.safetensors", "speech_tokenizer/model.safetensors"],
-    protocol: {
-      protocolId: "digital-human.tts.voice",
-      protocolVersion: "1.0",
-      engine: "Qwen3-TTS 12Hz 1.7B Base",
-      weightSource: "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
       license: "Apache-2.0"
     }
   }
@@ -497,10 +498,10 @@ function main() {
     return;
   }
   installCoreModel(models.llm);
+  installCoreModel(models.llmQwen3b);
   installCoreModel(models.llmGguf);
   installCoreModel(models.asr);
   installCoreModel(models.ttsVoxcpm2);
-  installCoreModel(models.ttsQwen3);
   ensureMuseTalkRepo();
   patchMuseTalkCompatibility();
   const museTalkPython = installMuseTalkRuntime();

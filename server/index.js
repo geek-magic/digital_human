@@ -1,7 +1,9 @@
 import express from "express";
 import multer from "multer";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
+import OSS from "ali-oss";
+import COS from "cos-nodejs-sdk-v5";
+import { createHmac, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
@@ -108,6 +110,20 @@ const modelCatalog = [
     installGuide: "macOS 执行 npm run install:models 会下载该模型。Windows 离线包请改用云端文本 Provider，或后续接入 GGUF/llama.cpp 文本模型。"
   },
   {
+    id: "qwen2-5-3b-instruct-4bit-mlx",
+    name: "Qwen2.5-3B-Instruct 4bit MLX",
+    type: "llm",
+    supportedPlatforms: ["darwin"],
+    runtime: "内置 LLM CLI",
+    defaultPath: "llm/qwen2.5-3b-instruct-4bit-mlx",
+    protocolId: "llmScriptV1",
+    recommended: false,
+    bundleRole: "轻量口播文案模型",
+    license: "Apache 2.0",
+    description: "轻量级千问 3B 指令模型，用于标题、润色和较短口播文案生成。该本地 MLX 运行时仅支持 Apple Silicon macOS。",
+    installGuide: "macOS 执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/llm/qwen2.5-3b-instruct-4bit-mlx，或通过模型目录同名路径提供权重。"
+  },
+  {
     id: "qwen2-5-7b-instruct-q4-k-m-gguf",
     name: "Qwen2.5-7B-Instruct Q4_K_M GGUF",
     type: "llm",
@@ -148,19 +164,6 @@ const modelCatalog = [
     installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/tts/voxcpm2，或通过 DH_VOXCPM2_MODEL_PATH 指定权重目录。"
   },
   {
-    id: "qwen3-tts-1-7b-base",
-    name: "Qwen3-TTS",
-    type: "tts",
-    runtime: "内置 TTS Adapter",
-    defaultPath: "tts/qwen3-tts-12hz-1.7b-base",
-    protocolId: "ttsVoiceV1",
-    recommended: false,
-    bundleRole: "口播与克隆音色模型",
-    license: "Apache 2.0",
-    description: "用于中文口播 TTS 和音色克隆。",
-    installGuide: "执行 npm run install:models 会下载该模型。独立部署时放到 MODEL_HOME/tts/qwen3-tts-12hz-1.7b-base，或通过 DH_TTS_MODEL_PATH 指定权重目录。"
-  },
-  {
     id: "musetalk-v15",
     name: "MuseTalk v1.5",
     type: "avatar",
@@ -190,26 +193,26 @@ const modelCatalog = [
 
 const apiProviderCatalog = [
   {
-    id: "openai-compatible",
-    name: "OpenAI Compatible",
-    capabilities: ["llm"],
-    envKey: "OPENAI_API_KEY",
-    endpoint: "https://api.openai.com/v1/chat/completions",
-    defaultModel: "gpt-4o-mini",
-    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
-    description: "兼容 OpenAI Chat Completions 的云端文本模型。",
-    setupGuide: "填写 API Key；如使用第三方兼容服务，可改 endpoint 和模型名。"
-  },
-  {
     id: "deepseek",
     name: "DeepSeek",
     capabilities: ["llm"],
     envKey: "DEEPSEEK_API_KEY",
     endpoint: "https://api.deepseek.com/chat/completions",
-    defaultModel: "deepseek-chat",
-    models: ["deepseek-chat", "deepseek-reasoner"],
+    defaultModel: "deepseek-v4-flash",
+    models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
     description: "DeepSeek 云端文本模型，走 OpenAI-compatible 协议。",
     setupGuide: "填写 DeepSeek API Key。"
+  },
+  {
+    id: "volcengine-ark",
+    name: "火山方舟 Doubao",
+    capabilities: ["llm"],
+    envKey: "VOLCENGINE_ARK_API_KEY",
+    endpoint: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    defaultModel: "",
+    models: [],
+    description: "火山方舟 OpenAI-compatible 文本模型，模型 ID 通常填写 endpoint id。",
+    setupGuide: "填写火山方舟 API Key；模型 ID 填控制台创建的 endpoint id。"
   },
   {
     id: "dashscope-qwen",
@@ -223,6 +226,72 @@ const apiProviderCatalog = [
     setupGuide: "填写 DASHSCOPE_API_KEY，可按需修改模型名。"
   },
   {
+    id: "tencent-hunyuan",
+    name: "腾讯混元",
+    capabilities: ["llm"],
+    envKey: "TENCENT_HUNYUAN_API_KEY",
+    endpoint: "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+    defaultModel: "hunyuan-turbos",
+    models: ["hunyuan-turbos", "hunyuan-lite", "hunyuan-standard", "hunyuan-pro"],
+    description: "腾讯混元 OpenAI-compatible 文本模型。",
+    setupGuide: "填写腾讯混元 API Key；按需选择或填写模型 ID。"
+  },
+  {
+    id: "baidu-qianfan",
+    name: "百度千帆",
+    capabilities: ["llm"],
+    envKey: "BAIDU_QIANFAN_API_KEY",
+    endpoint: "https://qianfan.baidubce.com/v2/chat/completions",
+    defaultModel: "ernie-4.0-turbo-8k",
+    models: ["ernie-4.0-turbo-8k", "ernie-4.0-8k", "ernie-3.5-8k"],
+    description: "百度智能云千帆 OpenAI-compatible 文本模型。",
+    setupGuide: "填写千帆 API Key；模型 ID 按千帆控制台开通能力选择。"
+  },
+  {
+    id: "zhipu",
+    name: "智谱 GLM",
+    capabilities: ["llm"],
+    envKey: "ZHIPU_API_KEY",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    defaultModel: "glm-4-flash",
+    models: ["glm-4-flash", "glm-4-plus", "glm-4-air"],
+    description: "智谱 AI GLM OpenAI-compatible 文本模型。",
+    setupGuide: "填写智谱 API Key；按需选择 GLM 模型。"
+  },
+  {
+    id: "moonshot",
+    name: "月之暗面 Kimi",
+    capabilities: ["llm"],
+    envKey: "MOONSHOT_API_KEY",
+    endpoint: "https://api.moonshot.cn/v1/chat/completions",
+    defaultModel: "moonshot-v1-8k",
+    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+    description: "Moonshot/Kimi OpenAI-compatible 文本模型。",
+    setupGuide: "填写 Moonshot API Key；按上下文长度选择模型。"
+  },
+  {
+    id: "iflytek-spark",
+    name: "讯飞星火",
+    capabilities: ["llm"],
+    envKey: "XFYUN_SPARK_API_KEY",
+    endpoint: "https://spark-api-open.xf-yun.com/v1/chat/completions",
+    defaultModel: "generalv3.5",
+    models: ["generalv3.5", "generalv3", "lite"],
+    description: "讯飞星火文本模型，按 OpenAI-compatible 网关方式接入。",
+    setupGuide: "填写星火 API Key；如账号接口路径不同，可修改 endpoint。"
+  },
+  {
+    id: "minimax",
+    name: "MiniMax",
+    capabilities: ["llm"],
+    envKey: "MINIMAX_API_KEY",
+    endpoint: "https://api.minimax.chat/v1/chat/completions",
+    defaultModel: "MiniMax-Text-01",
+    models: ["MiniMax-Text-01", "abab6.5s-chat", "abab6.5-chat"],
+    description: "MiniMax 文本模型，按 OpenAI-compatible 网关方式接入。",
+    setupGuide: "填写 MiniMax API Key；如账号仍使用旧版 group_id 接口，可填兼容网关 endpoint。"
+  },
+  {
     id: "custom",
     name: "自定义 OpenAI-compatible",
     capabilities: ["llm"],
@@ -234,48 +303,43 @@ const apiProviderCatalog = [
     setupGuide: "填写 endpoint、模型 ID 和 API Key。"
   },
   {
-    id: "openai-asr",
-    name: "OpenAI ASR",
+    id: "volcengine-asr",
+    name: "火山引擎 ASR",
     capabilities: ["asr"],
-    envKey: "OPENAI_API_KEY",
-    endpoint: "https://api.openai.com/v1/audio/transcriptions",
-    defaultModel: "gpt-4o-mini-transcribe",
-    models: ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"],
-    description: "兼容 OpenAI audio/transcriptions 的云端 ASR。",
-    setupGuide: "填写 API Key；如使用兼容服务，可改 endpoint 和模型 ID。"
+    envKey: "VOLCENGINE_ASR_API_KEY",
+    endpoint: "",
+    defaultModel: "volcengine-asr",
+    models: ["volcengine-asr"],
+    description: "火山引擎语音识别能力。当前通过可配置 endpoint 接入，适合后续绑定火山专用 ASR Adapter。",
+    setupGuide: "填写火山引擎 ASR API Key、endpoint 和模型/服务 ID。"
   },
   {
-    id: "custom-asr",
-    name: "自定义 ASR Provider",
-    capabilities: ["asr"],
-    envKey: "CUSTOM_ASR_API_KEY",
-    endpoint: "",
+    id: "volcengine-tts",
+    name: "火山引擎 TTS V3",
+    capabilities: ["tts"],
+    envKey: "VOLCENGINE_TTS_API_KEY",
+    endpoint: "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
     defaultModel: "",
     models: [],
-    description: "自定义兼容 OpenAI audio/transcriptions 的 ASR 服务。",
-    setupGuide: "填写 endpoint、模型 ID 和 API Key。"
+    resourceId: "seed-icl-2.0",
+    description: "火山引擎豆包语音合成 V3 HTTP Chunked 接口，支持新版 API Key 和 S_ 开头的克隆音色。",
+    setupGuide: "填写新版 API Key；模型 ID 填 speakerId，例如 S_xxx。克隆音色通常使用 seed-icl-2.0，如资源不匹配可改为 seed-icl-1.0。"
   },
   {
-    id: "openai-tts",
-    name: "OpenAI TTS",
-    capabilities: ["tts"],
-    envKey: "OPENAI_API_KEY",
-    endpoint: "https://api.openai.com/v1/audio/speech",
-    defaultModel: "gpt-4o-mini-tts",
-    models: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
-    description: "兼容 OpenAI audio/speech 的云端 TTS。",
-    setupGuide: "填写 API Key；如使用兼容服务，可改 endpoint 和模型 ID。"
-  },
-  {
-    id: "custom-tts",
-    name: "自定义 TTS Provider",
-    capabilities: ["tts"],
-    envKey: "CUSTOM_TTS_API_KEY",
-    endpoint: "",
-    defaultModel: "",
-    models: [],
-    description: "自定义兼容 OpenAI audio/speech 的 TTS 服务。",
-    setupGuide: "填写 endpoint、模型 ID 和 API Key。"
+    id: "tencent-avatar",
+    name: "腾讯云智能数智人",
+    capabilities: ["avatar"],
+    envKey: "TENCENT_IVH_CREDENTIALS",
+    endpoint: "https://gw.tvs.qq.com",
+    defaultModel: "videomakenotrain",
+    models: ["videomakenotrain"],
+    publicBaseUrl: "",
+    cosRegion: "",
+    cosBucket: "",
+    cosPathPrefix: "digital-human-temp",
+    cosExpiresSeconds: 1800,
+    description: "腾讯云智能数智人视频免训练接口，可基于真人视频素材和原声音频生成口型匹配视频。",
+    setupGuide: "填写数智人资源管理中心的 AppKey 和 Security/AccessToken；音视频中转使用阿里云 OSS，平台会上传素材和音频并在生成完成后删除临时对象。"
   }
 ];
 
@@ -368,13 +432,27 @@ const defaultDb = {
     keepAsrModelWarm: false,
     keepTtsModelWarm: false,
     keepAvatarModelWarm: false,
-    videoConcurrency: 1,
+    taskConcurrency: 1,
     avatarSegmentSeconds: 30,
     defaultModelIds: {
       llm: defaultLocalModelId("llm"),
       asr: "model-qwen3-asr-1-7b",
       tts: "model-voxcpm2",
       avatar: "model-musetalk-v15"
+    },
+    defaultAvatarAssetId: "",
+    defaultVoiceId: "",
+    defaultVolcengineSpeakerId: process.env.VOLCENGINE_DEFAULT_SPEAKER_ID || "",
+    objectStorage: {
+      provider: "aliyun-oss",
+      enabled: false,
+      accessKeyId: "",
+      accessKeySecret: "",
+      bucket: "",
+      region: "oss-cn-hangzhou",
+      endpoint: "",
+      pathPrefix: "digital-human-temp",
+      expiresSeconds: 600
     }
   }
 };
@@ -444,8 +522,14 @@ function normalizeDb(db) {
   db.settings.keepAsrModelWarm = false;
   db.settings.keepTtsModelWarm = false;
   db.settings.keepAvatarModelWarm = false;
-  db.settings.videoConcurrency = clampNumber(db.settings.videoConcurrency, 1, 4, 1, true);
+  delete db.settings.allowParallelTasks;
+  db.settings.taskConcurrency = clampNumber(db.settings.taskConcurrency, 1, 2, 1, true);
+  delete db.settings.videoConcurrency;
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
+  db.settings.defaultAvatarAssetId ||= "";
+  db.settings.defaultVoiceId ||= "";
+  db.settings.defaultVolcengineSpeakerId ||= process.env.VOLCENGINE_DEFAULT_SPEAKER_ID || "";
+  db.settings.objectStorage = normalizeObjectStorageConfig(db.settings.objectStorage || {});
   db.settings.defaultTextModelId ||= defaultLocalModelId("llm");
   if (db.settings.defaultTextModelId === "model-qwen3-5-27b-4bit-mlx") {
     db.settings.defaultTextModelId = defaultLocalModelId("llm");
@@ -457,6 +541,7 @@ function normalizeDb(db) {
   if (!db.settings.defaultModelIds.tts || db.settings.defaultModelIds.tts === "model-qwen3-tts-1-7b-base") {
     db.settings.defaultModelIds.tts = "model-voxcpm2";
   }
+  db.models = db.models.filter((model) => model.id !== "model-qwen3-tts-1-7b-base" && model.catalogId !== "qwen3-tts-1-7b-base");
   db.projects = db.projects.map(normalizeProject);
   db.queueItems = db.queueItems.map(normalizeQueueItem);
   for (const item of apiProviderCatalog) {
@@ -468,6 +553,13 @@ function normalizeDb(db) {
       existing.envKey = item.envKey;
       existing.endpoint ||= item.endpoint;
       existing.model ||= item.defaultModel || "";
+      existing.resourceId ||= item.resourceId || "";
+      existing.publicBaseUrl ||= item.publicBaseUrl || "";
+      existing.cosRegion ||= item.cosRegion || "";
+      existing.cosBucket ||= item.cosBucket || "";
+      existing.cosPathPrefix ||= item.cosPathPrefix || "";
+      existing.cosExpiresSeconds ||= item.cosExpiresSeconds || 1800;
+      existing.voiceName ||= item.voiceName || "";
       existing.models = item.models || [];
       existing.description = item.description;
       existing.setupGuide = item.setupGuide;
@@ -526,6 +618,12 @@ function normalizeDb(db) {
     db.settings.defaultModelIds.llm = db.settings.defaultTextModelId;
   } else {
     db.settings.defaultModelIds.llm = db.settings.defaultTextModelId;
+  }
+  if (db.settings.defaultAvatarAssetId && !db.avatarAssets?.some((asset) => asset.id === db.settings.defaultAvatarAssetId && !asset.deletedAt)) {
+    db.settings.defaultAvatarAssetId = "";
+  }
+  if (db.settings.defaultVoiceId && !db.voices?.some((voice) => voice.id === db.settings.defaultVoiceId && !voice.deletedAt)) {
+    db.settings.defaultVoiceId = "";
   }
   return db;
 }
@@ -676,6 +774,8 @@ function normalizeVideoVersion(project, version, index) {
     videoSettings: normalizeVideoSettings(version.videoSettings || project.videoSettings),
     smartSceneEnabled: Boolean(version.smartSceneEnabled || artifactVideo.smartSceneEnabled),
     smartScenePrompt: version.smartScenePrompt || artifactVideo.smartScenePrompt || "",
+    smartSceneLayoutMode: version.smartSceneLayoutMode || artifactVideo.smartSceneLayoutMode || project.smartSceneLayoutMode || "pip",
+    skipLipSync: Boolean(version.skipLipSync || artifactVideo.skipLipSync || project.skipLipSync),
     artifact: {
       video: {
         ...artifactVideo,
@@ -701,6 +801,7 @@ function normalizeProject(project) {
   project.generateSubtitles = Boolean(project.generateSubtitles);
   project.smartSceneEnabled = Boolean(project.smartSceneEnabled);
   project.smartScenePrompt ||= "";
+  project.smartSceneLayoutMode = ["pip", "transparent_overlay"].includes(project.smartSceneLayoutMode) ? project.smartSceneLayoutMode : "pip";
   project.platforms = project.platforms?.length ? project.platforms : ["douyin", "xiaohongshu", "wechat"];
   project.scriptModelId ||= "";
   project.ttsModelId ||= "";
@@ -711,6 +812,7 @@ function normalizeProject(project) {
   project.backgroundMusicAssetId ||= "";
   project.backgroundMusicVolume = clampNumber(project.backgroundMusicVolume, 0, 1, 0.2);
   project.videoSettings = normalizeVideoSettings(project.videoSettings);
+  project.skipLipSync = Boolean(project.skipLipSync);
   project.artifacts ||= {};
   project.scriptVersions = (project.scriptVersions || []).map((version, index) => normalizeScriptVersion(project, version, index));
   if (!project.scriptVersions.length && project.artifacts.script) {
@@ -891,11 +993,7 @@ function normalizeVideoSettings(settings = {}) {
 }
 
 function applyRuntimeVideoSettings(db, settings = {}) {
-  const normalized = normalizeVideoSettings(settings);
-  return {
-    ...normalized,
-    batchSize: clampNumber(db.settings?.videoConcurrency, 1, 4, normalized.batchSize, true)
-  };
+  return normalizeVideoSettings(settings);
 }
 
 function readDb() {
@@ -927,6 +1025,45 @@ function statusTextForQueue(status = "") {
 
 function publicPath(path) {
   return `/storage/${relative(storageDir, path).split("/").join("/")}`;
+}
+
+function isInsideDir(parent, target) {
+  const rel = relative(parent, target);
+  return Boolean(rel) && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+function removeArtifactPath(targetPath, keepPaths = new Set()) {
+  if (!targetPath || keepPaths.has(targetPath) || !existsSync(targetPath) || !isInsideDir(artifactDir, targetPath)) return false;
+  rmSync(targetPath, { recursive: true, force: true });
+  return true;
+}
+
+function cleanupRenderIntermediateArtifacts(outDir, keepPaths = []) {
+  const keep = new Set(keepPaths.filter(Boolean));
+  const targets = [
+    "musetalk-result",
+    "smart-scene",
+    "avatar-segments",
+    "optimized",
+    "sources",
+    "segments",
+    "digital-human.mp4",
+    "digital-human-musetalk.mp4",
+    "digital-human.with-subtitles.mp4",
+    "digital-human-preview.mp4",
+    "digital-human-preview.with-subtitles.mp4",
+    "smart-scene-main.mp4",
+    "musetalk-input.mp4",
+    "musetalk-output-concat.mp4",
+    "avatar-render-input.json",
+    "avatar-render-error.json",
+    "avatar-segments.txt"
+  ].map((name) => join(outDir, name));
+  let removed = 0;
+  for (const target of targets) {
+    if (removeArtifactPath(target, keep)) removed += 1;
+  }
+  return removed;
 }
 
 function commandExists(command) {
@@ -1120,11 +1257,54 @@ function maskSecret(value) {
   return `${value.slice(0, 4)}****${value.slice(-4)}`;
 }
 
+function normalizeObjectStorageConfig(value = {}) {
+  const provider = "aliyun-oss";
+  const region = String(value.region || process.env.ALIYUN_OSS_REGION || "oss-cn-hangzhou").trim();
+  return {
+    provider,
+    enabled: Boolean(value.enabled),
+    accessKeyId: String(value.accessKeyId || process.env.ALIYUN_OSS_ACCESS_KEY_ID || "").trim(),
+    accessKeySecret: String(value.accessKeySecret || process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || "").trim(),
+    bucket: String(value.bucket || process.env.ALIYUN_OSS_BUCKET || "").trim(),
+    region,
+    endpoint: String(value.endpoint || process.env.ALIYUN_OSS_ENDPOINT || "").trim().replace(/^https?:\/\//, ""),
+    pathPrefix: String(value.pathPrefix || process.env.ALIYUN_OSS_PATH_PREFIX || "digital-human-temp").trim().replace(/^\/+|\/+$/g, ""),
+    expiresSeconds: 600
+  };
+}
+
+function publicObjectStorageConfig(value = {}) {
+  const config = normalizeObjectStorageConfig(value);
+  return {
+    ...config,
+    accessKeyId: undefined,
+    accessKeySecret: undefined,
+    hasAccessKeyId: Boolean(config.accessKeyId),
+    maskedAccessKeyId: process.env.ALIYUN_OSS_ACCESS_KEY_ID ? "ALIYUN_OSS_ACCESS_KEY_ID 环境变量" : maskSecret(config.accessKeyId),
+    hasAccessKeySecret: Boolean(config.accessKeySecret),
+    maskedAccessKeySecret: process.env.ALIYUN_OSS_ACCESS_KEY_SECRET ? "ALIYUN_OSS_ACCESS_KEY_SECRET 环境变量" : maskSecret(config.accessKeySecret)
+  };
+}
+
+function objectStorageStatus(config = {}) {
+  const normalized = normalizeObjectStorageConfig(config);
+  const missing = [];
+  if (!normalized.enabled) missing.push("未启用");
+  if (!normalized.accessKeyId) missing.push("AccessKeyId");
+  if (!normalized.accessKeySecret) missing.push("AccessKeySecret");
+  if (!normalized.bucket) missing.push("Bucket");
+  if (!normalized.region) missing.push("Region");
+  return {
+    status: missing.length ? "missing" : "configured",
+    message: missing.length ? `阿里云 OSS 配置缺失：${missing.join("、")}` : "阿里云 OSS 已配置，将作为云端数字人的临时音视频中转。"
+  };
+}
+
 function providerFromCatalog(item, existing = {}) {
   const envValue = process.env[item.envKey] || "";
   const hasKey = Boolean(envValue || existing.apiKey);
   return {
-    id: `provider-${item.id}`,
+    id: existing.id || `provider-${item.id}-${randomUUID()}`,
     providerId: item.id,
     name: item.name,
     capabilities: item.capabilities,
@@ -1132,6 +1312,15 @@ function providerFromCatalog(item, existing = {}) {
     envKey: item.envKey,
     endpoint: existing.endpoint || item.endpoint,
     model: existing.model || item.defaultModel || "",
+    resourceId: existing.resourceId || item.resourceId || "",
+    publicBaseUrl: existing.publicBaseUrl || item.publicBaseUrl || "",
+    cosSecretId: existing.cosSecretId || "",
+    cosSecretKey: existing.cosSecretKey || "",
+    cosRegion: existing.cosRegion || item.cosRegion || "",
+    cosBucket: existing.cosBucket || item.cosBucket || "",
+    cosPathPrefix: existing.cosPathPrefix || item.cosPathPrefix || "",
+    cosExpiresSeconds: existing.cosExpiresSeconds || item.cosExpiresSeconds || 1800,
+    voiceName: existing.voiceName || item.voiceName || "",
     models: item.models || [],
     description: item.description,
     setupGuide: item.setupGuide,
@@ -1144,18 +1333,50 @@ function providerFromCatalog(item, existing = {}) {
 }
 
 function publicProvider(provider) {
-  const { apiKey, ...safe } = provider;
+  const { apiKey, cosSecretKey, ...safe } = provider;
+  let tencentCredentials = null;
+  if (provider.providerId === "tencent-avatar" || provider.id === "tencent-avatar" || provider.id === "provider-tencent-avatar") {
+    try {
+      tencentCredentials = apiKey || process.env[provider.envKey] ? parseTencentIvhCredentials(provider) : null;
+    } catch {
+      tencentCredentials = null;
+    }
+  }
   return {
     ...safe,
-    hasKey: Boolean(apiKey || process.env[provider.envKey])
+    cosSecretKey: undefined,
+    hasKey: Boolean(apiKey || process.env[provider.envKey]),
+    maskedAppKey: tencentCredentials?.appkey ? maskSecret(tencentCredentials.appkey) : "",
+    maskedAccessToken: tencentCredentials?.accessToken ? maskSecret(tencentCredentials.accessToken) : "",
+    hasCosSecretKey: Boolean(cosSecretKey || process.env.TENCENT_COS_SECRET_KEY),
+    maskedCosSecretKey: process.env.TENCENT_COS_SECRET_KEY ? "TENCENT_COS_SECRET_KEY 环境变量" : maskSecret(cosSecretKey || "")
+  };
+}
+
+function publicSettings(settings = {}) {
+  return {
+    ...settings,
+    objectStorage: publicObjectStorageConfig(settings.objectStorage || {})
   };
 }
 
 function detectProvider(provider) {
   const hasKey = Boolean(provider.apiKey || process.env[provider.envKey]);
   const missingConfig = [];
+  const providerKey = provider.providerId || provider.id;
+  const objectStorage = objectStorageStatus(readDb().settings?.objectStorage || {});
+  const hasTencentCos = objectStorage.status === "configured" || Boolean(
+    (provider.cosSecretId || process.env.TENCENT_COS_SECRET_ID) &&
+    (provider.cosSecretKey || process.env.TENCENT_COS_SECRET_KEY) &&
+    (provider.cosRegion || process.env.TENCENT_COS_REGION) &&
+    (provider.cosBucket || process.env.TENCENT_COS_BUCKET)
+  );
+  const hasTencentPublicBase = Boolean(provider.publicBaseUrl || process.env.DH_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL);
   if (!provider.endpoint) missingConfig.push("Endpoint");
-  if (!provider.model) missingConfig.push("模型 ID");
+  if (providerKey === "volcengine-tts" && !provider.model) missingConfig.push("Speaker ID");
+  if (providerKey !== "volcengine-tts" && !provider.model) missingConfig.push("模型 ID");
+  if (providerKey === "volcengine-tts" && !provider.resourceId) missingConfig.push("Resource ID");
+  if (providerKey === "tencent-avatar" && !hasTencentCos && !hasTencentPublicBase) missingConfig.push("阿里云 OSS 临时中转配置");
   if (!hasKey) missingConfig.push("API Key");
   return {
     status: missingConfig.length ? "missing" : "configured",
@@ -1410,6 +1631,8 @@ function queueSignature(project, type, payload = {}) {
       backgroundMusicVolume: clampNumber(payload.backgroundMusicVolume ?? project.backgroundMusicVolume, 0, 1, 0.2),
       smartSceneEnabled: Boolean(payload.smartSceneEnabled ?? project.smartSceneEnabled),
       smartScenePrompt: payload.smartScenePrompt || project.smartScenePrompt || "",
+      skipLipSync: Boolean(payload.skipLipSync ?? project.skipLipSync),
+      avatarModelId: payload.avatarModelId || project.avatarModelId || db.settings.defaultModelIds?.avatar || "",
       previewDuration: Number(payload.previewDuration || 0),
       variantLabel: payload.variantLabel || "",
       videoSettings: normalizeVideoSettings(payload.videoSettings || project.videoSettings)
@@ -1424,7 +1647,10 @@ function visibleProjects(db) {
 
 const activeQueueItemIds = new Set();
 let queueLoopScheduled = false;
-const queueConcurrency = Math.max(1, Number(process.env.DIGITAL_HUMAN_QUEUE_CONCURRENCY || 3));
+
+function queueConcurrencyFor(db) {
+  return clampNumber(db.settings?.taskConcurrency, 1, 2, 1, true);
+}
 
 function scheduleQueue() {
   if (queueLoopScheduled) return;
@@ -1480,6 +1706,7 @@ function enqueueProjectJob(projectId, type, payload = {}) {
   db.queueItems.unshift(item);
   project.status = "queued";
   project.activeQueueId = item.id;
+  project.lastError = "";
   setProjectProgress(project, {
     ...item.progress,
     status: item.status,
@@ -1492,122 +1719,13 @@ function enqueueProjectJob(projectId, type, payload = {}) {
   return publicQueueItem(item, db);
 }
 
-function startImmediateProjectJob(projectId, type, payload = {}) {
-  const db = readDb();
-  const project = ensureProject(db, projectId);
-  const signature = queueSignature(project, type, payload);
-  const duplicate = activeQueueItems(db).find((item) => item.projectId === projectId && item.type === type && item.signature === signature);
-  if (duplicate) {
-    const err = new Error("相同参数的任务正在执行，请不要重复提交。");
-    err.status = 409;
-    throw err;
-  }
-  const stage = queueStageMap[type] || project.currentStage || "input";
-  const item = normalizeQueueItem({
-    id: `task-${randomUUID()}`,
-    projectId,
-    type,
-    label: queueTypeLabels[type] || type,
-    status: "running",
-    payload,
-    signature,
-    progress: {
-      percent: type === "generate_script" ? 10 : 12,
-      label: type === "generate_script" ? "已提交，正在生成口播文案。" : "已提交，正在生成口播音频。",
-      stage,
-      updatedAt: now()
-    },
-    attempts: 1,
-    createdAt: now(),
-    startedAt: now(),
-    updatedAt: now()
-  });
-  db.queueItems.unshift(item);
-  project.status = "running";
-  project.activeQueueId = item.id;
-  setProjectProgress(project, {
-    ...item.progress,
-    status: item.status,
-    queueId: item.id
-  });
-  if (stage && stage !== "input") setStage(project, stage, "running", item.progress.label);
-  pushJob(db, project.id, type, "running", `${item.label}已开始执行。`);
-  writeDb(db);
-  runImmediateItem(item).catch((error) => console.error("Immediate task crashed:", error));
-  return publicQueueItem(item, db);
-}
-
-async function runImmediateItem(item) {
-  try {
-    if (item.type === "generate_script") await generateScriptProject(item.projectId, { queueId: item.id, payload: item.payload });
-    else if (item.type === "synthesize_speech") await synthesizeProject(item.projectId, { queueId: item.id, payload: item.payload });
-    else throw new Error(`Unsupported immediate task type: ${item.type}`);
-    const doneDb = readDb();
-    const doneItem = doneDb.queueItems.find((entry) => entry.id === item.id);
-    const doneProject = doneDb.projects.find((entry) => entry.id === item.projectId);
-    if (doneItem) {
-      doneItem.status = "completed";
-      doneItem.finishedAt = now();
-      doneItem.updatedAt = now();
-      doneItem.progress = {
-        ...(doneItem.progress || {}),
-        percent: 100,
-        label: doneItem.progress?.label || "任务已完成。",
-        updatedAt: now()
-      };
-    }
-    if (doneProject) {
-      const nextActive = activeQueueItems(doneDb).find((entry) => entry.projectId === doneProject.id && entry.id !== doneItem?.id);
-      doneProject.activeQueueId = nextActive?.id || "";
-      if (nextActive) doneProject.status = "running";
-      setProjectProgress(doneProject, {
-        percent: 100,
-        label: doneItem?.progress?.label || "任务已完成。",
-        stage: doneItem?.progress?.stage || doneProject.currentStage,
-        status: doneProject.status,
-        queueId: doneItem?.id || ""
-      });
-    }
-    writeDb(doneDb);
-  } catch (error) {
-    const failDb = readDb();
-    const failedItem = failDb.queueItems.find((entry) => entry.id === item.id);
-    const failedProject = failDb.projects.find((entry) => entry.id === item.projectId);
-    const message = error?.message || "任务执行失败";
-    if (failedItem) {
-      failedItem.status = "failed";
-      failedItem.lastError = message;
-      failedItem.finishedAt = now();
-      failedItem.updatedAt = now();
-      failedItem.progress = {
-        ...(failedItem.progress || {}),
-        label: message,
-        updatedAt: now()
-      };
-    }
-    if (failedProject) {
-      const stage = failedItem?.progress?.stage || queueStageMap[failedItem?.type] || failedProject.currentStage;
-      const nextActive = activeQueueItems(failDb).find((entry) => entry.projectId === failedProject.id && entry.id !== failedItem?.id);
-      failedProject.status = nextActive ? "running" : "failed";
-      failedProject.activeQueueId = nextActive?.id || "";
-      failedProject.lastError = message;
-      setProjectProgress(failedProject, {
-        percent: failedItem?.progress?.percent || 0,
-        label: message,
-        stage,
-        status: failedProject.status,
-        queueId: failedItem?.id || ""
-      });
-      if (stage && failedProject.stageState?.[stage] && !nextActive) setStage(failedProject, stage, "failed", message);
-      pushJob(failDb, failedProject.id, failedItem?.type || "task", "failed", message);
-    }
-    writeDb(failDb);
-  }
-}
-
 async function processQueue() {
   const db = readDb();
-  const available = Math.max(0, queueConcurrency - activeQueueItemIds.size);
+  const runningIds = new Set([
+    ...activeQueueItemIds,
+    ...(db.queueItems || []).filter((item) => item.status === "running").map((item) => item.id)
+  ]);
+  const available = Math.max(0, queueConcurrencyFor(db) - runningIds.size);
   if (!available) return;
   const nextItems = [...(db.queueItems || [])]
     .filter((item) => item.status === "queued")
@@ -1616,30 +1734,31 @@ async function processQueue() {
   if (!nextItems.length) return;
   for (const next of nextItems) {
     activeQueueItemIds.add(next.id);
-  next.status = "running";
-  next.attempts = (next.attempts || 0) + 1;
-  next.startedAt = now();
-  next.updatedAt = now();
-  next.progress = {
-    ...(next.progress || {}),
-    percent: Math.max(1, Number(next.progress?.percent || 0)),
-    label: "Worker 已接手，正在准备执行。",
-    stage: queueStageMap[next.type] || "input",
-    updatedAt: now()
-  };
-  const project = db.projects.find((item) => item.id === next.projectId);
-  if (project) {
-    project.status = "running";
-    project.activeQueueId = next.id;
-    setProjectProgress(project, {
-      ...next.progress,
-      status: next.status,
-      queueId: next.id
-    });
-    if (next.progress.stage && next.progress.stage !== "input") {
-      setStage(project, next.progress.stage, "running", next.progress.label);
+    next.status = "running";
+    next.attempts = (next.attempts || 0) + 1;
+    next.startedAt = now();
+    next.updatedAt = now();
+    next.progress = {
+      ...(next.progress || {}),
+      percent: Math.max(1, Number(next.progress?.percent || 0)),
+      label: "Worker 已接手，正在准备执行。",
+      stage: queueStageMap[next.type] || "input",
+      updatedAt: now()
+    };
+    const project = db.projects.find((item) => item.id === next.projectId);
+    if (project) {
+      project.status = "running";
+      project.activeQueueId = next.id;
+      project.lastError = "";
+      setProjectProgress(project, {
+        ...next.progress,
+        status: next.status,
+        queueId: next.id
+      });
+      if (next.progress.stage && next.progress.stage !== "input") {
+        setStage(project, next.progress.stage, "running", next.progress.label);
+      }
     }
-  }
   }
   writeDb(db);
 
@@ -1733,6 +1852,9 @@ async function executeQueueItem(item) {
     generateSubtitles: item.payload?.generateSubtitles,
     smartSceneEnabled: item.payload?.smartSceneEnabled,
     smartScenePrompt: item.payload?.smartScenePrompt,
+    smartSceneLayoutMode: item.payload?.smartSceneLayoutMode,
+    skipLipSync: item.payload?.skipLipSync,
+    avatarModelId: item.payload?.avatarModelId,
     previewDuration: item.payload?.previewDuration,
     variantLabel: item.payload?.variantLabel
   });
@@ -2193,6 +2315,17 @@ async function transcribeWithLocalAsr(audioPath, options = {}) {
   return result;
 }
 
+async function transcribeWithConfiguredAsr(db, audioPath, options = {}) {
+  const target = findTypedModelTarget(db, "asr", options.asrModelId || options.modelId || "");
+  if (target.type === "cloud") {
+    return callCloudAsr(target.provider, audioPath, {
+      language: options.language || "Chinese",
+      timeout: Number(options.asrTimeout || options.timeout || 120000)
+    });
+  }
+  return transcribeWithLocalAsr(audioPath, options);
+}
+
 async function resolveDouyinDetail(link, shareText, options = {}) {
   let shareMetadata = null;
   try {
@@ -2475,7 +2608,7 @@ async function transcribeSourceAudio(link, options = {}) {
   }
   if (!link.audioPath) return null;
   try {
-    const result = await transcribeWithLocalAsr(link.audioPath, options);
+    const result = await transcribeWithConfiguredAsr(readDb(), link.audioPath, options);
     return {
       linkId: link.id,
       text: result.text || "",
@@ -2505,7 +2638,7 @@ async function analyzeSource(project, options = {}) {
     const transcript = await transcribeSourceAudio(downloaded, options);
     if (transcript?.text) transcripts.push(transcript);
   }
-  project.sourceAnalysis = {
+  project.sourceAnalysis = cleanupSourceAnalysisMedia({
     links: probedLinks,
     transcripts: transcripts.length ? transcripts : probedLinks
       .filter((link) => link.title)
@@ -2517,7 +2650,7 @@ async function analyzeSource(project, options = {}) {
     notes: links.length
       ? ["已从输入中识别链接；可用链接会进入下载/ASR 节点。"]
       : ["未识别到视频链接，直接使用输入内容生成。"]
-  };
+  });
   return project.sourceAnalysis;
 }
 
@@ -2989,6 +3122,7 @@ async function callLocalLlm(messages, options = {}) {
 }
 
 async function callCloudLlm(provider, messages, options = {}) {
+  const startedAt = Date.now();
   const apiKey = provider.apiKey || process.env[provider.envKey];
   if (!apiKey) throw new Error(`${provider.name} 未配置 API Key。`);
   if (!provider.endpoint) throw new Error(`${provider.name} 未配置 endpoint。`);
@@ -3001,21 +3135,42 @@ async function callCloudLlm(provider, messages, options = {}) {
   if (options.maxTokens !== undefined && options.maxTokens !== null) {
     body.max_tokens = options.maxTokens;
   }
-  const response = await fetch(provider.endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(options.timeout || 120000)
-  });
+  if (options.thinking !== undefined && (provider.providerId === "deepseek" || provider.id === "deepseek" || provider.id === "provider-deepseek")) {
+    body.thinking = { type: options.thinking ? "enabled" : "disabled" };
+  }
+  const timeout = options.timeout || 120000;
+  let response;
+  try {
+    response = await fetch(provider.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout)
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      const err = new Error(`${provider.name} 调用超时，请检查模型名、网络或稍后重试。`);
+      err.status = 504;
+      throw err;
+    }
+    throw error;
+  }
   const raw = await response.text();
   if (!response.ok) throw new Error(`${provider.name} 调用失败：HTTP ${response.status} ${raw.slice(0, 240)}`);
   const data = JSON.parse(raw || "{}");
-  const text = data.choices?.[0]?.message?.content || data.output_text || data.text || "";
+  const choice = data.choices?.[0] || {};
+  const text = choice.message?.content
+    || choice.message?.reasoning_content
+    || choice.text
+    || data.output_text
+    || data.text
+    || data.response
+    || "";
   if (!text) throw new Error(`${provider.name} 未返回文本内容。`);
-  return { ok: true, text, metrics: { provider: provider.providerId || provider.id, model: provider.model } };
+  return { ok: true, text, metrics: { provider: provider.providerId || provider.id, model: provider.model, elapsedMs: Date.now() - startedAt } };
 }
 
 async function callCloudAsr(provider, audioPath, options = {}) {
@@ -3047,6 +3202,9 @@ async function callCloudAsr(provider, audioPath, options = {}) {
 }
 
 async function callCloudTts(provider, text, outPath, options = {}) {
+  if ((provider.providerId || provider.id) === "volcengine-tts") {
+    return callVolcengineTtsV3(provider, text, outPath, options);
+  }
   const apiKey = provider.apiKey || process.env[provider.envKey];
   if (!apiKey) throw new Error(`${provider.name} 未配置 API Key。`);
   if (!provider.endpoint) throw new Error(`${provider.name} 未配置 endpoint。`);
@@ -3078,6 +3236,466 @@ async function callCloudTts(provider, text, outPath, options = {}) {
   }
   if (!existsSync(outPath)) throw new Error(`${provider.name} TTS 未生成音频。`);
   return { ok: true, metrics: { provider: provider.id, model: provider.model, voice: options.voice || "alloy" } };
+}
+
+function cloudTtsVoiceInfo(provider, metrics = {}, fallbackVoice = "") {
+  const id = metrics.speakerId || metrics.voice || provider.model || fallbackVoice || "";
+  const name = provider.voiceName || metrics.speakerName || id || provider.name || "云端音色";
+  return { id, name };
+}
+
+function volcenginePayloadObjects(text = "") {
+  const objects = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === "\"") inString = false;
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        objects.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return { objects, rest: depth > 0 && start >= 0 ? text.slice(start) : "" };
+}
+
+async function callVolcengineTtsV3(provider, text, outPath, options = {}) {
+  const apiKey = provider.apiKey || process.env[provider.envKey];
+  if (!apiKey) throw new Error(`${provider.name} 未配置 API Key。`);
+  if (!provider.endpoint) throw new Error(`${provider.name} 未配置 endpoint。`);
+  const requestedVoice = String(options.voice || "").trim();
+  const speakerId = String(requestedVoice && requestedVoice !== "alloy" ? requestedVoice : provider.model || "").trim();
+  if (!speakerId) throw new Error(`${provider.name} 未配置 speakerId。`);
+  const resourceId = String(provider.resourceId || process.env.VOLCENGINE_TTS_RESOURCE_ID || "seed-icl-2.0").trim();
+  const requestId = randomUUID();
+  const body = {
+    user: {
+      id: options.uid || "digital-human-factory",
+      uid: options.uid || "digital-human-factory"
+    },
+    req_params: {
+      text,
+      speaker: speakerId,
+      audio_params: {
+        format: options.responseFormat || "wav",
+        sample_rate: Number(options.sampleRate || 24000),
+        enable_timestamp: false
+      },
+      additions: JSON.stringify({ disable_markdown_filter: true })
+    }
+  };
+  const response = await fetch(provider.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": apiKey,
+      "X-Api-Resource-Id": resourceId,
+      "X-Api-App-Key": "aGjiRDfUWi",
+      "X-Api-Request-Id": requestId
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(options.timeout || 120000)
+  });
+  const chunks = [];
+  const errors = [];
+  let remainder = "";
+  const handleMessage = (message) => {
+    const code = Number(message.code ?? message.status_code ?? message.header?.code ?? 0);
+    if (code === 20000000) return;
+    if (code && code !== 0) {
+      errors.push(message.message || message.msg || message.error || `code=${code}`);
+      return;
+    }
+    const audioBase64 = message.data
+      || message.audio
+      || message.result?.data
+      || message.result?.audio
+      || message.payload?.data
+      || message.payload_msg?.data
+      || message.payload_msg?.audio;
+    if (audioBase64) chunks.push(Buffer.from(String(audioBase64), "base64"));
+  };
+
+  if (response.body && Symbol.asyncIterator in response.body) {
+    for await (const chunk of response.body) {
+      const textChunk = Buffer.from(chunk).toString("utf-8");
+      const parsed = volcenginePayloadObjects(remainder + textChunk);
+      remainder = parsed.rest;
+      for (const item of parsed.objects) {
+        try {
+          handleMessage(JSON.parse(item));
+        } catch {
+          errors.push(item.slice(0, 120));
+        }
+      }
+    }
+  } else {
+    const raw = Buffer.from(await response.arrayBuffer()).toString("utf-8");
+    const parsed = volcenginePayloadObjects(raw);
+    for (const item of parsed.objects) {
+      try {
+        handleMessage(JSON.parse(item));
+      } catch {
+        errors.push(item.slice(0, 120));
+      }
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`${provider.name} TTS 调用失败：HTTP ${response.status} ${errors.join("；").slice(0, 240) || response.statusText}`);
+  }
+  if (errors.length && !chunks.length) {
+    throw new Error(`${provider.name} TTS 调用失败：${errors.join("；").slice(0, 240)}`);
+  }
+  if (!chunks.length) throw new Error(`${provider.name} TTS 未返回音频。`);
+  writeFileSync(outPath, Buffer.concat(chunks));
+  return {
+    ok: true,
+    metrics: {
+      provider: provider.id,
+      model: provider.model,
+      speakerId,
+      speakerName: provider.voiceName || speakerId,
+      resourceId,
+      requestId,
+      chunks: chunks.length
+    }
+  };
+}
+
+async function callCloudAvatar(provider, input, outPath, options = {}) {
+  if ((provider.providerId || provider.id) === "tencent-avatar") {
+    return callTencentIvhAvatar(provider, input, outPath, options);
+  }
+  const apiKey = provider.apiKey || process.env[provider.envKey];
+  if (!apiKey) throw new Error(`${provider.name} 未配置 API Key。`);
+  if (!provider.endpoint) throw new Error(`${provider.name} 未配置 endpoint。`);
+  if (!provider.model) throw new Error(`${provider.name} 未配置模型名。`);
+  if (!input.avatarPath || !existsSync(input.avatarPath)) throw new Error("缺少数字人素材文件。");
+  if (!input.audioPath || !existsSync(input.audioPath)) throw new Error("缺少口播音频文件。");
+  const body = new FormData();
+  body.append("model", provider.model);
+  body.append("duration", String(input.duration || ""));
+  body.append("script", input.script || "");
+  body.append("avatar", new Blob([readFileSync(input.avatarPath)]), basename(input.avatarPath));
+  body.append("audio", new Blob([readFileSync(input.audioPath)]), basename(input.audioPath));
+  const response = await fetch(provider.endpoint, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body,
+    signal: AbortSignal.timeout(options.timeout || 1200000)
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!response.ok) throw new Error(`${provider.name} 数字人生成失败：HTTP ${response.status} ${buffer.toString("utf-8").slice(0, 240)}`);
+  if (contentType.includes("application/json")) {
+    const data = JSON.parse(buffer.toString("utf-8") || "{}");
+    const videoBase64 = data.video_base64 || data.video || data.data?.video_base64 || data.data?.video;
+    const videoUrl = data.video_url || data.url || data.data?.video_url || data.data?.url;
+    if (videoBase64) {
+      writeFileSync(outPath, Buffer.from(videoBase64, "base64"));
+    } else if (videoUrl) {
+      const videoResponse = await fetch(videoUrl, { signal: AbortSignal.timeout(options.timeout || 1200000) });
+      if (!videoResponse.ok) throw new Error(`${provider.name} 生成成功但下载视频失败：HTTP ${videoResponse.status}`);
+      writeFileSync(outPath, Buffer.from(await videoResponse.arrayBuffer()));
+    } else {
+      throw new Error(`${provider.name} 未返回 video_url 或 video_base64。`);
+    }
+  } else {
+    writeFileSync(outPath, buffer);
+  }
+  if (!existsSync(outPath)) throw new Error(`${provider.name} 未生成数字人视频。`);
+  return { ok: true, engine: `cloud-${provider.providerId || provider.id}`, metrics: { provider: provider.id, model: provider.model } };
+}
+
+function parseTencentIvhCredentials(provider) {
+  const raw = String(provider.apiKey || process.env[provider.envKey] || "").trim();
+  if (!raw) throw new Error("腾讯云智能数智人未配置 AppKey/AccessToken。请在数智人资源管理中心获取，不是 CAM SecretId/SecretKey。");
+  if (raw.startsWith("{")) {
+    const parsed = JSON.parse(raw);
+    return {
+      appkey: String(parsed.appkey || parsed.appKey || parsed.AppKey || "").trim(),
+      accessToken: String(parsed.accessToken || parsed.AccessToken || parsed.token || "").trim()
+    };
+  }
+  const [appkey, ...tokenParts] = raw.split(":");
+  return { appkey: String(appkey || "").trim(), accessToken: tokenParts.join(":").trim() };
+}
+
+function tencentIvhSignedUrl(provider, pathName) {
+  const { appkey, accessToken } = parseTencentIvhCredentials(provider);
+  if (!appkey || !accessToken) throw new Error("腾讯云智能数智人配置格式不正确，需要 AppKey 和 AccessToken。");
+  const baseUrl = String(provider.endpoint || "https://gw.tvs.qq.com").replace(/\/+$/, "");
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signingContent = `appkey=${appkey}&timestamp=${timestamp}`;
+  const signature = createHmac("sha256", accessToken).update(signingContent).digest("base64");
+  const url = new URL(`${baseUrl}${pathName}`);
+  url.searchParams.set("appkey", appkey);
+  url.searchParams.set("timestamp", timestamp);
+  url.searchParams.set("signature", signature);
+  return url.toString();
+}
+
+function publicStorageUrlForPath(filePath, provider = {}) {
+  const explicitBase = String(provider.publicBaseUrl || process.env.DH_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+  if (!filePath) return "";
+  if (/^https?:\/\//i.test(filePath)) return filePath;
+  if (!explicitBase) return "";
+  const absolutePath = isAbsolute(filePath) ? filePath : join(rootDir, filePath);
+  if (!absolutePath.startsWith(storageDir)) return "";
+  return `${explicitBase}${publicPath(absolutePath)}`;
+}
+
+function tencentCosConfig(provider = {}) {
+  const secretId = String(provider.cosSecretId || process.env.TENCENT_COS_SECRET_ID || "").trim();
+  const secretKey = String(provider.cosSecretKey || process.env.TENCENT_COS_SECRET_KEY || "").trim();
+  const region = String(provider.cosRegion || process.env.TENCENT_COS_REGION || "").trim();
+  const bucket = String(provider.cosBucket || process.env.TENCENT_COS_BUCKET || "").trim();
+  const pathPrefix = String(provider.cosPathPrefix || process.env.TENCENT_COS_PATH_PREFIX || "digital-human-temp").trim().replace(/^\/+|\/+$/g, "");
+  const expiresSeconds = clampNumber(Number(provider.cosExpiresSeconds || process.env.TENCENT_COS_EXPIRES_SECONDS || 1800), 300, 7200, 1800);
+  if (!secretId || !secretKey || !region || !bucket) return null;
+  return { secretId, secretKey, region, bucket, pathPrefix, expiresSeconds };
+}
+
+function contentTypeForFile(filePath) {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".mp4") return "video/mp4";
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mp3") return "audio/mpeg";
+  if (ext === ".wav") return "audio/wav";
+  if (ext === ".m4a") return "audio/mp4";
+  if (ext === ".aac") return "audio/aac";
+  return "application/octet-stream";
+}
+
+function aliyunOssConfig(db = readDb()) {
+  const config = normalizeObjectStorageConfig(db.settings?.objectStorage || {});
+  if (!config.enabled || !config.accessKeyId || !config.accessKeySecret || !config.bucket || !config.region) return null;
+  return config;
+}
+
+function aliyunOssClient(config) {
+  return new OSS({
+    accessKeyId: config.accessKeyId,
+    accessKeySecret: config.accessKeySecret,
+    bucket: config.bucket,
+    region: config.region,
+    endpoint: config.endpoint || undefined,
+    secure: true,
+    timeout: 120000
+  });
+}
+
+async function uploadTemporaryMediaToObjectStorage(filePath, label) {
+  const config = aliyunOssConfig();
+  if (!config) return null;
+  const absolutePath = isAbsolute(filePath) ? filePath : join(rootDir, filePath);
+  if (!absolutePath || !existsSync(absolutePath)) throw new Error(`缺少${label}文件，无法上传阿里云 OSS。`);
+  const safeName = basename(absolutePath).replace(/[^\w\u4e00-\u9fa5.-]+/g, "-");
+  const key = [config.pathPrefix, "tencent-avatar", new Date().toISOString().slice(0, 10), randomUUID(), safeName].filter(Boolean).join("/");
+  const client = aliyunOssClient(config);
+  await client.put(key, absolutePath, {
+    headers: {
+      "Content-Type": contentTypeForFile(absolutePath)
+    }
+  });
+  const url = client.signatureUrl(key, {
+    expires: config.expiresSeconds,
+    method: "GET"
+  });
+  if (!url) throw new Error(`已上传${label}到阿里云 OSS，但未生成临时下载 URL。`);
+  return {
+    provider: "aliyun-oss",
+    bucket: config.bucket,
+    region: config.region,
+    key,
+    url,
+    expiresAt: new Date(Date.now() + config.expiresSeconds * 1000).toISOString()
+  };
+}
+
+async function deleteTemporaryObjectStorageMedia(upload) {
+  if (!upload?.key || upload.provider !== "aliyun-oss") return false;
+  const config = aliyunOssConfig();
+  if (!config) return false;
+  const client = aliyunOssClient(config);
+  await client.delete(upload.key);
+  return true;
+}
+
+async function cleanupTemporaryObjectStorageMedia(uploads = []) {
+  for (const upload of uploads) {
+    try {
+      await deleteTemporaryObjectStorageMedia(upload);
+    } catch (error) {
+      console.warn(`[object-storage-cleanup] ${upload?.key || "unknown"}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+function cosPutObject(cos, params) {
+  return new Promise((resolve, reject) => {
+    cos.putObject(params, (error, data) => error ? reject(error) : resolve(data));
+  });
+}
+
+function cosGetObjectUrl(cos, params) {
+  return new Promise((resolve, reject) => {
+    cos.getObjectUrl(params, (error, data) => {
+      if (error) reject(error);
+      else resolve(data?.Url || data);
+    });
+  });
+}
+
+async function uploadTencentMediaToCos(filePath, label, provider = {}) {
+  const config = tencentCosConfig(provider);
+  if (!config) return "";
+  const absolutePath = isAbsolute(filePath) ? filePath : join(rootDir, filePath);
+  if (!absolutePath || !existsSync(absolutePath)) throw new Error(`缺少${label}文件，无法上传 COS。`);
+  const safeName = basename(absolutePath).replace(/[^\w\u4e00-\u9fa5.-]+/g, "-");
+  const key = [config.pathPrefix, new Date().toISOString().slice(0, 10), randomUUID(), safeName].filter(Boolean).join("/");
+  const cos = new COS({ SecretId: config.secretId, SecretKey: config.secretKey });
+  await cosPutObject(cos, {
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: key,
+    Body: createReadStream(absolutePath),
+    ContentType: contentTypeForFile(absolutePath)
+  });
+  const url = await cosGetObjectUrl(cos, {
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: key,
+    Sign: true,
+    Expires: config.expiresSeconds
+  });
+  if (!url) throw new Error(`已上传${label}到 COS，但未生成临时下载 URL。`);
+  return String(url).startsWith("http") ? String(url) : `https://${String(url).replace(/^\/+/, "")}`;
+}
+
+function requireTencentMediaUrl(filePath, label, provider) {
+  const publicUrl = publicStorageUrlForPath(filePath, provider);
+  if (!publicUrl) {
+    throw new Error(`腾讯云智能数智人需要可公网下载的${label} URL。请配置阿里云 OSS 中转存储，或把当前服务通过公网域名暴露后配置 DH_PUBLIC_BASE_URL。`);
+  }
+  return publicUrl;
+}
+
+async function resolveTencentMediaUrl(filePath, label, provider) {
+  const ossUpload = await uploadTemporaryMediaToObjectStorage(filePath, label);
+  if (ossUpload) return ossUpload;
+  const cosUrl = await uploadTencentMediaToCos(filePath, label, provider);
+  if (cosUrl) return { provider: "tencent-cos", url: cosUrl };
+  return { provider: "public-url", url: requireTencentMediaUrl(filePath, label, provider) };
+}
+
+function parseTencentIvhResponse(data, actionLabel) {
+  const header = data?.Header || data?.header || {};
+  const payload = data?.Payload || data?.payload || data?.Data || data?.data || {};
+  const code = Number(header.Code ?? header.code ?? data?.code ?? 0);
+  if (code !== 0) {
+    const message = header.Message || header.message || data?.message || `${actionLabel}失败`;
+    throw new Error(`腾讯云智能数智人${actionLabel}失败：${message}`);
+  }
+  return payload;
+}
+
+async function callTencentIvhApi(provider, pathName, payload, timeout = 120000) {
+  const response = await fetch(tencentIvhSignedUrl(provider, pathName), {
+    method: "POST",
+    headers: { "Content-Type": "application/json;charset=utf-8" },
+    body: JSON.stringify({ Header: {}, Payload: payload }),
+    signal: AbortSignal.timeout(timeout)
+  });
+  const text = await response.text();
+  let data = {};
+  try {
+    data = JSON.parse(text || "{}");
+  } catch {
+    throw new Error(`腾讯云智能数智人返回非 JSON：${text.slice(0, 240)}`);
+  }
+  if (!response.ok) throw new Error(`腾讯云智能数智人 HTTP ${response.status}：${text.slice(0, 240)}`);
+  return data;
+}
+
+async function callTencentIvhAvatar(provider, input, outPath, options = {}) {
+  if (!input.avatarPath || !existsSync(input.avatarPath)) throw new Error("缺少数字人素材文件。");
+  if (!input.audioPath || !existsSync(input.audioPath)) throw new Error("缺少口播音频文件。");
+  const temporaryUploads = [];
+  try {
+    const refVideoSource = options.refVideoUrl || process.env.TENCENT_IVH_REF_VIDEO_URL
+      ? { provider: "configured-url", url: options.refVideoUrl || process.env.TENCENT_IVH_REF_VIDEO_URL }
+      : await resolveTencentMediaUrl(input.avatarPath, "视频素材", provider);
+    const inputAudioSource = options.inputAudioUrl || process.env.TENCENT_IVH_INPUT_AUDIO_URL
+      ? { provider: "configured-url", url: options.inputAudioUrl || process.env.TENCENT_IVH_INPUT_AUDIO_URL }
+      : await resolveTencentMediaUrl(input.audioPath, "口播音频", provider);
+    if (refVideoSource?.provider === "aliyun-oss") temporaryUploads.push(refVideoSource);
+    if (inputAudioSource?.provider === "aliyun-oss") temporaryUploads.push(inputAudioSource);
+    const submitData = await callTencentIvhApi(provider, "/v2/ivh/videomaker/broadcastservice/videomakenotrain", {
+      RefVideoUrl: refVideoSource.url,
+      DriverType: "OriginalVoice",
+      InputAudioUrl: inputAudioSource.url
+    }, options.timeout || 120000);
+    const submitPayload = parseTencentIvhResponse(submitData, "提交任务");
+    const taskId = submitPayload.TaskId || submitPayload.taskId || submitPayload.TaskID;
+    if (!taskId) throw new Error("腾讯云智能数智人未返回 TaskId。");
+    const startedAt = Date.now();
+    const maxWaitMs = Number(options.timeout || 1200000);
+    let lastPayload = null;
+    while (Date.now() - startedAt < maxWaitMs) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      const progressData = await callTencentIvhApi(provider, "/v2/ivh/videomaker/broadcastservice/getprogress", { TaskId: taskId }, 120000);
+      const progressPayload = parseTencentIvhResponse(progressData, "查询进度");
+      lastPayload = progressPayload;
+      const status = String(progressPayload.Status || progressPayload.status || "").toUpperCase();
+      if (status === "FAIL" || status === "FAILED") {
+        throw new Error(`腾讯云智能数智人生成失败：${progressPayload.FailMessage || progressPayload.failMessage || progressPayload.FailCode || "未知错误"}`);
+      }
+      if (status === "SUCCESS") {
+        const mediaUrl = progressPayload.MediaUrl || progressPayload.mediaUrl || progressPayload.VideoUrl || progressPayload.videoUrl || progressPayload.Url || progressPayload.url;
+        if (!mediaUrl) throw new Error("腾讯云智能数智人生成成功但未返回 MediaUrl。");
+        const videoResponse = await fetch(mediaUrl, { signal: AbortSignal.timeout(300000) });
+        if (!videoResponse.ok) throw new Error(`腾讯云智能数智人结果下载失败：HTTP ${videoResponse.status}`);
+        writeFileSync(outPath, Buffer.from(await videoResponse.arrayBuffer()));
+        return {
+          ok: true,
+          engine: "cloud-tencent-avatar",
+          metrics: {
+            provider: provider.id,
+            model: provider.model,
+            taskId,
+            mediaUrl,
+            duration: progressPayload.Duration || 0,
+            temporaryStorageProvider: temporaryUploads.length ? "aliyun-oss" : refVideoSource.provider
+          }
+        };
+      }
+    }
+    throw new Error(`腾讯云智能数智人生成超时，TaskId=${taskId}，最后状态=${lastPayload?.Status || "未知"}`);
+  } finally {
+    await cleanupTemporaryObjectStorageMedia(temporaryUploads);
+  }
 }
 
 async function generateScriptWithTextModel(db, project, payload = {}) {
@@ -3123,7 +3741,7 @@ async function polishTextWithTextModel(db, input = {}) {
     const providerId = String(modelId).replace("provider:", "");
     const provider = db.apiProviders.find((item) => item.id === providerId || item.providerId === providerId);
     if (!provider) throw new Error("未找到已配置的云端 Provider。");
-    result = await callCloudLlm(provider, messages, input);
+    result = await callCloudLlm(provider, messages, { ...input, maxTokens: input.maxTokens ?? 700, timeout: input.timeout ?? 45000, thinking: false });
     modelInfo = { type: "cloud", providerId: provider.providerId, providerName: provider.name, model: provider.model };
   } else {
     const model = db.models.find((item) => item.id === modelId && item.type === "llm");
@@ -3139,8 +3757,10 @@ async function polishTextWithTextModel(db, input = {}) {
     result = await callLocalLlm(messages, { ...input, modelPath: detection.resolvedPath });
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
+  const polishedText = cleanPolishedText(result.text || "", input.inputText || "");
+  if (!polishedText.trim()) throw new Error("文本模型未返回可用的润色内容，请检查模型配置或重试。");
   return {
-    text: cleanPolishedText(result.text || "", input.inputText || ""),
+    text: polishedText,
     title: deriveProjectTitle(input.inputText || "", input.requirements || ""),
     modelInfo: { ...modelInfo, metrics: result.metrics || {} }
   };
@@ -3290,8 +3910,6 @@ function resolveTtsVoice(db, project, requestedVoiceId = "") {
 }
 
 function ttsEngineFromModel(model) {
-  const key = `${model?.catalogId || ""} ${model?.id || ""} ${model?.name || ""}`.toLowerCase();
-  if (key.includes("qwen")) return "qwen3";
   return "voxcpm2";
 }
 
@@ -3361,6 +3979,11 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   if (engine === "voxcpm2") {
     const style = normalizeTtsStyle(options);
     args.push("--style-preset", style.preset, "--style-intensity", style.intensity, "--style-prompt", style.prompt);
+    args.push("--seed", String(options.seed || process.env.DH_VOXCPM2_SEED || 20260606));
+    const segmentContinuation = options.segmentContinuation ?? process.env.DH_TTS_SEGMENT_CONTINUATION === "true";
+    if (segmentContinuation && options.previousSegmentPath && existsSync(options.previousSegmentPath) && options.previousSegmentText) {
+      args.push("--prompt-audio", options.previousSegmentPath, "--prompt-text", options.previousSegmentText);
+    }
   }
   const { stdout } = await execFileAsync(process.execPath, args, {
     timeout: options.ttsTimeout || 1200000,
@@ -3370,6 +3993,145 @@ async function createLocalTtsAudio(script, voice, outPath, options = {}) {
   const result = parseJsonFromStdout(stdout);
   if (!result.ok || !existsSync(outPath)) throw new Error(result.error || "本地 TTS 未生成音频。");
   return result;
+}
+
+function splitLongTextByChars(text, maxChars) {
+  const chars = Array.from(String(text || "").trim());
+  const chunks = [];
+  for (let index = 0; index < chars.length; index += maxChars) {
+    const chunk = chars.slice(index, index + maxChars).join("").trim();
+    if (chunk) chunks.push(chunk);
+  }
+  return chunks;
+}
+
+function mergeShortTtsSegments(segments, maxChars) {
+  const merged = [];
+  let buffer = "";
+  for (const segment of segments.map((item) => String(item || "").trim()).filter(Boolean)) {
+    const next = buffer ? `${buffer}${segment}` : segment;
+    if (Array.from(next).length <= maxChars) {
+      buffer = next;
+      continue;
+    }
+    if (buffer) merged.push(buffer);
+    buffer = segment;
+  }
+  if (buffer) merged.push(buffer);
+  return merged;
+}
+
+function splitTtsText(text, options = {}) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const maxChars = Math.max(60, Math.min(500, Number(options.maxChars || process.env.TTS_SEGMENT_MAX_CHARS || 180)));
+  const primaryParts = [];
+  let buffer = "";
+  for (const char of Array.from(normalized)) {
+    buffer += char;
+    if (/[。！？!?；;\n]/.test(char)) {
+      const part = buffer.trim();
+      if (part) primaryParts.push(part);
+      buffer = "";
+    }
+  }
+  if (buffer.trim()) primaryParts.push(buffer.trim());
+
+  const result = [];
+  for (const part of primaryParts) {
+    if (Array.from(part).length <= maxChars) {
+      result.push(part);
+      continue;
+    }
+    const secondaryParts = [];
+    let secondary = "";
+    for (const char of Array.from(part)) {
+      secondary += char;
+      if (/[，,、：:]/.test(char) && Array.from(secondary).length >= Math.floor(maxChars * 0.55)) {
+        secondaryParts.push(secondary.trim());
+        secondary = "";
+      }
+    }
+    if (secondary.trim()) secondaryParts.push(secondary.trim());
+    for (const item of secondaryParts) {
+      if (Array.from(item).length <= maxChars) result.push(item);
+      else result.push(...splitLongTextByChars(item, maxChars));
+    }
+  }
+  return mergeShortTtsSegments(result, maxChars).filter(Boolean);
+}
+
+async function concatAudioSegments(segmentPaths, outPath) {
+  const validPaths = segmentPaths.filter((item) => item && existsSync(item));
+  if (!validPaths.length) throw new Error("没有可合并的 TTS 分段音频。");
+  if (validPaths.length === 1) {
+    copyFileSync(validPaths[0], outPath);
+    return { concatenated: false, segments: 1 };
+  }
+  if (!executableExists(FFMPEG_BIN)) throw new Error("分段 TTS 需要 ffmpeg 合并音频，请先配置 FFMPEG_BIN。");
+  const filterInputs = validPaths.map((_, index) => `[${index}:a:0]`).join("");
+  const args = ["-y"];
+  for (const item of validPaths) args.push("-i", item);
+  args.push(
+    "-filter_complex",
+    `${filterInputs}concat=n=${validPaths.length}:v=0:a=1[a]`,
+    "-map",
+    "[a]",
+    "-vn",
+    "-c:a",
+    "pcm_s16le",
+    outPath
+  );
+  await execFileAsync(FFMPEG_BIN, args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+  if (!existsSync(outPath)) throw new Error("TTS 分段音频合并失败。");
+  return { concatenated: true, segments: validPaths.length };
+}
+
+async function synthesizeSegmentedTtsAudio(text, outPath, options = {}) {
+  const segments = splitTtsText(text, options);
+  if (!segments.length) throw new Error("缺少需要合成的口播文本。");
+  const maxSegments = Math.max(1, Math.min(100, Number(options.maxSegments || process.env.TTS_SEGMENT_MAX_COUNT || 60)));
+  if (segments.length > maxSegments) throw new Error(`口播文本拆分后共有 ${segments.length} 段，超过当前上限 ${maxSegments} 段。请缩短文本或调大 TTS_SEGMENT_MAX_COUNT。`);
+  if (segments.length === 1) {
+    const result = await options.synthesize(segments[0], outPath, 0, segments);
+    return {
+      ...(result || {}),
+      metrics: {
+        ...((result || {}).metrics || {}),
+        segmented: false,
+        segmentCount: 1,
+        segmentMaxChars: Math.max(60, Math.min(500, Number(options.maxChars || process.env.TTS_SEGMENT_MAX_CHARS || 180)))
+      }
+    };
+  }
+  const segmentDir = join(dirname(outPath), "segments");
+  mkdirSync(segmentDir, { recursive: true });
+  const segmentPaths = [];
+  const segmentMetrics = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segmentPath = join(segmentDir, `segment-${String(index + 1).padStart(3, "0")}.wav`);
+    options.onSegment?.(index, segments.length, segments[index]);
+    const result = await options.synthesize(segments[index], segmentPath, index, segments, {
+      previousSegmentPath: segmentPaths[index - 1] || "",
+      previousSegmentText: segments[index - 1] || ""
+    });
+    segmentPaths.push(segmentPath);
+    segmentMetrics.push(result?.metrics || {});
+  }
+  const concatResult = await concatAudioSegments(segmentPaths, outPath);
+  removeArtifactPath(segmentDir, new Set([outPath]));
+  return {
+    ok: true,
+    metrics: {
+      ...(segmentMetrics[0] || {}),
+      segmented: true,
+      segmentCount: segments.length,
+      segmentMaxChars: Math.max(60, Math.min(500, Number(options.maxChars || process.env.TTS_SEGMENT_MAX_CHARS || 180))),
+      segmentLengths: segments.map((item) => Array.from(item).length),
+      continuationSegmentCount: segmentMetrics.filter((item) => item?.continuation).length,
+      concatenated: concatResult.concatenated
+    }
+  };
 }
 
 function atempoFilter(speed) {
@@ -3427,7 +4189,11 @@ async function createExternalAvatarVideo(input, outPath) {
         timeout: 1200000,
         maxBuffer: 1024 * 1024 * 16
       });
-      if (existsSync(outPath)) return { ok: true, engine: attempt.engine };
+      if (existsSync(outPath)) {
+        const frameRepairRestored = Array.from(String(result?.stdout || "").matchAll(/已将\s+(\d+)\s+帧无人脸画面回填为原素材帧/g))
+          .reduce((sum, match) => sum + Number(match[1] || 0), 0);
+        return { ok: true, engine: attempt.engine, frameRepairRestored };
+      }
       lastError = `${attempt.engine} 未输出视频文件。`;
       writeFileSync(join(dirname(outPath), "avatar-render-error.json"), JSON.stringify({
         engine: attempt.engine,
@@ -3540,6 +4306,40 @@ async function createSegmentedAvatarVideo(input, outPath, options = {}) {
     segmentCount,
     segmentSeconds
   };
+}
+
+async function createNoLipSyncAvatarVideo(input, outPath) {
+  if (!executableExists(FFMPEG_BIN) || !input.avatarPath || !existsSync(input.avatarPath)) {
+    return { ok: false, engine: "no-lip-sync", error: "缺少可用数字人素材或 FFmpeg。" };
+  }
+  const duration = Math.max(1, Number(input.duration || 1));
+  const args = [
+    "-y",
+    "-stream_loop",
+    "-1",
+    "-i",
+    input.avatarPath,
+    "-t",
+    String(duration),
+    "-an",
+    "-vf",
+    "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-movflags",
+    "+faststart",
+    outPath
+  ];
+  try {
+    await execFileAsync(FFMPEG_BIN, args, { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
+    return { ok: existsSync(outPath), engine: "no-lip-sync" };
+  } catch (error) {
+    return { ok: false, engine: "no-lip-sync", error: error?.message || "无口型同步视频生成失败。" };
+  }
 }
 
 function escapeFilterPath(filePath) {
@@ -4062,10 +4862,104 @@ function safeSmartSceneFiles(payload = {}) {
   return cleaned;
 }
 
+function smartSceneFilesFromText(text = "") {
+  const raw = String(text || "").trim();
+  const fencedHtml = raw.match(/```(?:html)?\s*([\s\S]*?)```/i);
+  const htmlText = fencedHtml?.[1]?.trim() || raw;
+  const htmlStart = htmlText.search(/<!doctype html|<html[\s>]/i);
+  if (htmlStart < 0) return null;
+  const content = htmlText.slice(htmlStart).trim();
+  if (!/<\/html>/i.test(content) && !/window\.setFrameTime/.test(content)) return null;
+  return [{ path: "index.html", content }];
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function parseSmartSceneAgentText(text = "") {
+  const htmlFiles = smartSceneFilesFromText(text);
+  if (htmlFiles) return { files: htmlFiles, notes: "Agent 返回纯 HTML，平台已包装为 index.html。" };
+  const payload = extractJsonObject(text);
+  return {
+    files: safeSmartSceneFiles(payload),
+    notes: payload.notes || ""
+  };
+}
+
+function fallbackTransparentSmartScene(project, options = {}) {
+  const title = escapeHtml(project.artifacts?.script?.title || project.title || "智能讲解");
+  const script = String(project.artifacts?.script?.script || project.inputText || "");
+  const bullets = splitTtsText(script, { maxChars: 28 }).slice(0, 4).map((item) => escapeHtml(item.replace(/[。！？!?；;，,、：:]+$/g, "")));
+  while (bullets.length < 3) bullets.push(["半透明信息图层", "核心卖点提示", "流程化讲解"][bullets.length]);
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 720px; height: 1280px; overflow: hidden; background: #07111f; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #fff; }
+  .stage { position: relative; width: 720px; height: 1280px; overflow: hidden; background:
+    radial-gradient(circle at 78% 18%, rgba(45, 212, 191, .22), transparent 28%),
+    radial-gradient(circle at 16% 72%, rgba(96, 165, 250, .20), transparent 34%),
+    linear-gradient(180deg, rgba(8, 18, 34, .72), rgba(8, 16, 30, .38)); }
+  .grid { position: absolute; inset: 0; opacity: .18; background-image: linear-gradient(rgba(255,255,255,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px); background-size: 42px 42px; transform: translateY(var(--grid-y, 0px)); }
+  .hud { position: absolute; left: 42px; right: 42px; top: 64px; display: flex; justify-content: space-between; align-items: center; opacity: .96; }
+  .badge { padding: 10px 16px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(10, 20, 36, .46); backdrop-filter: blur(14px); font-size: 22px; font-weight: 800; color: rgba(255,255,255,.90); }
+  .title { position: absolute; left: 44px; right: 44px; top: 130px; padding: 22px 24px; border: 1px solid rgba(125, 211, 252, .34); border-radius: 22px; background: rgba(8, 20, 38, .45); box-shadow: 0 18px 70px rgba(14, 165, 233, .18); backdrop-filter: blur(18px); }
+  .title small { display: block; color: rgba(186, 230, 253, .92); font-size: 20px; font-weight: 800; letter-spacing: .08em; }
+  .title strong { display: block; margin-top: 8px; font-size: 42px; line-height: 1.15; letter-spacing: 0; }
+  .cards { position: absolute; left: 44px; right: 44px; bottom: 106px; display: grid; gap: 16px; }
+  .card { min-height: 92px; display: grid; grid-template-columns: 52px 1fr; gap: 14px; align-items: center; padding: 18px 20px; border: 1px solid rgba(255,255,255,.26); border-radius: 20px; background: rgba(15, 23, 42, .38); backdrop-filter: blur(18px); box-shadow: 0 16px 46px rgba(2, 8, 23, .18); transform: translateX(var(--x, 0px)); opacity: var(--opacity, 1); }
+  .num { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: rgba(45, 212, 191, .28); color: #ccfbf1; font-size: 22px; font-weight: 900; }
+  .card span { font-size: 27px; line-height: 1.26; font-weight: 850; color: rgba(255,255,255,.94); }
+  .line { position: absolute; left: 72px; right: 72px; top: 472px; height: 2px; background: linear-gradient(90deg, transparent, rgba(125,211,252,.76), transparent); opacity: var(--line, .3); }
+  .pulse { position: absolute; width: 160px; height: 160px; border: 2px solid rgba(45, 212, 191, .38); border-radius: 999px; right: 54px; top: 350px; transform: scale(var(--pulse, 1)); opacity: .52; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="grid"></div>
+    <div class="hud"><div class="badge">AI LAYOUT</div><div class="badge">TRANSPARENT</div></div>
+    <div class="title"><small>半透明智能布局</small><strong>${title}</strong></div>
+    <div class="line"></div>
+    <div class="pulse"></div>
+    <div class="cards">
+      ${bullets.slice(0, 4).map((item, index) => `<div class="card" id="card${index}"><div class="num">0${index + 1}</div><span>${item}</span></div>`).join("")}
+    </div>
+  </div>
+<script>
+  window.setFrameTime = function(t) {
+    const root = document.documentElement;
+    root.style.setProperty('--grid-y', ((t * 18) % 42).toFixed(2) + 'px');
+    root.style.setProperty('--line', (0.35 + Math.sin(t * 1.8) * 0.25).toFixed(3));
+    root.style.setProperty('--pulse', (1 + Math.sin(t * 2.1) * 0.08).toFixed(3));
+    document.querySelectorAll('.card').forEach((card, i) => {
+      const wave = Math.sin(t * 1.35 + i * .9);
+      card.style.setProperty('--x', (wave * 10).toFixed(2) + 'px');
+      card.style.setProperty('--opacity', (0.82 + Math.max(0, wave) * 0.18).toFixed(3));
+    });
+  };
+</script>
+</body>
+</html>`;
+  return {
+    files: [{ path: "index.html", content: html }],
+    notes: "半透明覆盖模式使用平台内置信息图层生成器。",
+    modelInfo: { provider: "built-in-transparent-layout", model: "deterministic-overlay" }
+  };
+}
+
 function smartSceneSystemPrompt() {
   return [
     "你是一个智能布景视频工程智能体，负责为数字人口播视频生成主画面布景代码。",
-    "你只能输出 JSON，不要输出 Markdown。",
+    "你只输出完整 index.html 源码，不要输出 Markdown，不要解释，不要 JSON。",
     "你要生成一个 720x1280 竖屏 HTML/CSS/JS 视频工程，适合逐帧渲染成 MP4。",
     "只生成一个自包含 index.html，CSS 和 JS 都内联在 HTML 中。",
     "必须包含 window.setFrameTime(t) 函数，t 为秒；渲染器会从 0 秒逐帧调用到视频结束。",
@@ -4074,13 +4968,14 @@ function smartSceneSystemPrompt() {
     "画面应服务商品讲解、知识讲解或方案讲解：可以使用产品扫描、卖点拆解、流程箭头、数据仪表盘、对比卡片、短视频成片预览、进度条、光效和分镜转场。",
     "不要生成纯静态海报；每 3-5 秒需要有明显画面变化。",
     "不要引用外网资源，不要使用 fetch，不要使用 import，不要使用 eval，不要访问 localStorage/sessionStorage。",
-    "只允许返回 files 数组，文件名只能是 index.html。"
+    "最终回答必须从 <!DOCTYPE html> 或 <html> 开始，以 </html> 结束。"
   ].join("\n");
 }
 
-function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0 }) {
+function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0, smartSceneLayoutMode = "pip" }) {
   const script = project.artifacts?.script?.script || project.inputText || "";
   const title = project.artifacts?.script?.title || project.title || "智能布景视频";
+  const transparentMode = smartSceneLayoutMode === "transparent_overlay";
   const requirements = [
     project.requirements || "",
     smartScenePrompt || "",
@@ -4091,12 +4986,13 @@ function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previe
     `视频时长：${Math.max(1, Math.round(duration))} 秒`,
     `口播文案：${script}`,
     `用户生成要求：${requirements || "无"}`,
+    `智能布景模式：${transparentMode ? "半透明覆盖在数字人视频上" : "主画面 + 右下角数字人画中画"}`,
     "",
-    "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片、场景化示意和进度动效。",
+    transparentMode
+      ? "请生成适合覆盖在数字人视频上方的半透明信息图层工程。不要做大面积实色背景；使用半透明卡片、线框、发光标注、流程箭头、卖点标签和轻量动效，尽量避开人物脸部所在的中上区域。"
+      : "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片、场景化示意和进度动效。",
     "如果用户没有指定具体商品，就根据标题和口播内容推断一个最贴合的讲解对象，不要使用与口播无关的主题。",
-    "代码输出 JSON 格式：",
-    "{\"files\":[{\"path\":\"index.html\",\"content\":\"...\"}],\"notes\":\"...\"}",
-    "index.html 必须是单文件可运行工程。"
+    "请直接输出完整 index.html 源码，不要 JSON，不要 Markdown。"
   ].join("\n");
 }
 
@@ -4111,12 +5007,12 @@ async function callSmartSceneAgent(db, project, options = {}) {
   if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
   const messages = [
     { role: "system", content: smartSceneSystemPrompt() },
-    { role: "user", content: smartSceneUserPrompt(options) }
+    { role: "user", content: smartSceneUserPrompt({ ...options, project }) }
   ];
-  const result = await callCloudLlm(provider, messages, { temperature: 0.35, timeout: 180000, maxTokens: 6000 });
-  const payload = extractJsonObject(result.text);
+  const result = await callCloudLlm(provider, messages, { temperature: 0.35, timeout: 240000, maxTokens: 12000 });
+  const payload = parseSmartSceneAgentText(result.text);
   return {
-    files: safeSmartSceneFiles(payload),
+    files: payload.files,
     notes: payload.notes || "",
     modelInfo: result.metrics || {}
   };
@@ -4128,21 +5024,21 @@ async function reviseSmartSceneAgent(db, previous, errorMessage, options = {}) {
   const previousFiles = previous.files.map((file) => `--- ${file.path} ---\n${file.content}`).join("\n\n");
   const messages = [
     { role: "system", content: smartSceneSystemPrompt() },
-    { role: "user", content: smartSceneUserPrompt(options) },
+    { role: "user", content: smartSceneUserPrompt({ ...options, project: options.project }) },
     {
       role: "user",
       content: [
-        "你上一次生成的代码运行失败，请根据错误修复后重新输出完整 files JSON。",
+        "你上一次生成的代码运行失败，请根据错误修复后重新输出完整 index.html 源码。",
         `错误信息：${errorMessage}`,
         "上一次代码：",
         previousFiles
       ].join("\n")
     }
   ];
-  const result = await callCloudLlm(provider, messages, { temperature: 0.25, timeout: 180000, maxTokens: 6000 });
-  const payload = extractJsonObject(result.text);
+  const result = await callCloudLlm(provider, messages, { temperature: 0.25, timeout: 240000, maxTokens: 12000 });
+  const payload = parseSmartSceneAgentText(result.text);
   return {
-    files: safeSmartSceneFiles(payload),
+    files: payload.files,
     notes: payload.notes || "",
     modelInfo: result.metrics || {}
   };
@@ -4203,7 +5099,9 @@ async function createSmartSceneMainVideo(db, project, options = {}) {
   const framesDir = join(outDir, "smart-scene", "frames");
   const mainVideoPath = join(outDir, "smart-scene-main.mp4");
   mkdirSync(workspaceDir, { recursive: true });
-  let agent = await callSmartSceneAgent(db, project, options);
+  let agent = options.smartSceneLayoutMode === "transparent_overlay"
+    ? fallbackTransparentSmartScene(project, options)
+    : await callSmartSceneAgent(db, project, options);
   writeSmartSceneFiles(workspaceDir, agent.files);
   writeFileSync(join(outDir, "smart-scene", "agent-response.json"), JSON.stringify(agent, null, 2));
   const htmlPath = join(workspaceDir, "index.html");
@@ -4236,7 +5134,7 @@ async function createSmartSceneMainVideo(db, project, options = {}) {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       if (attempt >= 3) break;
-      agent = await reviseSmartSceneAgent(db, agent, lastError, options);
+      agent = await reviseSmartSceneAgent(db, agent, lastError, { ...options, project });
       writeSmartSceneFiles(workspaceDir, agent.files);
       writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt + 1}.json`), JSON.stringify(agent, null, 2));
     }
@@ -4244,14 +5142,21 @@ async function createSmartSceneMainVideo(db, project, options = {}) {
   throw new Error(`智能布景 Agent 渲染失败：${lastError}`);
 }
 
-function smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex) {
+function smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex, layoutMode = "pip") {
   const pipX = `W-w-28`;
   const pipY = `H-h-28`;
-  let graph = [
-    `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=yuv420p[base]`,
-    `[1:v]scale=${SMART_SCENE_PIP_WIDTH}:-1,crop=${SMART_SCENE_PIP_WIDTH}:${SMART_SCENE_PIP_HEIGHT}:(iw-${SMART_SCENE_PIP_WIDTH})/2:40,setsar=1[pip]`,
-    `[base][pip]overlay=${pipX}:${pipY},drawbox=x=iw-${SMART_SCENE_PIP_WIDTH}-28:y=ih-${SMART_SCENE_PIP_HEIGHT}-28:w=${SMART_SCENE_PIP_WIDTH}:h=${SMART_SCENE_PIP_HEIGHT}:color=white@0.85:t=3[v0]`
-  ].join(";");
+  const transparent = layoutMode === "transparent_overlay";
+  let graph = transparent
+    ? [
+        `[1:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,eq=contrast=1.03:saturation=1.02[avatarbase]`,
+        `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=rgba,colorchannelmixer=aa=0.48[sceneoverlay]`,
+        `[avatarbase][sceneoverlay]overlay=0:0,format=yuv420p[v0]`
+      ].join(";")
+    : [
+        `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=yuv420p[base]`,
+        `[1:v]scale=${SMART_SCENE_PIP_WIDTH}:-1,crop=${SMART_SCENE_PIP_WIDTH}:${SMART_SCENE_PIP_HEIGHT}:(iw-${SMART_SCENE_PIP_WIDTH})/2:40,setsar=1[pip]`,
+        `[base][pip]overlay=${pipX}:${pipY},drawbox=x=iw-${SMART_SCENE_PIP_WIDTH}-28:y=ih-${SMART_SCENE_PIP_HEIGHT}-28:w=${SMART_SCENE_PIP_WIDTH}:h=${SMART_SCENE_PIP_HEIGHT}:color=white@0.85:t=3[v0]`
+      ].join(";");
   let previous = "v0";
   captionOverlays.forEach((item, index) => {
     const inputIndex = firstOverlayInputIndex + index;
@@ -4273,7 +5178,8 @@ async function packageSmartSceneVideo({
   backgroundMusicPath = "",
   backgroundMusicVolume = 0.2,
   duration,
-  captionOverlays = []
+  captionOverlays = [],
+  layoutMode = "pip"
 }) {
   const hasAudio = audioPath && existsSync(audioPath);
   const hasMusic = backgroundMusicPath && existsSync(backgroundMusicPath);
@@ -4284,7 +5190,7 @@ async function packageSmartSceneVideo({
   const audioInputIndex = hasAudio ? 2 : -1;
   const musicInputIndex = hasMusic ? (hasAudio ? 3 : 2) : -1;
   const firstOverlayInputIndex = 2 + (hasAudio ? 1 : 0) + (hasMusic ? 1 : 0);
-  const filters = [smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex)];
+  const filters = [smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex, layoutMode)];
   if (hasMusic && hasAudio) {
     filters.push(`[${musicInputIndex}:a]volume=${clampNumber(backgroundMusicVolume, 0, 1, 0.2).toFixed(3)},atrim=0:${Math.max(1, Number(duration) || 1)},asetpts=PTS-STARTPTS[bgm]`);
     filters.push(`[${audioInputIndex}:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]`);
@@ -4346,6 +5252,7 @@ app.get("/api/state", (_req, res) => {
   const db = readDb();
   res.json({
     ...db,
+    settings: publicSettings(db.settings),
     models: db.models.filter((model) => !model.hidden && model.type !== "media").map((model) => {
       const detection = detectModel(model);
       return {
@@ -4374,7 +5281,6 @@ app.get("/api/state", (_req, res) => {
     apiProviderCatalog,
     requirementTemplates: db.requirementTemplates || [],
     runtimeModels: runtimeWorkerStatus(),
-    settings: db.settings,
     modelHome: MODEL_HOME
   });
 });
@@ -4454,13 +5360,61 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   db.settings.keepAsrModelWarm = false;
   db.settings.keepTtsModelWarm = false;
   db.settings.keepAvatarModelWarm = false;
-  if (body.videoConcurrency !== undefined) db.settings.videoConcurrency = clampNumber(body.videoConcurrency, 1, 4, db.settings.videoConcurrency || 1, true);
+  if (body.taskConcurrency !== undefined) db.settings.taskConcurrency = clampNumber(body.taskConcurrency, 1, 2, db.settings.taskConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
   writeDb(db);
+  scheduleQueue();
   res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
   } catch (err) {
     next(err);
   }
+});
+
+app.patch("/api/settings/object-storage", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const current = db.settings?.objectStorage || {};
+    const body = req.body || {};
+    const next = normalizeObjectStorageConfig({
+      ...current,
+      enabled: body.enabled !== undefined ? Boolean(body.enabled) : current.enabled,
+      accessKeyId: body.accessKeyId ? String(body.accessKeyId || "").trim() : current.accessKeyId,
+      accessKeySecret: body.accessKeySecret ? String(body.accessKeySecret || "").trim() : current.accessKeySecret,
+      bucket: body.bucket !== undefined ? String(body.bucket || "").trim() : current.bucket,
+      region: body.region !== undefined ? String(body.region || "").trim() : current.region,
+      endpoint: body.endpoint !== undefined ? String(body.endpoint || "").trim() : current.endpoint,
+      pathPrefix: body.pathPrefix !== undefined ? String(body.pathPrefix || "").trim() : current.pathPrefix,
+      expiresSeconds: body.expiresSeconds !== undefined ? Number(body.expiresSeconds) : current.expiresSeconds
+    });
+    const status = objectStorageStatus(next);
+    if (next.enabled && status.status !== "configured") return res.status(400).json({ error: status.message });
+    db.settings.objectStorage = next;
+    writeDb(db);
+    res.json({ ok: true, objectStorage: publicObjectStorageConfig(next), status });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch("/api/settings/defaults", (req, res) => {
+  const db = readDb();
+  const body = req.body || {};
+  db.settings ||= {};
+  if (body.defaultAvatarAssetId !== undefined) {
+    const id = String(body.defaultAvatarAssetId || "").trim();
+    if (id && !db.avatarAssets?.some((asset) => asset.id === id && !asset.deletedAt)) return res.status(400).json({ error: "默认数字人素材不存在。" });
+    db.settings.defaultAvatarAssetId = id;
+  }
+  if (body.defaultVoiceId !== undefined) {
+    const id = String(body.defaultVoiceId || "").trim();
+    if (id && !db.voices?.some((voice) => voice.id === id && !voice.deletedAt)) return res.status(400).json({ error: "默认音色不存在。" });
+    db.settings.defaultVoiceId = id;
+  }
+  if (body.defaultVolcengineSpeakerId !== undefined) {
+    db.settings.defaultVolcengineSpeakerId = String(body.defaultVolcengineSpeakerId || "").trim();
+  }
+  writeDb(db);
+  res.json({ ok: true, settings: db.settings });
 });
 
 function parseFps(value = "") {
@@ -4960,12 +5914,25 @@ app.post("/api/providers/configure", (req, res) => {
   const db = readDb();
   const catalogItem = apiProviderCatalog.find((item) => item.id === req.body.providerId);
   if (!catalogItem) return res.status(404).json({ error: "Provider option not found" });
-  const existing = db.apiProviders.find((item) => item.providerId === catalogItem.id);
+  const existingId = String(req.body.id || "").trim();
+  const existing = existingId ? db.apiProviders.find((item) => item.id === existingId) : null;
   const provider = providerFromCatalog(catalogItem, existing || {});
   const apiKey = String(req.body.apiKey || "").trim();
   if (apiKey) provider.apiKey = apiKey;
   if (req.body.endpoint !== undefined) provider.endpoint = String(req.body.endpoint || "").trim() || catalogItem.endpoint || "";
   if (req.body.model !== undefined) provider.model = String(req.body.model || "").trim() || catalogItem.defaultModel || "";
+  if (req.body.resourceId !== undefined) provider.resourceId = String(req.body.resourceId || "").trim() || catalogItem.resourceId || "";
+  if (req.body.publicBaseUrl !== undefined) provider.publicBaseUrl = String(req.body.publicBaseUrl || "").trim().replace(/\/+$/, "") || catalogItem.publicBaseUrl || "";
+  if (req.body.cosSecretId !== undefined) provider.cosSecretId = String(req.body.cosSecretId || "").trim() || provider.cosSecretId || "";
+  if (req.body.cosSecretKey !== undefined) {
+    const cosSecretKey = String(req.body.cosSecretKey || "").trim();
+    if (cosSecretKey) provider.cosSecretKey = cosSecretKey;
+  }
+  if (req.body.cosRegion !== undefined) provider.cosRegion = String(req.body.cosRegion || "").trim() || catalogItem.cosRegion || "";
+  if (req.body.cosBucket !== undefined) provider.cosBucket = String(req.body.cosBucket || "").trim() || catalogItem.cosBucket || "";
+  if (req.body.cosPathPrefix !== undefined) provider.cosPathPrefix = String(req.body.cosPathPrefix || "").trim().replace(/^\/+|\/+$/g, "") || catalogItem.cosPathPrefix || "";
+  if (req.body.cosExpiresSeconds !== undefined) provider.cosExpiresSeconds = clampNumber(Number(req.body.cosExpiresSeconds || 1800), 300, 7200, 1800);
+  if (req.body.voiceName !== undefined) provider.voiceName = String(req.body.voiceName || "").trim() || catalogItem.voiceName || "";
   const detection = detectProvider(provider);
   if (detection.status !== "configured") return res.status(400).json({ error: detection.message });
   Object.assign(provider, {
@@ -5000,7 +5967,7 @@ app.post("/api/providers/:id/select", (req, res) => {
   const db = readDb();
   const provider = db.apiProviders.find((item) => item.id === req.params.id || item.providerId === req.params.id);
   if (!provider) return res.status(404).json({ error: "Provider not found" });
-  const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts"].includes(item));
+  const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts", "avatar"].includes(item));
   if (!capability) return res.status(400).json({ error: "Provider 不支持可选择的模型类型。" });
   const detection = detectProvider(provider);
   provider.status = detection.status;
@@ -5026,7 +5993,7 @@ app.delete("/api/providers/:id", (req, res) => {
   if (index < 0) return res.status(404).json({ error: "Provider not found" });
   const [provider] = db.apiProviders.splice(index, 1);
   const selectedValue = `provider:${provider.id}`;
-  const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts"].includes(item)) || "llm";
+  const capability = provider.capabilities?.find((item) => ["llm", "asr", "tts", "avatar"].includes(item)) || "llm";
   const fallback = db.models.find((item) => item.type === capability && !item.hidden)?.id || (capability === "llm" ? defaultLocalModelId("llm") : "");
   db.settings.defaultModelIds ||= {};
   if (capability === "llm" && (db.settings.defaultTextModelId === selectedValue || db.settings.defaultTextModelId === `provider:${provider.providerId}`)) {
@@ -5052,14 +6019,21 @@ app.post("/api/providers/:id/test", async (req, res, next) => {
     provider.maskedKey = detection.maskedKey;
     provider.healthMessage = detection.message;
     if (detection.status === "configured") {
-      await callCloudLlm(provider, [
-        { role: "system", content: "你是一个简洁的中文助手。" },
-        { role: "user", content: "用一句话回复：云端文本模型连接正常。" }
-      ], { maxTokens: 80, temperature: 0.2 });
+      const capability = provider.capabilities?.find((item) => ["llm", "tts"].includes(item)) || "llm";
+      if (capability === "tts") {
+        const outDir = join(artifactDir, "provider-tests", `tts-${randomUUID()}`);
+        mkdirSync(outDir, { recursive: true });
+        await callCloudTts(provider, "云端语音模型连接正常。", join(outDir, "provider-test.wav"), { timeout: 120000 });
+      } else {
+        await callCloudLlm(provider, [
+          { role: "system", content: "你是一个简洁的中文助手。" },
+          { role: "user", content: "用一句话回复：云端文本模型连接正常。" }
+        ], { maxTokens: 80, temperature: 0.2 });
+      }
     }
     provider.testResult = {
       status: detection.status === "configured" ? "passed" : "blocked",
-      message: detection.status === "configured" ? "Provider 测试通过，已完成一次 chat/completions 调用。" : "请先配置 API Key。",
+      message: detection.status === "configured" ? "Provider 测试通过，已完成一次真实调用。" : "请先配置 API Key。",
       testedAt: now()
     };
     writeDb(db);
@@ -5127,7 +6101,7 @@ app.post("/api/model-tests/llm", async (req, res, next) => {
       { role: "user", content: prompt }
     ];
     const result = target.type === "cloud"
-      ? await callCloudLlm(target.provider, messages, { maxTokens: 600, temperature: 0.3 })
+      ? await callCloudLlm(target.provider, messages, { maxTokens: 600, temperature: 0.3, timeout: 30000, thinking: false })
       : await callLocalLlm(messages, { maxTokens: 600, temperature: 0.3, modelPath: detectModel(target.model).resolvedPath });
     res.json({
       ok: true,
@@ -5190,15 +6164,20 @@ app.post("/api/model-tests/tts", upload.single("referenceAudio"), async (req, re
     const outDir = join(artifactDir, "model-tests", `tts-${randomUUID()}`);
     mkdirSync(outDir, { recursive: true });
     const outPath = join(outDir, "tts-test.wav");
-    const result = target.type === "cloud"
-      ? await callCloudTts(target.provider, text, outPath, { voice: body.cloudVoice || body.voice || "alloy", timeout: Number(body.timeout || 120000) })
-      : await createLocalTtsAudio(text, voice, outPath, {
-          ttsTimeout: Number(body.timeout || 1200000),
-          model: target.model,
-          ttsStylePreset: body.ttsStylePreset || "natural",
-          ttsStyleIntensity: body.ttsStyleIntensity || "medium",
-          ttsStylePrompt: body.ttsStylePrompt || ""
-        });
+    const result = await synthesizeSegmentedTtsAudio(text, outPath, {
+      maxChars: body.ttsSegmentMaxChars,
+      synthesize: (segmentText, segmentPath, segmentIndex, segments, segmentContext = {}) => target.type === "cloud"
+        ? callCloudTts(target.provider, segmentText, segmentPath, { voice: body.cloudVoice || body.voice || body.voiceId || "alloy", timeout: Number(body.timeout || 120000) })
+        : createLocalTtsAudio(segmentText, voice, segmentPath, {
+            ttsTimeout: Number(body.timeout || 1200000),
+            model: target.model,
+            ttsStylePreset: body.ttsStylePreset || "natural",
+            ttsStyleIntensity: body.ttsStyleIntensity || "medium",
+            ttsStylePrompt: body.ttsStylePrompt || "",
+            previousSegmentPath: segmentContext.previousSegmentPath,
+            previousSegmentText: segmentContext.previousSegmentText
+          })
+    });
     const duration = await probeMediaDuration(outPath);
     res.json({
       ok: true,
@@ -5207,7 +6186,9 @@ app.post("/api/model-tests/tts", upload.single("referenceAudio"), async (req, re
         path: outPath,
         duration
       },
-      voice: target.type === "cloud" ? { id: body.cloudVoice || "alloy", name: body.cloudVoice || "alloy" } : { id: voice.id, name: voice.name },
+      voice: target.type === "cloud"
+        ? cloudTtsVoiceInfo(target.provider, result.metrics || {}, body.cloudVoice || body.voice || body.voiceId || "")
+        : { id: voice.id, name: voice.name },
       modelInfo: target.type === "cloud"
         ? { type: "cloud", providerId: target.provider.id, providerName: target.provider.name, model: target.provider.model }
         : { type: "local", modelId: target.model.id, modelName: target.model.name },
@@ -5240,8 +6221,8 @@ app.post("/api/model-tests/avatar", upload.fields([
     const audioPath = uploadedAudio?.path || "";
     if (!audioPath) return res.status(400).json({ error: "请上传或录制一段口播音频。" });
     const modelId = String(body.modelId || "");
-    const model = db.models.find((item) => item.id === modelId && item.type === "avatar" && !item.hidden);
-    if (modelId && !model) return res.status(404).json({ error: "数字人模型不存在。" });
+    const target = findTypedModelTarget(db, "avatar", modelId);
+    const model = target.type === "local" ? target.model : null;
     if (model) {
       const detection = detectModel(model);
       model.status = detection.status;
@@ -5271,7 +6252,7 @@ app.post("/api/model-tests/avatar", upload.fields([
     const rawPath = join(outDir, "avatar-render.mp4");
     const finalPath = join(outDir, "avatar-test.mp4");
     const duration = Math.min(20, Math.max(3, Math.ceil(await probeMediaDuration(audioPath) || 8)));
-    const render = await createExternalAvatarVideo({
+    const renderInput = {
       projectId: "model-test",
       script: "",
       audioPath,
@@ -5279,12 +6260,16 @@ app.post("/api/model-tests/avatar", upload.fields([
       subtitlesPath: "",
       duration,
       videoSettings
-    }, rawPath);
+    };
+    const render = target.type === "cloud"
+      ? await callCloudAvatar(target.provider, renderInput, rawPath, { timeout: Number(body.timeout || 1200000) })
+      : await createExternalAvatarVideo(renderInput, rawPath);
     if (!render.ok || !existsSync(rawPath)) {
       return res.status(500).json({ error: render.error || "数字人模型未输出视频。" });
     }
     const packaged = await createPreviewVideo(finalPath, rawPath, audioPath, duration, "", []).catch(() => false);
     if (!packaged && existsSync(rawPath)) copyFileSync(rawPath, finalPath);
+    removeArtifactPath(rawPath, new Set([finalPath]));
     const backgroundMusic = (db.musicAssets || []).find((item) => item.id === body.backgroundMusicAssetId && !item.deletedAt && item.path && existsSync(item.path));
     if (backgroundMusic?.path) await mixBackgroundMusic(finalPath, backgroundMusic.path, duration).catch(() => false);
     res.json({
@@ -5295,8 +6280,8 @@ app.post("/api/model-tests/avatar", upload.fields([
         duration
       },
       modelInfo: {
-        modelId: model?.id || "",
-        modelName: model?.name || "",
+        modelId: target.type === "cloud" ? `provider:${target.provider.id}` : model?.id || "",
+        modelName: target.type === "cloud" ? `${target.provider.name} · ${target.provider.model}` : model?.name || "",
         engine: render.engine || videoSettings.engine
       },
       videoSettings
@@ -5327,6 +6312,24 @@ function sourceExtractionSteps() {
     message: "",
     updatedAt: ""
   }));
+}
+
+function cleanupSourceAnalysisMedia(sourceAnalysis = {}) {
+  const next = {
+    ...sourceAnalysis,
+    links: (sourceAnalysis.links || []).map((link) => {
+      removeArtifactPath(link.audioPath);
+      removeArtifactPath(link.videoPath);
+      return {
+        ...link,
+        audioPath: "",
+        videoPath: "",
+        audioUri: "",
+        videoUri: ""
+      };
+    })
+  };
+  return next;
 }
 
 function sourceTypeLabel(type = "") {
@@ -5660,7 +6663,7 @@ async function runSourceExtraction(id) {
         });
       } else if (extractedLink.audioPath) {
         try {
-          const result = await transcribeWithLocalAsr(extractedLink.audioPath, options);
+          const result = await transcribeWithConfiguredAsr(readDb(), extractedLink.audioPath, options);
           const text = result.text || "";
           if (!text.trim()) throw new Error("ASR 未返回有效文本。");
           sourceAnalysis.transcripts.push({
@@ -5711,14 +6714,15 @@ async function runSourceExtraction(id) {
     });
     updateSourceExtraction(id, (extraction) => {
       const firstLink = sourceAnalysis.links?.[0] || {};
+      const cleanedSourceAnalysis = cleanupSourceAnalysisMedia({ ...sourceAnalysis, notes });
       extraction.status = "done";
       extraction.detectedType = sourceExtractionKind(sourceAnalysis);
       extraction.sourceUrl = firstLink.url || link.url;
       extraction.title = firstLink.title || "";
       extraction.extractedText = finalText;
       extraction.transcriptText = transcriptText;
-      extraction.mediaUri = firstLink.videoUri || firstLink.audioUri || "";
-      extraction.sourceAnalysis = { ...sourceAnalysis, notes };
+      extraction.mediaUri = "";
+      extraction.sourceAnalysis = cleanedSourceAnalysis;
       extraction.notes = notes;
     });
   } catch (error) {
@@ -5858,6 +6862,24 @@ app.post("/api/text/polish", async (req, res, next) => {
   }
 });
 
+app.post("/api/text/title", async (req, res, next) => {
+  try {
+    const db = readDb();
+    const inputText = String(req.body.inputText || req.body.text || "").trim();
+    const requirements = String(req.body.requirements || "").trim();
+    if (!inputText && !requirements) return res.status(400).json({ error: "请先填写口播内容或生成要求。" });
+    const title = await generateProjectTitleWithTextModel(db, {
+      inputText,
+      sourceText: inputText,
+      requirements,
+      scriptModelId: req.body.scriptModelId || db.settings.defaultTextModelId
+    });
+    res.json({ title });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post("/api/projects", async (req, res, next) => {
   try {
   const db = readDb();
@@ -5865,12 +6887,13 @@ app.post("/api/projects", async (req, res, next) => {
   const manualScript = Boolean(req.body.manualScript);
   const mode = req.body.mode === "auto" ? "auto" : "manual";
   const scriptModelId = req.body.scriptModelId || db.settings.defaultTextModelId || defaultLocalModelId("llm");
-  const title = String(req.body.title || "").trim() || await generateProjectTitleWithTextModel(db, {
-    inputText,
-    sourceText: inputText,
-    requirements: req.body.requirements || "",
-    scriptModelId
-  });
+  const ttsModelId = req.body.ttsModelId || (mode === "auto" ? db.settings.defaultModelIds?.tts || "" : "");
+  const ttsProvider = String(ttsModelId || "").startsWith("provider:")
+    ? db.apiProviders.find((provider) => provider.id === String(ttsModelId).replace("provider:", "") || provider.providerId === String(ttsModelId).replace("provider:", ""))
+    : null;
+  const isVolcengineTts = Boolean(ttsProvider && (ttsProvider.providerId === "volcengine-tts" || ttsProvider.id === "volcengine-tts"));
+  const defaultVoiceId = isVolcengineTts ? ttsProvider?.model || "" : db.settings.defaultVoiceId || "";
+  const title = String(req.body.title || "").trim() || deriveProjectTitle(inputText, req.body.requirements || "");
   const initialScript = manualScript
     ? {
         title,
@@ -5894,13 +6917,16 @@ app.post("/api/projects", async (req, res, next) => {
     generateSubtitles: Boolean(req.body.generateSubtitles),
     platforms: req.body.platforms?.length ? req.body.platforms : ["douyin", "xiaohongshu", "wechat"],
     scriptModelId,
-    avatarAssetId: req.body.avatarAssetId || "",
+    avatarAssetId: req.body.avatarAssetId || (mode === "auto" ? db.settings.defaultAvatarAssetId || "" : ""),
+    avatarModelId: req.body.avatarModelId || "",
     backgroundMusicAssetId: req.body.backgroundMusicAssetId || "",
     backgroundMusicVolume: clampNumber(req.body.backgroundMusicVolume, 0, 1, 0.2),
     smartSceneEnabled: Boolean(req.body.smartSceneEnabled),
     smartScenePrompt: req.body.smartScenePrompt || "",
-    voiceId: req.body.voiceId || "",
-    ttsModelId: req.body.ttsModelId || "",
+    smartSceneLayoutMode: ["pip", "transparent_overlay"].includes(req.body.smartSceneLayoutMode) ? req.body.smartSceneLayoutMode : "pip",
+    skipLipSync: Boolean(req.body.skipLipSync),
+    voiceId: req.body.voiceId || (mode === "auto" ? defaultVoiceId : ""),
+    ttsModelId,
     audioPlaybackSpeed: clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1),
     ttsStylePreset: req.body.ttsStylePreset || "natural",
     ttsStyleIntensity: req.body.ttsStyleIntensity || "medium",
@@ -5996,7 +7022,7 @@ app.patch("/api/projects/:id", (req, res) => {
   const db = readDb();
   const project = ensureProject(db, req.params.id);
   const changedStage = req.body.changedStage || "input";
-  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "smartSceneEnabled", "smartScenePrompt", "voiceId", "avatarAssetId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "ttsStylePreset", "ttsStyleIntensity", "ttsStylePrompt", "platforms"]) {
+  for (const key of ["title", "inputText", "requirements", "manualScript", "reviewEnabled", "mode", "generateSubtitles", "smartSceneEnabled", "smartScenePrompt", "smartSceneLayoutMode", "skipLipSync", "voiceId", "avatarAssetId", "avatarModelId", "backgroundMusicAssetId", "scriptModelId", "ttsModelId", "ttsStylePreset", "ttsStyleIntensity", "ttsStylePrompt", "platforms"]) {
     if (req.body[key] !== undefined) project[key] = req.body[key];
   }
   if (req.body.audioPlaybackSpeed !== undefined) project.audioPlaybackSpeed = clampNumber(req.body.audioPlaybackSpeed, 0.5, 2, 1);
@@ -6175,6 +7201,8 @@ function createVideoVersion(db, project, options = {}) {
       videoSettings: normalizeVideoSettings(options.videoSettings || project.videoSettings),
       smartSceneEnabled: Boolean(project.artifacts.video.smartSceneEnabled),
       smartScenePrompt: project.artifacts.video.smartScenePrompt || "",
+      smartSceneLayoutMode: project.artifacts.video.smartSceneLayoutMode || project.smartSceneLayoutMode || "pip",
+      skipLipSync: Boolean(project.artifacts.video.skipLipSync || project.skipLipSync),
       videoUri: publicPath(versionVideoPath),
       videoPath: versionVideoPath,
       duration: project.artifacts.video.duration || 0,
@@ -6296,8 +7324,8 @@ function enqueueAndRespond(req, res, next, type, payload = {}) {
 
 function startImmediateAndRespond(req, res, next, type, payload = {}) {
   try {
-    const item = startImmediateProjectJob(req.params.id, type, payload);
-    res.status(202).json({ submitted: true, queueItem: item });
+    const item = enqueueProjectJob(req.params.id, type, payload);
+    res.status(202).json({ queued: true, queueItem: item });
   } catch (err) {
     next(err);
   }
@@ -6400,13 +7428,11 @@ async function synthesizeProject(projectId, options = {}) {
       ttsStyleIntensity: options.payload?.ttsStyleIntensity ?? project.ttsStyleIntensity,
       ttsStylePrompt: options.payload?.ttsStylePrompt ?? project.ttsStylePrompt
     });
-    const isVoxCpm = ttsEngineFromModel(ttsTarget.model) === "voxcpm2";
-    if (ttsTarget.type !== "local") {
-      const err = new Error("任务生成口播音频暂只支持本地 TTS 模型。");
-      err.status = 400;
-      throw err;
-    }
-    project.ttsModelId = ttsTarget.model.id;
+    const isCloudTts = ttsTarget.type === "cloud";
+    const ttsModelId = isCloudTts ? `provider:${ttsTarget.provider.id}` : ttsTarget.model.id;
+    const ttsModelName = isCloudTts ? `${ttsTarget.provider.name} · ${ttsTarget.provider.model}` : ttsTarget.model.name;
+    const isVoxCpm = !isCloudTts && ttsEngineFromModel(ttsTarget.model) === "voxcpm2";
+    project.ttsModelId = ttsModelId;
     project.audioPlaybackSpeed = audioPlaybackSpeed;
     project.ttsStylePreset = isVoxCpm ? ttsStyle.preset : "natural";
     project.ttsStyleIntensity = isVoxCpm ? ttsStyle.intensity : "medium";
@@ -6422,19 +7448,41 @@ async function synthesizeProject(projectId, options = {}) {
     });
     pushJob(db, project.id, "synthesize_speech", "running", "开始生成口播音频。");
     writeDb(db);
-    const ttsProgressLabel = `正在使用 ${ttsTarget.model.name} 生成口播音频。`;
+    const ttsProgressLabel = `正在使用 ${ttsModelName} 生成口播音频。`;
     updateQueueProgress(options.queueId, { percent: 50, label: ttsProgressLabel, stage: "voice", stageStatus: "running" });
     setStage(project, "voice", "running", ttsProgressLabel);
     project.updatedAt = now();
     writeDb(db);
     let ttsResult;
     try {
-      ttsResult = await createLocalTtsAudio(scriptText, voice, modelAudioPath, {
-        ...options,
-        model: ttsTarget.model,
-        ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
-        ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
-        ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : ""
+      ttsResult = await synthesizeSegmentedTtsAudio(scriptText, modelAudioPath, {
+        maxChars: options.payload?.ttsSegmentMaxChars,
+        onSegment: (index, total) => {
+          const segmentLabel = total > 1 ? `正在生成口播音频 ${index + 1}/${total}。` : ttsProgressLabel;
+          updateQueueProgress(options.queueId, {
+            percent: Math.min(74, 50 + Math.round(((index + 1) / total) * 20)),
+            label: segmentLabel,
+            stage: "voice",
+            stageStatus: "running"
+          });
+        },
+        synthesize: (segmentText, segmentPath, segmentIndex, segments, segmentContext = {}) => {
+          if (isCloudTts) {
+            return callCloudTts(ttsTarget.provider, segmentText, segmentPath, {
+              voice: options.payload?.cloudVoice || options.payload?.voice || options.payload?.voiceId || project.voiceId || "alloy",
+              timeout: Number(options.payload?.timeout || 1200000)
+            });
+          }
+          return createLocalTtsAudio(segmentText, voice, segmentPath, {
+            ...options,
+            model: ttsTarget.model,
+            ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
+            ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
+            ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : "",
+            previousSegmentPath: segmentContext.previousSegmentPath,
+            previousSegmentText: segmentContext.previousSegmentText
+          });
+        }
       });
       const speedResult = await applyAudioPlaybackSpeed(modelAudioPath, audioPlaybackSpeed);
       ttsResult.metrics = { ...(ttsResult.metrics || {}), audioPlaybackSpeed, speedAdjusted: speedResult.applied };
@@ -6453,7 +7501,7 @@ async function synthesizeProject(projectId, options = {}) {
       failedProject.status = "failed";
       failedProject.lastError = message;
       failedProject.updatedAt = now();
-      pushJob(failDb, failedProject.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "", ttsModelId: ttsTarget.model.id, ttsModelName: ttsTarget.model.name });
+      pushJob(failDb, failedProject.id, "synthesize_speech", "failed", message, { voiceId: voice?.id || "", voiceName: voice?.name || "", ttsModelId, ttsModelName });
       writeDb(failDb);
       updateQueueProgress(options.queueId, { percent: 50, label: message, stage: "voice", stageStatus: "failed" });
       throw error;
@@ -6461,16 +7509,17 @@ async function synthesizeProject(projectId, options = {}) {
     const audioPath = modelAudioPath;
     const actualDuration = await probeMediaDuration(audioPath);
     const duration = Math.min(120, Math.max(estimatedDuration, Math.ceil(actualDuration || estimatedDuration)));
+    const cloudVoice = isCloudTts ? cloudTtsVoiceInfo(ttsTarget.provider, ttsResult?.metrics || {}, options.payload?.voice || options.payload?.voiceId || project.voiceId || "") : null;
     const audioArtifact = {
       uri: publicPath(audioPath),
       path: audioPath,
       duration,
-      adapter: `local-${ttsEngineFromModel(ttsTarget.model)}-tts-cli`,
-      note: `已使用 ${ttsTarget.model.name} 生成真实口播音频。${voice?.name ? `参考音色：${voice.name}。` : ""}`,
-      voiceId: voice?.id || "",
-      voiceName: voice?.name || "",
-      ttsModelId: ttsTarget.model.id,
-      ttsModelName: ttsTarget.model.name,
+      adapter: isCloudTts ? `cloud-${ttsTarget.provider.providerId || ttsTarget.provider.id}-tts` : `local-${ttsEngineFromModel(ttsTarget.model)}-tts-cli`,
+      note: `已使用 ${ttsModelName} 生成真实口播音频。${isCloudTts && cloudVoice?.name ? `云端音色：${cloudVoice.name}。` : !isCloudTts && voice?.name ? `参考音色：${voice.name}。` : ""}`,
+      voiceId: isCloudTts ? cloudVoice?.id || "" : voice?.id || "",
+      voiceName: isCloudTts ? cloudVoice?.name || "" : voice?.name || "",
+      ttsModelId,
+      ttsModelName,
       audioPlaybackSpeed,
       ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
       ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
@@ -6481,7 +7530,7 @@ async function synthesizeProject(projectId, options = {}) {
     const latestProject = ensureProject(latestDb, projectId);
     latestProject.selectedScriptVersionId = scriptVersion.id;
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
-    latestProject.ttsModelId = ttsTarget.model.id;
+    latestProject.ttsModelId = ttsModelId;
     latestProject.audioPlaybackSpeed = audioPlaybackSpeed;
     latestProject.ttsStylePreset = isVoxCpm ? ttsStyle.preset : "natural";
     latestProject.ttsStyleIntensity = isVoxCpm ? ttsStyle.intensity : "medium";
@@ -6492,7 +7541,9 @@ async function synthesizeProject(projectId, options = {}) {
       ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural",
       ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium",
       ttsStylePrompt: isVoxCpm ? ttsStyle.prompt : "",
-      modelInfo: { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: { ...(ttsResult?.metrics || {}), ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural", ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium" } }
+      modelInfo: isCloudTts
+        ? { type: "cloud", providerId: ttsTarget.provider.id, providerName: ttsTarget.provider.name, model: ttsTarget.provider.model, metrics: ttsResult?.metrics || {} }
+        : { type: "local", modelId: ttsTarget.model.id, modelName: ttsTarget.model.name, metrics: { ...(ttsResult?.metrics || {}), ttsStylePreset: isVoxCpm ? ttsStyle.preset : "natural", ttsStyleIntensity: isVoxCpm ? ttsStyle.intensity : "medium" } }
     });
     latestProject.status = "voice_ready";
     setStage(latestProject, "voice", "done", `${version.label} 口播音频已生成。`);
@@ -6627,21 +7678,30 @@ async function renderProject(projectId, options = {}) {
     project.backgroundMusicVolume = backgroundMusicVolume;
     const smartSceneEnabled = Boolean(options.smartSceneEnabled ?? project.smartSceneEnabled);
     const smartScenePrompt = String(options.smartScenePrompt ?? project.smartScenePrompt ?? "");
+    const smartSceneLayoutMode = ["pip", "transparent_overlay"].includes(options.smartSceneLayoutMode ?? project.smartSceneLayoutMode)
+      ? String(options.smartSceneLayoutMode ?? project.smartSceneLayoutMode)
+      : "pip";
+    const skipLipSync = Boolean(options.skipLipSync ?? project.skipLipSync);
     project.smartSceneEnabled = smartSceneEnabled;
     project.smartScenePrompt = smartScenePrompt;
+    project.smartSceneLayoutMode = smartSceneLayoutMode;
+    project.skipLipSync = skipLipSync;
+    const avatarModelId = options.avatarModelId || project.avatarModelId || db.settings.defaultModelIds?.avatar || "";
+    project.avatarModelId = avatarModelId;
+    const avatarTarget = skipLipSync ? null : findTypedModelTarget(db, "avatar", avatarModelId);
     project.videoSettings = applyRuntimeVideoSettings(db, { ...project.videoSettings, ...(options.videoSettings || {}) });
     const generateSubtitles = Boolean(options.generateSubtitles ?? project.generateSubtitles);
     project.generateSubtitles = generateSubtitles;
     project.status = "running";
-    setStage(project, "video", "running", smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。");
+    setStage(project, "video", "running", skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。");
     setProjectProgress(project, {
       percent: options.queueId ? 68 : 0,
-      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。",
+      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。",
       stage: "video",
       status: "running",
       queueId: options.queueId || ""
     });
-    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : smartSceneEnabled ? "开始生成智能布景视频。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration, smartSceneEnabled });
+    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : skipLipSync ? "开始合成无嘴型同步视频。" : smartSceneEnabled ? "开始生成智能布景视频。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration, smartSceneEnabled, smartSceneLayoutMode, skipLipSync });
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: generateSubtitles ? "正在生成字幕文件。" : "正在准备视频素材。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human.mp4");
@@ -6649,29 +7709,33 @@ async function renderProject(projectId, options = {}) {
     const srtPath = generateSubtitles ? join(outDir, "captions.srt") : "";
     const captionSegments = generateSubtitles ? buildCaptionSegments(project.artifacts.script.script, duration) : [];
     if (generateSubtitles) writeFileSync(srtPath, buildSrt(project.artifacts.script.script, duration));
-    updateQueueProgress(options.queueId, { percent: 76, label: "正在调用数字人口型 Adapter。", stage: "video" });
-    const avatarRender = await createSegmentedAvatarVideo(
-      {
-        projectId: project.id,
-        script: project.artifacts.script.script,
-        audioPath: project.artifacts.audio?.path || "",
-        avatarPath: avatar?.path || "",
-        subtitlesPath: smartSceneEnabled ? "" : srtPath,
-        duration,
-        videoSettings: project.videoSettings
-      },
-      avatarRenderPath,
-      { queueId: options.queueId, segmentSeconds: db.settings.avatarSegmentSeconds }
+    updateQueueProgress(options.queueId, { percent: 76, label: skipLipSync ? "正在准备原素材画面。" : "正在调用数字人口型 Adapter。", stage: "video" });
+    const avatarRenderInput = {
+      projectId: project.id,
+      script: project.artifacts.script.script,
+      audioPath: project.artifacts.audio?.path || "",
+      avatarPath: avatar?.path || "",
+      subtitlesPath: smartSceneEnabled ? "" : srtPath,
+      duration,
+      videoSettings: project.videoSettings
+    };
+    const avatarRender = await (skipLipSync
+      ? createNoLipSyncAvatarVideo(avatarRenderInput, avatarRenderPath)
+      : avatarTarget?.type === "cloud"
+        ? callCloudAvatar(avatarTarget.provider, avatarRenderInput, avatarRenderPath, { timeout: 1200000 })
+        : createSegmentedAvatarVideo(avatarRenderInput, avatarRenderPath, { queueId: options.queueId, segmentSeconds: db.settings.avatarSegmentSeconds })
     ).catch((error) => ({
       ok: false,
-      engine: project.videoSettings.engine,
-      error: error instanceof Error ? error.message : "口型 Adapter 调用失败。"
+      engine: skipLipSync ? "no-lip-sync" : avatarTarget?.type === "cloud" ? `cloud-${avatarTarget.provider.providerId || avatarTarget.provider.id}` : project.videoSettings.engine,
+      error: error instanceof Error ? error.message : skipLipSync ? "无口型同步视频生成失败。" : "口型 Adapter 调用失败。"
     }));
     const externalRendered = Boolean(avatarRender.ok);
     if (!externalRendered) {
       const failDb = readDb();
       const failedProject = ensureProject(failDb, projectId);
-      const message = `数字人口型生成失败：${avatarRender.error || "口型 Adapter 未生成视频。"}`;
+      const message = skipLipSync
+        ? `无口型同步视频生成失败：${avatarRender.error || "原素材画面未生成。"}`
+        : `数字人口型生成失败：${avatarRender.error || "口型 Adapter 未生成视频。"}`;
       failedProject.status = "failed";
       failedProject.lastError = message;
       setStage(failedProject, "video", "failed", message);
@@ -6692,16 +7756,21 @@ async function renderProject(projectId, options = {}) {
     let smartSceneMain = null;
     let captionOverlays = [];
     if (smartSceneEnabled) {
-      updateQueueProgress(options.queueId, { percent: 84, label: "DeepSeek Agent 正在编写智能布景工程。", stage: "video" });
+      updateQueueProgress(options.queueId, {
+        percent: 84,
+        label: smartSceneLayoutMode === "transparent_overlay" ? "正在渲染半透明智能布景。" : "DeepSeek Agent 正在编写智能布景工程。",
+        stage: "video"
+      });
       smartSceneMain = await createSmartSceneMainVideo(db, project, {
         outDir,
         duration,
         previewDuration,
-        smartScenePrompt
+        smartScenePrompt,
+        smartSceneLayoutMode
       });
       captionOverlays = generateSubtitles
         ? await createSimpleSubtitleOverlays(captionSegments, outDir, smartSceneMain.path, {
-          layout: "smart_scene",
+          layout: smartSceneLayoutMode === "transparent_overlay" ? "center_bottom" : "smart_scene",
           pipWidth: SMART_SCENE_PIP_WIDTH,
           pipHeight: SMART_SCENE_PIP_HEIGHT
         }).catch(() => [])
@@ -6715,7 +7784,8 @@ async function renderProject(projectId, options = {}) {
         backgroundMusicPath: backgroundMusic?.path || "",
         backgroundMusicVolume,
         duration,
-        captionOverlays
+        captionOverlays,
+        layoutMode: smartSceneLayoutMode
       });
     } else {
       captionOverlays = generateSubtitles
@@ -6749,19 +7819,22 @@ async function renderProject(projectId, options = {}) {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
-      adapter: smartSceneEnabled ? "deepseek-smart-scene-agent" : `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
+      adapter: smartSceneEnabled ? "deepseek-smart-scene-agent" : skipLipSync ? "no-lip-sync-avatar-adapter" : `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
       smartSceneEnabled,
       smartScenePrompt,
+      smartSceneLayoutMode,
+      skipLipSync,
       subtitlesEmbedded,
       visibleCaptions,
       qualityReport: {
-        status: smartSceneEnabled ? "rendered_by_deepseek_smart_scene_agent" : `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
+        status: smartSceneEnabled ? "rendered_by_deepseek_smart_scene_agent" : skipLipSync ? "rendered_without_lip_sync" : `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
-          smartSceneEnabled ? "已启用智能布景：DeepSeek Agent 编写主画面工程，平台渲染后叠加数字人画中画。" : "",
-          `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
+          smartSceneEnabled ? (smartSceneLayoutMode === "transparent_overlay" ? "已启用智能布景：主画面工程以半透明图层覆盖在数字人视频上。" : "已启用智能布景：DeepSeek Agent 编写主画面工程，平台渲染后叠加数字人画中画。") : "",
+          skipLipSync ? "已跳过嘴型同步：未调用口型模型，直接使用原数字人素材画面合成口播音频。" : `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
+          !skipLipSync && avatarRender.frameRepairRestored ? `无人脸帧已回填原素材：${avatarRender.frameRepairRestored} 帧。` : "",
           smartSceneMain?.agentNotes ? `Agent 说明：${smartSceneMain.agentNotes}` : "",
           avatarRender.segmentCount ? `长视频已自动切成 ${avatarRender.segmentCount} 段渲染，每段约 ${avatarRender.segmentSeconds} 秒。` : "",
-          `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
+          skipLipSync ? "视频参数：跳过口型同步，保留原素材画面比例。" : `视频参数：${project.videoSettings.cropMode} / ${project.videoSettings.parsingMode} / upper=${project.videoSettings.upperBoundaryRatio} / margin=${project.videoSettings.extraMargin}`,
           backgroundMusicMixed ? `已混入背景音乐：${backgroundMusic.name}，音量 ${Math.round(backgroundMusicVolume * 100)}%。` : "未使用背景音乐。",
           generateSubtitles ? (smartSceneEnabled && visibleCaptions ? "字幕已烧录到最终外层视频画面。" : visibleCaptions ? "字幕已烧录到视频画面。" : subtitlesEmbedded ? "字幕已写入 MP4 字幕轨。" : "字幕文件已生成，当前环境未能写入视频画面。") : "未生成字幕。",
           "输出画幅已按数字人原视频保留，不再强制裁剪为 1080x1920。"
@@ -6780,11 +7853,14 @@ async function renderProject(projectId, options = {}) {
     latestProject.selectedScriptVersionId = scriptVersion.id;
     latestProject.artifacts.script = scriptArtifactFromVersion(latestProject, scriptVersion);
     latestProject.avatarAssetId = avatarAssetId || latestProject.avatarAssetId;
+    latestProject.avatarModelId = avatarModelId || latestProject.avatarModelId || "";
     latestProject.backgroundMusicAssetId = backgroundMusic?.id || "";
     latestProject.backgroundMusicVolume = backgroundMusicVolume;
     latestProject.generateSubtitles = generateSubtitles;
     latestProject.smartSceneEnabled = smartSceneEnabled;
     latestProject.smartScenePrompt = smartScenePrompt;
+    latestProject.smartSceneLayoutMode = smartSceneLayoutMode;
+    latestProject.skipLipSync = skipLipSync;
     latestProject.videoSettings = project.videoSettings;
     latestProject.artifacts.video = videoArtifact;
     if (subtitlesArtifact) latestProject.artifacts.subtitles = subtitlesArtifact;
@@ -6804,6 +7880,16 @@ async function renderProject(projectId, options = {}) {
       sourceAudioVersionId: audioVersion.id,
       sourceScriptVersionId: scriptVersion.id
     });
+    if (version) {
+      latestProject.artifacts.video = videoArtifactFromVersion(version);
+      if (version.artifact?.subtitles) latestProject.artifacts.subtitles = version.artifact.subtitles;
+      cleanupRenderIntermediateArtifacts(outDir, [
+        latestProject.artifacts.video?.path,
+        latestProject.artifacts.subtitles?.path,
+        ...((latestProject.videoVersions || []).map((item) => item.videoPath || item.artifact?.video?.path || "")),
+        ...((latestProject.audioVersions || []).map((item) => item.audioPath || item.path || ""))
+      ]);
+    }
     setProjectProgress(latestProject, {
       percent: options.queueId ? 96 : 100,
       label: version ? `${version.label}${previewDuration > 0 ? " 3秒预览" : " 视频版本"}已生成。` : "视频已生成。",
@@ -6827,7 +7913,10 @@ app.post("/api/projects/:id/render-video", async (req, res, next) => {
     backgroundMusicVolume: req.body?.backgroundMusicVolume,
     generateSubtitles: Boolean(req.body?.generateSubtitles),
     smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
-    smartScenePrompt: req.body?.smartScenePrompt || ""
+    smartScenePrompt: req.body?.smartScenePrompt || "",
+    smartSceneLayoutMode: req.body?.smartSceneLayoutMode || "pip",
+    skipLipSync: Boolean(req.body?.skipLipSync),
+    avatarModelId: req.body?.avatarModelId || ""
   });
 });
 
@@ -6841,6 +7930,9 @@ app.post("/api/projects/:id/render-preview", async (req, res, next) => {
     generateSubtitles: Boolean(req.body?.generateSubtitles),
     smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
     smartScenePrompt: req.body?.smartScenePrompt || "",
+    smartSceneLayoutMode: req.body?.smartSceneLayoutMode || "pip",
+    skipLipSync: Boolean(req.body?.skipLipSync),
+    avatarModelId: req.body?.avatarModelId || "",
     previewDuration: 3,
     variantLabel: "3秒预览"
   });
@@ -6855,7 +7947,10 @@ app.post("/api/projects/:id/video-versions", async (req, res, next) => {
     backgroundMusicVolume: req.body?.backgroundMusicVolume,
     generateSubtitles: Boolean(req.body?.generateSubtitles),
     smartSceneEnabled: Boolean(req.body?.smartSceneEnabled),
-    smartScenePrompt: req.body?.smartScenePrompt || ""
+    smartScenePrompt: req.body?.smartScenePrompt || "",
+    smartSceneLayoutMode: req.body?.smartSceneLayoutMode || "pip",
+    skipLipSync: Boolean(req.body?.skipLipSync),
+    avatarModelId: req.body?.avatarModelId || ""
   });
 });
 
@@ -7506,14 +8601,6 @@ app.post("/api/queue/:id/retry", (req, res) => {
   if (!item) return res.status(404).json({ error: "Queue item not found" });
   if (!["failed", "cancelled"].includes(item.status)) {
     return res.status(400).json({ error: "只有失败或已取消的任务可以重试。" });
-  }
-  if (["generate_script", "synthesize_speech"].includes(item.type)) {
-    try {
-      const retryItem = startImmediateProjectJob(item.projectId, item.type, item.payload || {});
-      return res.status(202).json({ submitted: true, queueItem: retryItem });
-    } catch (error) {
-      return res.status(error.status || 500).json({ error: error.message || "重试失败。" });
-    }
   }
   const project = ensureProject(db, item.projectId);
   const duplicate = activeQueueItems(db).find((entry) => entry.projectId === item.projectId && entry.type === item.type && entry.signature === item.signature);

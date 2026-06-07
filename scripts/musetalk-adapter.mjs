@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
@@ -14,6 +14,7 @@ const localPython = process.platform === "win32"
   : join(museTalkHome, ".venv", "bin", "python");
 const pythonBin = process.env.MUSETALK_PYTHON || (existsSync(localPython) ? localPython : "python3");
 const ffmpegBin = process.env.FFMPEG_BIN || "ffmpeg";
+const ffprobeBin = process.env.FFPROBE_BIN || "ffprobe";
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf-8"));
@@ -50,6 +51,40 @@ async function run(command, args, options = {}) {
     maxBuffer: 1024 * 1024 * 32,
     ...options
   });
+}
+
+async function probeVideoInfo(videoPath) {
+  const { stdout } = await run(ffprobeBin, [
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=width,height,r_frame_rate",
+    "-of",
+    "json",
+    videoPath
+  ]);
+  const data = JSON.parse(stdout || "{}");
+  const stream = data.streams?.[0] || {};
+  return {
+    width: Number(stream.width || 0),
+    height: Number(stream.height || 0),
+    fps: String(stream.r_frame_rate || "")
+  };
+}
+
+function lowResolutionInputScale(info = {}, settings = {}) {
+  const requested = Number(settings.inputScale || process.env.MUSETALK_INPUT_SCALE || 0);
+  if (Number.isFinite(requested) && requested > 0) return clampNumber(requested, 1, 2, 1.5);
+  if (process.env.MUSETALK_AUTO_UPSCALE_LOW_RES === "0") return 1;
+  const width = Number(info.width || 0);
+  const height = Number(info.height || 0);
+  if (!width || !height) return 1;
+  if (width < 720 || height < 1280) {
+    return clampNumber(process.env.MUSETALK_LOW_RES_UPSCALE || 1.5, 1, 2, 1.5);
+  }
+  return 1;
 }
 
 function tailText(value = "", max = 6000) {
@@ -202,6 +237,78 @@ async function repairMuseTalkOutputFrames({ resultDir, preparedVideo, preparedAu
   return existsSync(outputPath);
 }
 
+async function extractFrames(videoPath, frameDir, fps = 25) {
+  rmSync(frameDir, { recursive: true, force: true });
+  mkdirSync(frameDir, { recursive: true });
+  await run(ffmpegBin, [
+    "-y",
+    "-v",
+    "warning",
+    "-i",
+    videoPath,
+    "-vf",
+    `fps=${fps}`,
+    join(frameDir, "%08d.png")
+  ]);
+  return pngFrameNames(frameDir);
+}
+
+async function readInvalidCoordFlags(coordPath) {
+  if (!coordPath || !existsSync(coordPath)) return [];
+  const script = String.raw`
+import json, pickle, sys
+coord_path = sys.argv[1]
+with open(coord_path, "rb") as f:
+    coords = pickle.load(f)
+flags = []
+for item in coords:
+    try:
+        x1, y1, x2, y2 = item
+        invalid = not (float(x2) > float(x1) and float(y2) > float(y1)) or (float(x1) == 0 and float(y1) == 0 and float(x2) == 0 and float(y2) == 0)
+    except Exception:
+        invalid = True
+    flags.append(bool(invalid))
+print(json.dumps(flags))
+`;
+  const { stdout } = await run(pythonBin, ["-c", script, coordPath], {
+    cwd: museTalkHome,
+    env: {
+      ...process.env,
+      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
+    }
+  });
+  return JSON.parse(String(stdout || "[]"));
+}
+
+async function restoreInvalidFaceFrames({ generatedPath, preparedVideo, preparedAudio, coordPath, fps = 25 }) {
+  const invalidFlags = await readInvalidCoordFlags(coordPath).catch(() => []);
+  if (!invalidFlags.some(Boolean)) return { restored: 0 };
+  const baseDir = dirname(generatedPath);
+  const repairDir = join(baseDir, `${basename(generatedPath, ".mp4")}-frame-repair`);
+  const generatedFrameDir = join(repairDir, "generated");
+  const originalFrameDir = join(repairDir, "original");
+  const generatedFrames = await extractFrames(generatedPath, generatedFrameDir, fps);
+  const originalFrames = await extractFrames(preparedVideo, originalFrameDir, fps);
+  if (!generatedFrames.length || !originalFrames.length) return { restored: 0 };
+  let restored = 0;
+  for (const name of generatedFrames) {
+    const frameIndex = Number(name.slice(0, 8));
+    if (!Number.isFinite(frameIndex)) continue;
+    const zeroIndex = frameIndex - 1;
+    const invalid = invalidFlags[zeroIndex % invalidFlags.length];
+    if (!invalid) continue;
+    const originalName = originalFrames[zeroIndex % originalFrames.length];
+    if (!originalName) continue;
+    copyFileSync(join(originalFrameDir, originalName), join(generatedFrameDir, name));
+    restored += 1;
+  }
+  if (!restored) return { restored: 0 };
+  const repairedPath = join(baseDir, `${basename(generatedPath, ".mp4")}-repaired.mp4`);
+  await muxImageSequenceWithAudio(generatedFrameDir, preparedAudio, repairedPath, fps);
+  copyFileSync(repairedPath, generatedPath);
+  return { restored };
+}
+
 async function prepareInputs(payload, workDir, namePrefix = "musetalk") {
   const maxDuration = Math.max(1, Number(process.env.MUSETALK_MAX_SEGMENT_SECONDS || 120));
   const duration = Math.min(maxDuration, Math.max(1, Number(payload.duration || 45)));
@@ -216,6 +323,14 @@ async function prepareInputs(payload, workDir, namePrefix = "musetalk") {
   const preparedAudio = join(workDir, `${namePrefix}-audio.wav`);
   const videoSeekArgs = videoStart > 0 ? ["-ss", String(videoStart)] : [];
   const audioSeekArgs = audioStart > 0 ? ["-ss", String(audioStart)] : [];
+  const sourceInfo = await probeVideoInfo(sourceVideo).catch(() => ({}));
+  const inputScale = lowResolutionInputScale(sourceInfo, payload.videoSettings || {});
+  const scaleFilter = inputScale > 1
+    ? `fps=25,scale=trunc(iw*${inputScale}/2)*2:trunc(ih*${inputScale}/2)*2:flags=lanczos,setsar=1,format=yuv420p`
+    : "fps=25,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p";
+  if (inputScale > 1) {
+    console.log(`MuseTalk 输入低清优化：${sourceInfo.width || "?"}x${sourceInfo.height || "?"} -> ${inputScale}x Lanczos 预放大。`);
+  }
   await run(ffmpegBin, [
     "-y",
     "-stream_loop",
@@ -226,8 +341,14 @@ async function prepareInputs(payload, workDir, namePrefix = "musetalk") {
     "-t",
     String(duration),
     "-vf",
-    "fps=25,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p",
+    scaleFilter,
     "-an",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "slow",
+    "-crf",
+    inputScale > 1 ? "14" : "16",
     preparedVideo
   ]);
   await run(ffmpegBin, [
@@ -453,6 +574,22 @@ export async function render(payloadPath, outPath) {
       }).catch(() => false);
       if (repaired) {
         console.log(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段缺失帧已用原始帧补齐。无人脸帧保留原画面。`);
+      }
+    }
+    if (existsSync(generatedPaths[index])) {
+      const coordPath = join(dirname(preparedSegments[index].preparedVideo), `${basename(preparedSegments[index].preparedVideo, ".mp4")}.pkl`);
+      const frameRepair = await restoreInvalidFaceFrames({
+        generatedPath: generatedPaths[index],
+        preparedVideo: preparedSegments[index].preparedVideo,
+        preparedAudio: preparedSegments[index].preparedAudio,
+        coordPath,
+        fps: 25
+      }).catch((error) => {
+        console.warn(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段无人脸帧回填失败：${error instanceof Error ? error.message : String(error)}`);
+        return { restored: 0 };
+      });
+      if (frameRepair.restored) {
+        console.log(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段已将 ${frameRepair.restored} 帧无人脸画面回填为原素材帧。`);
       }
     }
   }

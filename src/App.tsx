@@ -34,6 +34,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Platform = "douyin" | "xiaohongshu" | "wechat";
 type WorkMode = "manual" | "auto";
+type SmartSceneLayoutMode = "pip" | "transparent_overlay";
 
 type StageKey = "input" | "script" | "voice" | "video" | "publish";
 type ModelTypeKey = "llm" | "asr" | "tts" | "avatar";
@@ -88,7 +89,23 @@ type ApiProviderCatalogItem = {
   envKey: string;
   endpoint: string;
   defaultModel?: string;
+  resourceId?: string;
+  publicBaseUrl?: string;
+  cosSecretId?: string;
+  cosRegion?: string;
+  cosBucket?: string;
+  cosPathPrefix?: string;
+  cosExpiresSeconds?: number;
   models?: string[];
+  configFields?: Array<{
+    key: string;
+    label: string;
+    type?: "text" | "password" | "select" | "textarea";
+    required?: boolean;
+    placeholder?: string;
+    help?: string;
+    options?: string[];
+  }>;
   description: string;
   setupGuide: string;
 };
@@ -98,8 +115,20 @@ type ApiProviderRecord = ApiProviderCatalogItem & {
   providerId: string;
   status: string;
   maskedKey: string;
+  maskedAppKey?: string;
+  maskedAccessToken?: string;
   hasKey: boolean;
   model?: string;
+  resourceId?: string;
+  publicBaseUrl?: string;
+  cosSecretId?: string;
+  cosRegion?: string;
+  cosBucket?: string;
+  cosPathPrefix?: string;
+  cosExpiresSeconds?: number;
+  hasCosSecretKey?: boolean;
+  maskedCosSecretKey?: string;
+  voiceName?: string;
   healthMessage?: string;
   testResult?: { status: string; message: string; testedAt: string };
 };
@@ -202,10 +231,13 @@ type Project = {
   generateSubtitles?: boolean;
   platforms: Platform[];
   avatarAssetId: string;
+  avatarModelId?: string;
   backgroundMusicAssetId?: string;
   backgroundMusicVolume?: number;
   smartSceneEnabled?: boolean;
   smartScenePrompt?: string;
+  smartSceneLayoutMode?: SmartSceneLayoutMode;
+  skipLipSync?: boolean;
   voiceId: string;
   scriptModelId?: string;
   ttsModelId?: string;
@@ -353,6 +385,8 @@ type VideoVersion = {
   videoSettings: VideoSettings;
   smartSceneEnabled?: boolean;
   smartScenePrompt?: string;
+  smartSceneLayoutMode?: SmartSceneLayoutMode;
+  skipLipSync?: boolean;
   artifact: {
     video: { uri: string; path: string; duration: number; adapter: string };
     subtitles?: { uri: string; path: string; format: string } | null;
@@ -395,6 +429,22 @@ type RequirementTemplate = {
   updatedAt?: string;
 };
 
+type ObjectStorageConfig = {
+  provider: "aliyun-oss";
+  enabled: boolean;
+  accessKeyId?: string;
+  accessKeySecret?: string;
+  hasAccessKeyId?: boolean;
+  maskedAccessKeyId?: string;
+  hasAccessKeySecret?: boolean;
+  maskedAccessKeySecret?: string;
+  bucket: string;
+  region: string;
+  endpoint: string;
+  pathPrefix: string;
+  expiresSeconds: number;
+};
+
 type JobRecord = {
   id: string;
   projectId: string;
@@ -430,11 +480,14 @@ type State = {
   settings?: {
     defaultTextModelId?: string;
     defaultModelIds?: Partial<Record<ModelTypeKey, string>>;
+    defaultAvatarAssetId?: string;
+    defaultVoiceId?: string;
     keepAsrModelWarm?: boolean;
     keepTtsModelWarm?: boolean;
     keepAvatarModelWarm?: boolean;
-    videoConcurrency?: number;
+    taskConcurrency?: number;
     avatarSegmentSeconds?: number;
+    objectStorage?: ObjectStorageConfig;
   };
 };
 
@@ -461,7 +514,8 @@ const navItems = [
   { id: "taskList", label: "任务列表", icon: ClipboardList },
   { id: "assets", label: "素材库", icon: Video },
   { id: "voices", label: "音色库", icon: Mic2 },
-  { id: "models", label: "体验中心", icon: MonitorCog },
+  { id: "models", label: "模型管理", icon: MonitorCog },
+  { id: "settings", label: "配置管理", icon: Settings2 },
   { id: "publish", label: "发布历史", icon: Send }
 ] as const;
 
@@ -481,15 +535,16 @@ const stageActionMap: Partial<Record<StageKey, FlowAction>> = {
   video: { label: "生成视频", path: "render-video" }
 };
 const modelTypeTabs: Array<{ id: ModelTypeKey; label: string }> = [
-  { id: "llm", label: "AI润色" },
-  { id: "tts", label: "音色试听" },
-  { id: "avatar", label: "视频合成" }
+  { id: "llm", label: "文本模型 LLM" },
+  { id: "asr", label: "识别模型 ASR" },
+  { id: "tts", label: "音频合成 TTS" },
+  { id: "avatar", label: "数字人模型" }
 ];
 const modelTypeLabels: Record<ModelTypeKey, string> = {
-  llm: "AI润色",
-  asr: "ASR",
-  tts: "音色试听",
-  avatar: "视频合成"
+  llm: "文本模型",
+  asr: "识别模型",
+  tts: "音频合成",
+  avatar: "数字人模型"
 };
 const defaultVideoSettings: VideoSettings = {
   engine: "musetalk",
@@ -644,6 +699,7 @@ function metricDisplayEntries(metrics?: Record<string, unknown>) {
   }
   for (const [key, value] of Object.entries(metrics)) {
     if (value === "" || value === null || value === undefined) continue;
+    if (["source", "provider", "model", "requestId"].includes(key)) continue;
     if (key === "load_ms" || key === "infer_ms") continue;
     if (/_ms$/i.test(key) && Number.isFinite(Number(value))) {
       entries.push({ key, label: "耗时", value: formatDurationMs(Number(value)) });
@@ -868,7 +924,7 @@ export function App() {
 
       <main className="main">
         <header className="topbar">
-          <div><p className="eyebrow">手动流 · 自动流 · 阶段产物可回看</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div>
+          <div>{!["models", "settings"].includes(view) && <p className="eyebrow">手动流 · 自动流 · 阶段产物可回看</p>}<h1>{navItems.find((item) => item.id === view)?.label}</h1></div>
           <button className="icon-button" onClick={() => refresh(true)} aria-label="刷新">
             {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
           </button>
@@ -887,7 +943,10 @@ export function App() {
             state={state}
             busy={busy}
             action={action}
-            onCreated={setSelectedProjectId}
+            onCreated={(id) => {
+              setSelectedProjectId(id);
+              setView("taskList");
+            }}
           />
         )}
         {view === "taskList" && (
@@ -901,11 +960,20 @@ export function App() {
           />
         )}
         {view === "assets" && <AssetLibrary state={state} refresh={refresh} action={action} />}
-        {view === "voices" && <AssetManager title="音色库" kind="voice" items={state.voices} refresh={refresh} action={action} />}
+        {view === "voices" && <AssetManager title="音色库" kind="voice" items={state.voices} state={state} refresh={refresh} action={action} />}
         {view === "models" && <ModelCenter state={state} action={action} />}
+        {view === "settings" && <ConfigurationPage state={state} action={action} />}
         {view === "publish" && <PublishHistory records={state.publishRecords} projects={state.projects} action={action} />}
       </main>
     </div>
+  );
+}
+
+function ConfigurationPage({ state, action }: { state: State; action: AppAction }) {
+  return (
+    <section className="manager-page config-page">
+      <RuntimeSettingsPanel state={state} action={action} />
+    </section>
   );
 }
 
@@ -941,28 +1009,15 @@ function TaskCreatePage(props: {
 }) {
   const [draftInputText, setDraftInputText] = useState("");
   const [extractOpen, setExtractOpen] = useState(false);
-  const [createdProjectId, setCreatedProjectId] = useState("");
-  const createdProject = props.state.projects.find((project) => project.id === createdProjectId);
-
-  useEffect(() => {
-    if (createdProjectId && !props.state.projects.some((project) => project.id === createdProjectId)) {
-      setCreatedProjectId("");
-    }
-  }, [createdProjectId, props.state.projects]);
-
-  const handleCreated = (id: string) => {
-    setCreatedProjectId(id);
-    props.onCreated(id);
-  };
 
   return (
-    <div className="task-layout">
+    <div className="task-layout create-layout single">
       <section className="task-main create-only">
         <div className="task-create-panel">
           <TaskComposer
             state={props.state}
             action={props.action}
-            onCreated={handleCreated}
+            onCreated={props.onCreated}
             inputText={draftInputText}
             setInputText={setDraftInputText}
             busy={props.busy}
@@ -970,13 +1025,15 @@ function TaskCreatePage(props: {
           />
         </div>
       </section>
-      {extractOpen && <SourceExtractionDialog action={props.action} onClose={() => setExtractOpen(false)} />}
-      {createdProject ? (
-        <TaskDetail project={createdProject} state={props.state} busy={props.busy} action={props.action} />
-      ) : (
-        <aside className="task-detail">
-          <EmptyState text="创建任务后，右侧会显示当前创建任务的详情。" />
-        </aside>
+      {extractOpen && (
+        <SourceExtractionDialog
+          action={props.action}
+          onClose={() => setExtractOpen(false)}
+          onApplyText={(text) => {
+            setDraftInputText(text);
+            setExtractOpen(false);
+          }}
+        />
       )}
     </div>
   );
@@ -1086,7 +1143,7 @@ function extractionStepsFor(status: "idle" | "running" | "done" | "failed") {
   return labels.map(([id, label], index) => ({ id, label, status: index < 2 ? "done" as const : index === 2 ? "running" as const : "pending" as const }));
 }
 
-function SourceExtractionDialog({ action, onClose }: { action: AppAction; onClose: () => void }) {
+function SourceExtractionDialog({ action, onClose, onApplyText }: { action: AppAction; onClose: () => void; onApplyText: (text: string) => void }) {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -1104,16 +1161,18 @@ function SourceExtractionDialog({ action, onClose }: { action: AppAction; onClos
           <h2>链接解析</h2>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
         </div>
-        <SourceExtractionTool action={action} />
+        <SourceExtractionTool action={action} onApplyText={onApplyText} />
       </section>
     </div>
   );
 }
 
 function SourceExtractionTool({
-  action
+  action,
+  onApplyText
 }: {
   action: AppAction;
+  onApplyText: (text: string) => void;
 }) {
   const [sourceText, setSourceText] = useState("");
   const [result, setResult] = useState<SourceExtractResponse | null>(null);
@@ -1162,11 +1221,10 @@ function SourceExtractionTool({
   }
 
   async function copyExtractedText() {
-    if (!extractedText.trim()) return;
-    await action("复制解析文本", async () => {
-      await copyTextToClipboard(extractedText.trim());
-      return { ok: true };
-    });
+    const text = extractedText.trim();
+    if (!text) return;
+    onApplyText(text);
+    copyTextToClipboard(text).catch(() => undefined);
   }
 
   async function saveExtractionMedia(kind: "avatar" | "voice", linkId = "", options: { name: string; start?: number; end?: number }) {
@@ -1384,8 +1442,8 @@ function SourceStepCard({
       )}
       {isFinal && (
         <div className="source-final-actions">
-          <button className="primary-button" disabled={!canApply} onClick={onApply}><Copy size={16} />复制</button>
-          {!canApply && <small>{finalText ? "可复制最终文本。" : "最终文本生成后可复制。"}</small>}
+          <button type="button" className="primary-button" disabled={!canApply} onClick={onApply}><Copy size={16} />使用文案</button>
+          {!canApply && <small>{finalText ? "可使用最终文本。" : "最终文本生成后可使用。"}</small>}
         </div>
       )}
     </article>
@@ -1420,25 +1478,53 @@ function TaskComposer({
   const [ttsStyleIntensity, setTtsStyleIntensity] = useState("medium");
   const [ttsStylePrompt, setTtsStylePrompt] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [avatarModelId, setAvatarModelId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
   const [smartSceneEnabled, setSmartSceneEnabled] = useState(false);
   const [smartScenePrompt, setSmartScenePrompt] = useState("");
+  const [smartSceneLayoutMode, setSmartSceneLayoutMode] = useState<SmartSceneLayoutMode>("pip");
+  const [skipLipSync, setSkipLipSync] = useState(false);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [polishOpen, setPolishOpen] = useState(false);
   useEffect(() => {
-    setScriptModelId((current) => current || localTextModelId(state));
+    setScriptModelId((current) => current || defaultModelIdForType(state, "llm"));
   }, [state.settings?.defaultTextModelId, state.settings?.defaultModelIds?.llm, state.models]);
   useEffect(() => {
     setTtsModelId((current) => current || defaultModelIdForType(state, "tts"));
   }, [state.settings?.defaultModelIds?.tts, state.models]);
+  useEffect(() => {
+    setAvatarModelId((current) => current || defaultModelIdForType(state, "avatar"));
+  }, [state.settings?.defaultModelIds?.avatar, state.models, state.apiProviders]);
+  useEffect(() => {
+    setAvatarAssetId((current) => current || state.settings?.defaultAvatarAssetId || "");
+  }, [state.settings?.defaultAvatarAssetId, state.avatarAssets]);
+  useEffect(() => {
+    if (isVolcengineTtsModel(state, ttsModelId)) {
+      setVoiceId((current) => current || defaultVolcengineSpeakerId(state, ttsModelId));
+      return;
+    }
+    setVoiceId((current) => current || state.settings?.defaultVoiceId || "");
+  }, [ttsModelId, state.apiProviders, state.settings?.defaultModelIds?.tts, state.settings?.defaultVoiceId]);
+
+  async function generateTitle() {
+    const response = await action("AI生成标题", async () => {
+      const result = await request<{ title: string }>("/api/text/title", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputText, requirements, scriptModelId: scriptModelId || defaultModelIdForType(state, "llm") })
+      });
+      if (!result.title?.trim()) throw new Error("AI没有返回可用标题，请稍后重试。");
+      return result;
+    });
+    if (response?.title) setTitle(response.title);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    let createdProjectId = "";
-    const actionLabel = mode === "auto" ? "创建任务并提交自动流程" : "创建任务";
-    await action(actionLabel, async () => {
-      const project = await request<Project>("/api/projects", {
+    const shouldRunAutomatically = mode === "auto";
+    const project = await action("创建任务", async () => {
+      return request<Project>("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1451,30 +1537,29 @@ function TaskComposer({
           reviewEnabled: mode === "manual",
           generateSubtitles: mode === "auto" ? generateSubtitles : false,
           voiceId: mode === "auto" ? voiceId : "",
-          ttsModelId: ttsModelId || defaultModelIdForType(state, "tts"),
+          ttsModelId: mode === "auto" ? ttsModelId || defaultModelIdForType(state, "tts") : "",
           audioPlaybackSpeed,
           ttsStylePreset: isVoxCpmTtsModel(state, ttsModelId) ? ttsStylePreset : "natural",
           ttsStyleIntensity,
           ttsStylePrompt: isVoxCpmTtsModel(state, ttsModelId) ? ttsStylePrompt : "",
           avatarAssetId: mode === "auto" ? avatarAssetId : "",
-          backgroundMusicAssetId,
-          backgroundMusicVolume,
+          avatarModelId: avatarModelId || defaultModelIdForType(state, "avatar"),
+          backgroundMusicAssetId: mode === "auto" ? backgroundMusicAssetId : "",
+          backgroundMusicVolume: mode === "auto" ? backgroundMusicVolume : 0.2,
           smartSceneEnabled: mode === "auto" ? smartSceneEnabled : false,
           smartScenePrompt: mode === "auto" ? smartScenePrompt : "",
+          smartSceneLayoutMode: mode === "auto" ? smartSceneLayoutMode : "pip",
+          skipLipSync: mode === "auto" ? skipLipSync : false,
           platforms: Object.keys(platformLabels)
         })
       });
-      createdProjectId = project.id;
-      if (mode === "auto") {
-        return request(`/api/projects/${project.id}/run-all`, { method: "POST" });
-      }
-      return project;
     });
-    if (createdProjectId) onCreated(createdProjectId);
+    if (!project) return;
+    onCreated(project.id);
     setTitle("");
     setInputText("");
     setRequirements("");
-    setScriptModelId(localTextModelId(state));
+    setScriptModelId(defaultModelIdForType(state, "llm"));
     setVoiceId("");
     setTtsModelId(defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(1);
@@ -1482,103 +1567,170 @@ function TaskComposer({
     setTtsStyleIntensity("medium");
     setTtsStylePrompt("");
     setAvatarAssetId("");
+    setAvatarModelId(defaultModelIdForType(state, "avatar"));
     setBackgroundMusicAssetId("");
     setBackgroundMusicVolume(0.2);
     setSmartSceneEnabled(false);
     setSmartScenePrompt("");
+    setSmartSceneLayoutMode("pip");
+    setSkipLipSync(false);
     setGenerateSubtitles(false);
+    if (shouldRunAutomatically) {
+      void action("提交自动流程", () => request(`/api/projects/${project.id}/run-all`, { method: "POST" }));
+    }
   }
   const submitLabel = mode === "auto" ? "创建并自动生成" : "创建手动任务";
-  const submitting = busy === "创建任务" || busy === "创建任务并提交自动流程";
+  const submitting = busy === "创建任务";
   const selectedBackgroundMusic = state.musicAssets.find((asset) => asset.id === backgroundMusicAssetId);
-  const selectedVoice = state.voices.find((voice) => voice.id === voiceId);
-  const selectedAvatarAsset = state.avatarAssets.find((asset) => asset.id === avatarAssetId);
-  const selectedTtsModel = state.models.find((model) => model.id === (ttsModelId || defaultModelIdForType(state, "tts")));
+  const cloudTtsSelected = isCloudTtsModel(state, ttsModelId);
+  const volcengineTtsSelected = isVolcengineTtsModel(state, ttsModelId);
+  const requiredVoiceReady = cloudTtsSelected ? (volcengineTtsSelected ? Boolean(voiceId.trim()) : true) : Boolean(voiceId);
+  const requiredReady = mode === "manual"
+    ? Boolean(inputText.trim())
+    : Boolean(inputText.trim() && avatarAssetId && (ttsModelId || defaultModelIdForType(state, "tts")) && requiredVoiceReady);
 
   return (
     <section className="composer">
       <form onSubmit={submit}>
-        <div className="mode-switch" role="group" aria-label="任务模式">
-          <button type="button" className={cx(mode === "manual" && "active")} onClick={() => setMode("manual")}>手动模式</button>
-          <button type="button" className={cx(mode === "auto" && "active")} onClick={() => setMode("auto")}>全自动模式</button>
-        </div>
-        <div className="task-create-toolbar">
+        <div className="composer-top">
+          <div className="mode-switch" role="group" aria-label="任务模式">
+            <button type="button" className={cx(mode === "manual" && "active")} onClick={() => setMode("manual")}>手动模式</button>
+            <button type="button" className={cx(mode === "auto" && "active")} onClick={() => setMode("auto")}>全自动模式</button>
+          </div>
           <button type="button" className="ghost-button extraction-entry-button" onClick={onOpenExtraction}><Download size={15} />链接解析</button>
         </div>
-        <FieldCard title="任务标题" meta={title ? compactDisplay(title, 18) : "可选"}>
-          <label>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="可选；不填会自动生成短标题" />
-          </label>
-        </FieldCard>
-        <FieldCard title="输入内容" meta={inputText ? `${inputText.trim().length} 字` : "必填"}>
-          <label>
-            <div className="label-head">
-              <span>原始输入</span>
-              <button type="button" className="text-button" disabled={busy === "AI润色"} onClick={() => setPolishOpen(true)}>
-              {busy === "AI润色" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
-              AI润色
-              </button>
-            </div>
-            <textarea required value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="输入主题、需求、参考信息" />
-          </label>
-        </FieldCard>
-        {mode === "manual" ? (
-          <div className="composer-grid compact">
-            <BackgroundMusicField state={state} selectedBackgroundMusic={selectedBackgroundMusic} backgroundMusicAssetId={backgroundMusicAssetId} setBackgroundMusicAssetId={setBackgroundMusicAssetId} backgroundMusicVolume={backgroundMusicVolume} setBackgroundMusicVolume={setBackgroundMusicVolume} />
-            <FieldCard title="语音模型" meta={selectedTtsModel?.name || "默认"}>
-              <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
-            </FieldCard>
+
+        <div className="composer-main-grid">
+          <div className="composer-section required-section copy-panel">
+            <label className="composer-field">
+              <span>任务标题 <small>可选，留空会自动使用口播内容生成标题</small></span>
+              <div className="title-input-row">
+                <div className="input-with-count">
+                  <input maxLength={60} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：618 好物推荐 · 院子温馨好物分享" />
+                  <small>{title.length}/60</small>
+                </div>
+                <button type="button" className="text-button title-ai-button" disabled={busy === "AI生成标题" || (!inputText.trim() && !requirements.trim())} onClick={generateTitle}>
+                  {busy === "AI生成标题" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                  AI一键生成
+                </button>
+              </div>
+            </label>
+            <label className="composer-field">
+              <span>口播语气</span>
+              <div className="input-with-count">
+                <textarea maxLength={200} value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="例如：轻松自然、有亲和力、节奏更快、适合短视频口播" />
+                <small>{requirements.length}/200</small>
+              </div>
+            </label>
+            <label className="composer-field input-field">
+              <span>口播内容 <em>必填</em></span>
+              <div className="textarea-action-wrap input-with-count">
+                <textarea required maxLength={2000} value={inputText} onChange={(event) => setInputText(event.target.value)} placeholder="请输入需要口播的文案内容，将用于生成语音和视频" />
+                <button type="button" className="text-button polish-inline" disabled={busy === "AI润色"} onClick={() => setPolishOpen(true)}>
+                  {busy === "AI润色" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                  AI润色
+                </button>
+                <small>{inputText.length}/2000</small>
+              </div>
+            </label>
           </div>
-        ) : (
-          <div className="composer-grid auto-layout">
-            <div className="composer-audio-column">
-              <BackgroundMusicField state={state} selectedBackgroundMusic={selectedBackgroundMusic} backgroundMusicAssetId={backgroundMusicAssetId} setBackgroundMusicAssetId={setBackgroundMusicAssetId} backgroundMusicVolume={backgroundMusicVolume} setBackgroundMusicVolume={setBackgroundMusicVolume} />
-              <FieldCard title="语音模型" meta={selectedTtsModel?.name || "默认"}>
-                <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
-                <TtsStyleFields
+
+          {mode === "manual" && (
+            <ManualFlowPanel />
+          )}
+
+          {mode === "auto" && (
+            <div className="composer-section required-section media-panel">
+              <AvatarAssetStrip assets={state.avatarAssets} value={avatarAssetId} onChange={setAvatarAssetId} />
+              <div className="composer-two-col">
+                <div className="composer-field">
+                  <span>语音模型 <em>必填</em></span>
+                  <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} hideLabel />
+                </div>
+                <VoiceChoice
                   state={state}
-                  modelId={ttsModelId}
-                  preset={ttsStylePreset}
-                  intensity={ttsStyleIntensity}
-                  prompt={ttsStylePrompt}
-                  onPresetChange={setTtsStylePreset}
-                  onIntensityChange={setTtsStyleIntensity}
-                  onPromptChange={setTtsStylePrompt}
+                  ttsModelId={ttsModelId}
+                  cloud={cloudTtsSelected}
+                  volcengine={volcengineTtsSelected}
+                  voices={state.voices}
+                  value={voiceId}
+                  onChange={setVoiceId}
                 />
-              </FieldCard>
-              <FieldCard title="口播速度" meta={`${audioPlaybackSpeed}x`}>
-                <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} hideLabel />
-              </FieldCard>
-              <FieldCard title="音色" meta={selectedVoice?.name || "默认音色"}>
-                <label><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-                <VoiceSample asset={selectedVoice} />
-              </FieldCard>
-              <FieldCard title="字幕" meta={generateSubtitles ? "生成" : "不生成"}>
-                <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
-              </FieldCard>
-              <FieldCard title="智能布景" meta={smartSceneEnabled ? "开启" : "关闭"} defaultOpen={smartSceneEnabled}>
-                <Toggle checked={smartSceneEnabled} onChange={setSmartSceneEnabled} label="开启智能布景" />
-                {smartSceneEnabled && (
-                  <label>
-                    <span>布景要求</span>
-                    <textarea value={smartScenePrompt} onChange={(event) => setSmartScenePrompt(event.target.value)} placeholder="例如：商品讲解风格，主画面突出卖点卡片和使用场景，右下角留出讲解员位置" />
-                  </label>
-                )}
-              </FieldCard>
+              </div>
             </div>
-            <div className="composer-avatar-column">
-              <FieldCard title="数字人素材" meta={selectedAvatarAsset?.name || "未选择"}>
-                <label><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">请选择数字人素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-                <AvatarSample asset={selectedAvatarAsset} />
-              </FieldCard>
+          )}
+        </div>
+
+        {mode === "auto" && (
+        <div className="composer-section secondary-section advanced-panel">
+          <div className="advanced-head">
+            <strong>高级设置</strong>
+            <small>模型参数和视频选项，非必填</small>
+          </div>
+          <div className="optional-grid">
+            <div className="composer-field">
+              <TypedModelSelect state={state} type="llm" models={state.models.filter((model) => model.type === "llm")} value={scriptModelId} onChange={setScriptModelId} />
+            </div>
+            <div className="composer-field">
+              <AvatarModelSelect state={state} value={avatarModelId} onChange={setAvatarModelId} />
+            </div>
+            <div className="composer-field">
+              <span>口播速度</span>
+              <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} hideLabel />
+            </div>
+            <label className="composer-field">
+              <span>背景音乐</span>
+              <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
+                <option value="">不使用背景音乐</option>
+                {state.musicAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+              </select>
+              {selectedBackgroundMusic && <VolumeAudioPreview src={selectedBackgroundMusic.uri} volume={backgroundMusicVolume} onVolumeChange={setBackgroundMusicVolume} />}
+            </label>
+            <div className="composer-field option-stack video-option-stack">
+              <span>视频选项</span>
+              <div className="video-option-grid">
+                <VideoOptionCard icon={<Mic2 size={18} />} title="嘴型同步" description="让数字人口型与语音匹配" checked={!skipLipSync} onChange={(enabled) => setSkipLipSync(!enabled)} />
+                <VideoOptionCard icon={<ClipboardList size={18} />} title="生成字幕" description="自动识别并添加字幕" checked={generateSubtitles} onChange={setGenerateSubtitles} />
+                <VideoOptionCard icon={<Video size={18} />} title="智能布景" description="根据内容自动匹配背景" checked={smartSceneEnabled} onChange={setSmartSceneEnabled} />
+              </div>
+            </div>
+            {smartSceneEnabled && (
+              <>
+                <label className="composer-field">
+                  <span>布景模式</span>
+                  <select value={smartSceneLayoutMode} onChange={(event) => setSmartSceneLayoutMode(event.target.value as SmartSceneLayoutMode)}>
+                    <option value="pip">右下角悬浮</option>
+                    <option value="transparent_overlay">半透明覆盖</option>
+                  </select>
+                </label>
+                <label className="composer-field optional-wide">
+                  <span>布景要求</span>
+                  <textarea value={smartScenePrompt} onChange={(event) => setSmartScenePrompt(event.target.value)} placeholder={smartSceneLayoutMode === "transparent_overlay" ? "例如：半透明卖点卡和流程图悬浮在画面上，不遮挡人物面部" : "例如：商品讲解风格，主画面突出卖点卡片和使用场景"} />
+                </label>
+              </>
+            )}
+            <div className="optional-wide">
+              <TtsStyleFields
+                state={state}
+                modelId={ttsModelId}
+                preset={ttsStylePreset}
+                intensity={ttsStyleIntensity}
+                prompt={ttsStylePrompt}
+                onPresetChange={setTtsStylePreset}
+                onIntensityChange={setTtsStyleIntensity}
+                onPromptChange={setTtsStylePrompt}
+              />
             </div>
           </div>
+        </div>
         )}
-        <div className="toolbar-row">
-          <button className="primary-button" disabled={submitting || !inputText.trim()}>
+
+        <div className="toolbar-row composer-submit-row">
+          <button className="primary-button" disabled={submitting || !requiredReady}>
             {submitting ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
             {submitting ? "创建中" : submitLabel}
           </button>
+          {!requiredReady && <small>{mode === "manual" ? "请先填写口播内容。" : "请先填写口播内容，并选择音色和数字人素材。"}</small>}
         </div>
       </form>
       {polishOpen && (
@@ -1599,6 +1751,130 @@ function TaskComposer({
         />
       )}
     </section>
+  );
+}
+
+function ManualFlowPanel() {
+  const steps = [
+    { title: "文案确认", description: "先保存口播内容和生成要求" },
+    { title: "生成语音", description: "进入任务后选择语音模型和音色" },
+    { title: "合成视频", description: "进入视频环节再选择数字人素材" }
+  ];
+  return (
+    <div className="composer-section manual-flow-panel">
+      <div className="manual-flow-head">
+        <strong>手动流程</strong>
+        <small>创建后按环节选择需要生成的内容</small>
+      </div>
+      <div className="manual-flow-steps">
+        {steps.map((step, index) => (
+          <div className="manual-flow-step" key={step.title}>
+            <span>{index + 1}</span>
+            <div>
+              <strong>{step.title}</strong>
+              <small>{step.description}</small>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AvatarAssetStrip({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="composer-field avatar-strip-field">
+      <div className="field-row-head">
+        <span>数字人素材 <em>必填</em></span>
+        <small>{assets.length ? "横向滑动选择素材" : "素材库暂无视频"}</small>
+      </div>
+      <div className="avatar-asset-strip" role="radiogroup" aria-label="数字人素材">
+        {assets.map((asset) => {
+          const selected = asset.id === value;
+          return (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              className={cx("avatar-asset-card", selected && "active")}
+              key={asset.id}
+              onClick={() => onChange(asset.id)}
+              title={asset.name}
+            >
+              <video muted preload="metadata" src={asset.uri} />
+              {selected && <span className="asset-check"><CheckCircle2 size={16} /></span>}
+            </button>
+          );
+        })}
+        {!assets.length && <EmptyState text="请先到素材库上传数字人视频。" />}
+      </div>
+    </div>
+  );
+}
+
+function VoiceChoice({
+  state,
+  ttsModelId,
+  cloud,
+  volcengine,
+  voices,
+  value,
+  onChange
+}: {
+  state: State;
+  ttsModelId: string;
+  cloud: boolean;
+  volcengine: boolean;
+  voices: Asset[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const volcengineVoices = volcengineVoiceOptions(state, ttsModelId);
+  return (
+    <label className="composer-field voice-choice">
+      <span>音色 <em>必填</em></span>
+      {cloud ? (
+        volcengine ? (
+          <select required value={value || defaultVolcengineSpeakerId(state, ttsModelId)} onChange={(event) => onChange(event.target.value)}>
+            {!volcengineVoices.length && <option value="">请先在模型管理添加火山音色</option>}
+            {volcengineVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+          </select>
+        ) : (
+          <input value={value} onChange={(event) => onChange(event.target.value)} placeholder="填写云端音色 ID" />
+        )
+      ) : (
+        <select required value={value} onChange={(event) => onChange(event.target.value)}>
+          <option value="">请选择音色</option>
+          {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
+        </select>
+      )}
+    </label>
+  );
+}
+
+function VideoOptionCard({
+  icon,
+  title,
+  description,
+  checked,
+  onChange
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className={cx("video-option-card", checked && "active")}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span className="video-option-icon">{icon}</span>
+      <span className="video-option-copy">
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </span>
+      <span className="switch-track" aria-hidden="true"><span /></span>
+    </label>
   );
 }
 
@@ -1679,7 +1955,7 @@ function PolishDialog({
   const [draftInputText, setDraftInputText] = useState(inputText);
   const [draftRequirements, setDraftRequirements] = useState(requirements);
   const [draftTemplateId, setDraftTemplateId] = useState("");
-  const draftModelId = scriptModelId || localTextModelId(state);
+  const draftModelId = scriptModelId || defaultModelIdForType(state, "llm");
   const [versions, setVersions] = useState<Array<{ id: string; label: string; text: string; requirements: string; scriptModelId: string; createdAt: string }>>([]);
   const [activeVersionId, setActiveVersionId] = useState("");
   const polishing = busy === "AI润色";
@@ -1699,11 +1975,15 @@ function PolishDialog({
   }, [onClose]);
 
   async function confirm() {
-    const response = await action("AI润色", () => request<{ text: string }>("/api/text/polish", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inputText: draftInputText, requirements: draftRequirements, scriptModelId: draftModelId })
-    }));
+    const response = await action("AI润色", async () => {
+      const result = await request<{ text: string }>("/api/text/polish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputText: draftInputText, requirements: draftRequirements, scriptModelId: draftModelId })
+      });
+      if (!result.text?.trim()) throw new Error("AI润色没有返回可用内容，请换一个文本模型或稍后重试。");
+      return result;
+    });
     if (response?.text) {
       setVersions((current) => {
         const nextVersion = {
@@ -1801,7 +2081,6 @@ function normalizeTextModelValue(state: State, value = "") {
 }
 
 function defaultModelIdForType(state: State, type: ModelTypeKey) {
-  if (type === "llm") return localTextModelId(state);
   const configured = state.settings?.defaultModelIds?.[type] || "";
   if (configured.startsWith("provider:")) {
     const providerKey = configured.replace("provider:", "");
@@ -1813,26 +2092,94 @@ function defaultModelIdForType(state: State, type: ModelTypeKey) {
 }
 
 function defaultModelLabelForType(state: State, type: ModelTypeKey) {
-  const id = defaultModelIdForType(state, type);
+  return modelLabelForTypeValue(state, type, defaultModelIdForType(state, type));
+}
+
+function modelLabelForTypeValue(state: State, type: ModelTypeKey, value = "") {
+  const id = value || defaultModelIdForType(state, type);
   if (id.startsWith("provider:")) {
     const providerId = id.replace("provider:", "");
     const provider = state.apiProviders.find((item) => item.id === providerId || item.providerId === providerId);
+    if (provider && type === "tts" && (provider.providerId === "volcengine-tts" || provider.id === "volcengine-tts")) return provider.name;
+    if (provider && type === "avatar") return provider.name;
     return provider ? `${provider.name} · ${provider.model || "未设置模型"}` : "未选择";
   }
   return state.models.find((model) => model.id === id && model.type === type)?.name || "未选择";
 }
 
+function providerRequiresModel(provider: ApiProviderRecord | ApiProviderCatalogItem) {
+  return true;
+}
+
+function providerOptionLabel(provider: ApiProviderRecord, type: ModelTypeKey) {
+  if (type === "tts" && (provider.providerId === "volcengine-tts" || provider.id === "volcengine-tts")) return provider.name;
+  if (type === "avatar") return provider.name;
+  return `${provider.name} · ${provider.model || "未设置模型"}`;
+}
+
 function providersForType(state: State, type: ModelTypeKey) {
-  return state.apiProviders.filter((provider) => provider.hasKey && provider.model && provider.capabilities?.includes(type));
+  return state.apiProviders.filter((provider) => provider.hasKey && provider.capabilities?.includes(type) && (!providerRequiresModel(provider) || provider.model));
+}
+
+function isProviderModelId(value = "") {
+  return String(value || "").startsWith("provider:");
+}
+
+function isCloudTtsModel(state: State, modelId = "") {
+  return isProviderModelId(modelId || defaultModelIdForType(state, "tts"));
+}
+
+function providerForModelValue(state: State, type: ModelTypeKey, value = "") {
+  const id = value || defaultModelIdForType(state, type);
+  if (!id.startsWith("provider:")) return undefined;
+  const providerId = id.replace("provider:", "");
+  return state.apiProviders.find((item) => (item.id === providerId || item.providerId === providerId) && item.capabilities?.includes(type));
+}
+
+function isVolcengineTtsModel(state: State, modelId = "") {
+  const provider = providerForModelValue(state, "tts", modelId);
+  return Boolean(provider && (provider.providerId === "volcengine-tts" || provider.id === "volcengine-tts"));
+}
+
+function defaultVolcengineSpeakerId(state: State, modelId = "") {
+  const provider = providerForModelValue(state, "tts", modelId);
+  return provider?.model || "";
+}
+
+function volcengineVoiceOptions(state: State, modelId = "") {
+  const provider = providerForModelValue(state, "tts", modelId);
+  const values = new Map<string, string>();
+  if (provider?.model) values.set(provider.model, provider.voiceName || provider.name || "云端音色");
+  return [...values.entries()].map(([id, label]) => ({ id, label }));
 }
 
 function TtsModelSelect({ state, value, onChange, hideLabel = false }: { state: State; value: string; onChange: (value: string) => void; hideLabel?: boolean }) {
   const models = state.models.filter((model) => model.type === "tts");
+  const providers = providersForType(state, "tts");
+  const select = (
+    <select value={value || defaultModelIdForType(state, "tts")} onChange={(event) => onChange(event.target.value)}>
+      {models.length > 0 && <optgroup label="本地模型">{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>}
+      {providers.length > 0 && <optgroup label="云端 Provider">{providers.map((provider) => <option key={provider.id} value={providerTextModelValue(provider)}>{providerOptionLabel(provider, "tts")}</option>)}</optgroup>}
+    </select>
+  );
+  if (hideLabel) return select;
   return (
     <label>
       {!hideLabel && <span>语音模型</span>}
-      <select value={value || defaultModelIdForType(state, "tts")} onChange={(event) => onChange(event.target.value)}>
-        {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+      {select}
+    </label>
+  );
+}
+
+function AvatarModelSelect({ state, value, onChange }: { state: State; value: string; onChange: (value: string) => void }) {
+  const models = state.models.filter((model) => model.type === "avatar");
+  const providers = providersForType(state, "avatar");
+  return (
+    <label>
+      <span>数字人模型</span>
+      <select value={value || defaultModelIdForType(state, "avatar")} onChange={(event) => onChange(event.target.value)}>
+        {models.length > 0 && <optgroup label="本地模型">{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</optgroup>}
+        {providers.length > 0 && <optgroup label="云端 Provider">{providers.map((provider) => <option key={provider.id} value={providerTextModelValue(provider)}>{provider.name}</option>)}</optgroup>}
       </select>
     </label>
   );
@@ -1952,7 +2299,7 @@ function VolumeAudioPreview({ src, volume, onVolumeChange }: { src: string; volu
   return <audio ref={ref} className="inline-audio" controls src={src} onVolumeChange={(event) => onVolumeChange?.(event.currentTarget.volume)} />;
 }
 
-function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "llm" | "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
+function TypedModelSelect({ state, type, models, value, onChange }: { state: State; type: Exclude<ModelTypeKey, "avatar">; models: ModelRecord[]; value: string; onChange: (value: string) => void }) {
   const providers = providersForType(state, type);
   const selected = value || defaultModelIdForType(state, type);
   return (
@@ -2003,10 +2350,13 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
   const [ttsStyleIntensity, setTtsStyleIntensity] = useState("medium");
   const [ttsStylePrompt, setTtsStylePrompt] = useState("");
   const [avatarAssetId, setAvatarAssetId] = useState("");
+  const [avatarModelId, setAvatarModelId] = useState("");
   const [backgroundMusicAssetId, setBackgroundMusicAssetId] = useState("");
   const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.2);
   const [smartSceneEnabled, setSmartSceneEnabled] = useState(false);
   const [smartScenePrompt, setSmartScenePrompt] = useState("");
+  const [smartSceneLayoutMode, setSmartSceneLayoutMode] = useState<SmartSceneLayoutMode>("pip");
+  const [skipLipSync, setSkipLipSync] = useState(false);
   const [generateSubtitles, setGenerateSubtitles] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettings>(defaultVideoSettings);
   const currentStage = project ? getVisibleStage(project) : "script";
@@ -2024,7 +2374,7 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setInputText(project?.inputText || "");
     setRequirements(project?.requirements || "");
     const projectScriptModelId = project?.scriptModelId || "";
-    setScriptModelId(projectScriptModelId && !projectScriptModelId.startsWith("provider:") ? projectScriptModelId : localTextModelId(state));
+    setScriptModelId(projectScriptModelId || defaultModelIdForType(state, "llm"));
     setVoiceId(project?.voiceId || "");
     setTtsModelId(project?.ttsModelId || defaultModelIdForType(state, "tts"));
     setAudioPlaybackSpeed(project?.audioPlaybackSpeed || 1);
@@ -2033,10 +2383,13 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     setTtsStylePrompt(project?.ttsStylePrompt || "");
     voiceDirtyRef.current = false;
     setAvatarAssetId(project?.avatarAssetId || "");
+    setAvatarModelId(project?.avatarModelId || defaultModelIdForType(state, "avatar"));
     setBackgroundMusicAssetId(project?.backgroundMusicAssetId || "");
     setBackgroundMusicVolume(project?.backgroundMusicVolume ?? 0.2);
     setSmartSceneEnabled(Boolean(project?.smartSceneEnabled));
     setSmartScenePrompt(project?.smartScenePrompt || "");
+    setSmartSceneLayoutMode(project?.smartSceneLayoutMode || "pip");
+    setSkipLipSync(Boolean(project?.skipLipSync));
     setGenerateSubtitles(Boolean(project?.generateSubtitles));
   }, [project?.id]);
 
@@ -2049,6 +2402,14 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     if (!project) return;
     setTtsModelId((current) => current || project.ttsModelId || defaultModelIdForType(state, "tts"));
   }, [project?.ttsModelId, state.settings?.defaultModelIds?.tts, state.models]);
+
+  useEffect(() => {
+    if (isVolcengineTtsModel(state, ttsModelId)) {
+      setVoiceId((current) => current || defaultVolcengineSpeakerId(state, ttsModelId));
+      return;
+    }
+    setVoiceId((current) => current || state.settings?.defaultVoiceId || "");
+  }, [ttsModelId, state.apiProviders, state.settings?.defaultModelIds?.tts, state.settings?.defaultVoiceId]);
 
   useEffect(() => {
     setActiveStage(currentStage);
@@ -2080,6 +2441,8 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
 
   if (!project) return <aside className="task-detail"><EmptyState text="选择任务后查看阶段和视频。" /></aside>;
   const currentProject = project;
+  const cloudTtsSelected = isCloudTtsModel(state, ttsModelId);
+  const volcengineTtsSelected = isVolcengineTtsModel(state, ttsModelId);
 
   const runStage = (label: string, path: string, body?: unknown) =>
     action(label, () => request<Project>(`/api/projects/${currentProject.id}/${path}`, {
@@ -2116,29 +2479,47 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
     action("保存视频设置", () => request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, videoSettings, changedStage: "video" })
+      body: JSON.stringify({ avatarAssetId, avatarModelId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, smartSceneLayoutMode, skipLipSync, generateSubtitles, videoSettings, changedStage: "video" })
       }));
+
+  const saveVoiceDraft = async () => {
+    const updated = await request<Project>(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, scriptModelId, changedStage: "script" })
+    });
+    const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
+    await request<Project>(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
+    });
+    voiceDirtyRef.current = false;
+    return scriptVersionId;
+  };
 
   const generateVoice = () =>
     action("生成口播音频", async () => {
-      const updated = await request<Project>(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: inputText, inputText, requirements, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, scriptModelId, changedStage: "script" })
-      });
-      const scriptVersionId = updated.selectedScriptVersionId || updated.scriptVersions?.[0]?.id || "";
-      await request<Project>(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt, selectedScriptVersionId: scriptVersionId, changedStage: "voice" })
-      });
-      voiceDirtyRef.current = false;
+      const scriptVersionId = await saveVoiceDraft();
       return request(`/api/projects/${project.id}/synthesize-speech`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scriptVersionId, voiceId, ttsModelId, audioPlaybackSpeed, ttsStylePreset, ttsStyleIntensity, ttsStylePrompt })
       });
     });
+
+  const retryStageQueue = (item: QueueItem) => {
+    if ((item.progress?.stage || "") !== "voice") {
+      return action("重试执行任务", () => request(`/api/queue/${item.id}/retry`, { method: "POST" }));
+    }
+    if (item.type === "run_all") {
+      return action("重试自动生成", async () => {
+        await saveVoiceDraft();
+        return request(`/api/projects/${project.id}/run-all`, { method: "POST" });
+      });
+    }
+    return generateVoice();
+  };
 
   const importAudioVersion = (file?: File, voiceName?: string) =>
     action(file ? "录制口播音频" : "使用原始音频", async () => {
@@ -2157,12 +2538,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, avatarModelId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, smartSceneLayoutMode, skipLipSync, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, avatarModelId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, smartSceneLayoutMode, skipLipSync })
       });
     });
 
@@ -2171,12 +2552,12 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
       await request<Project>(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
+        body: JSON.stringify({ avatarAssetId, avatarModelId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, smartSceneLayoutMode, skipLipSync, generateSubtitles, selectedAudioVersionId, videoSettings, changedStage: "video" })
       });
       return request(`/api/projects/${project.id}/render-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt })
+        body: JSON.stringify({ videoSettings, generateSubtitles, audioVersionId: selectedAudioVersionId, avatarAssetId, avatarModelId, backgroundMusicAssetId, backgroundMusicVolume, smartSceneEnabled, smartScenePrompt, smartSceneLayoutMode, skipLipSync })
       });
     });
 
@@ -2275,11 +2656,14 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         setTtsStylePrompt={setTtsStylePrompt}
         selectedVoice={selectedVoice}
         generateVoice={generateVoice}
+        retryStageQueue={retryStageQueue}
         importAudioVersion={importAudioVersion}
         selectedAudioVersionId={selectedAudioVersionId}
         setSelectedAudioVersionId={setSelectedAudioVersionId}
         avatarAssetId={avatarAssetId}
         setAvatarAssetId={setAvatarAssetId}
+        avatarModelId={avatarModelId}
+        setAvatarModelId={setAvatarModelId}
         selectedAsset={selectedAsset}
         backgroundMusicAssetId={backgroundMusicAssetId}
         setBackgroundMusicAssetId={setBackgroundMusicAssetId}
@@ -2290,6 +2674,10 @@ function TaskDetail({ project, state, busy, action }: { project?: Project; state
         setSmartSceneEnabled={setSmartSceneEnabled}
         smartScenePrompt={smartScenePrompt}
         setSmartScenePrompt={setSmartScenePrompt}
+        smartSceneLayoutMode={smartSceneLayoutMode}
+        setSmartSceneLayoutMode={setSmartSceneLayoutMode}
+        skipLipSync={skipLipSync}
+        setSkipLipSync={setSkipLipSync}
         generateSubtitles={generateSubtitles}
         setGenerateSubtitles={setGenerateSubtitles}
         videoSettings={videoSettings}
@@ -2372,11 +2760,14 @@ function StageWorkspace({
   setTtsStylePrompt,
   selectedVoice,
   generateVoice,
+  retryStageQueue,
   importAudioVersion,
   selectedAudioVersionId,
   setSelectedAudioVersionId,
   avatarAssetId,
   setAvatarAssetId,
+  avatarModelId,
+  setAvatarModelId,
   selectedAsset,
   backgroundMusicAssetId,
   setBackgroundMusicAssetId,
@@ -2387,6 +2778,10 @@ function StageWorkspace({
   setSmartSceneEnabled,
   smartScenePrompt,
   setSmartScenePrompt,
+  smartSceneLayoutMode,
+  setSmartSceneLayoutMode,
+  skipLipSync,
+  setSkipLipSync,
   generateSubtitles,
   setGenerateSubtitles,
   videoSettings,
@@ -2434,11 +2829,14 @@ function StageWorkspace({
   setTtsStylePrompt: (value: string) => void;
   selectedVoice?: Asset;
   generateVoice: () => Promise<unknown>;
+  retryStageQueue: (item: QueueItem) => Promise<unknown>;
   importAudioVersion: (file?: File, voiceName?: string) => Promise<unknown>;
   selectedAudioVersionId: string;
   setSelectedAudioVersionId: (value: string) => void;
   avatarAssetId: string;
   setAvatarAssetId: (value: string) => void;
+  avatarModelId: string;
+  setAvatarModelId: (value: string) => void;
   selectedAsset?: Asset;
   backgroundMusicAssetId: string;
   setBackgroundMusicAssetId: (value: string) => void;
@@ -2449,6 +2847,10 @@ function StageWorkspace({
   setSmartSceneEnabled: (value: boolean) => void;
   smartScenePrompt: string;
   setSmartScenePrompt: (value: string) => void;
+  smartSceneLayoutMode: SmartSceneLayoutMode;
+  setSmartSceneLayoutMode: (value: SmartSceneLayoutMode) => void;
+  skipLipSync: boolean;
+  setSkipLipSync: (value: boolean) => void;
   generateSubtitles: boolean;
   setGenerateSubtitles: (value: boolean) => void;
   videoSettings: VideoSettings;
@@ -2480,6 +2882,8 @@ function StageWorkspace({
   const musicAssets = state.musicAssets || [];
   const selectedAudioVersion = audioVersions.find((version) => version.id === selectedAudioVersionId) || audioVersions[0];
   const selectedVideoVersion = videoVersions.find((version) => version.id === selectedVideoVersionId) || videoVersions[0];
+  const cloudTtsSelected = isCloudTtsModel(state, ttsModelId);
+  const volcengineTtsSelected = isVolcengineTtsModel(state, ttsModelId);
   const nextStage = visibleStageOrder[visibleStageOrder.indexOf(activeStage) + 1];
   const canGoNext = project.mode === "manual" && Boolean(nextStage && canEnterStage(project, nextStage));
   const copyPublishField = (value: string) => copyTextToClipboard(value).catch(() => undefined);
@@ -2515,7 +2919,7 @@ function StageWorkspace({
           </div>
         </div>
       )}
-      {["voice", "video"].includes(activeStage) && <StageTaskPanel queueItems={stageQueues} action={action} />}
+      {["voice", "video"].includes(activeStage) && <StageTaskPanel queueItems={stageQueues} busy={busy} action={action} onRetryTask={activeStage === "voice" ? retryStageQueue : undefined} />}
 
       {activeStage === "input" && (
         <div className="step-body">
@@ -2534,7 +2938,7 @@ function StageWorkspace({
         <div className="step-body">
           <label><span>输入内容</span><textarea value={inputText} onChange={(event) => setInputText(event.target.value)} /></label>
           <label><span>生成要求模板</span><select value="" onChange={(event) => applyRequirementTemplate(event.target.value)}><option value="">选择模板</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
-          <label><span>生成要求</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
+          <label><span>口播语气</span><input value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="轻松自然、有亲和力、节奏更快" /></label>
           <div className="step-actions">
             <button className="ghost-button" disabled={savingScript} onClick={saveScript}>
               {savingScript ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}
@@ -2564,7 +2968,13 @@ function StageWorkspace({
             />
           </label>
           <div className="field-row">
-            <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+            {cloudTtsSelected && volcengineTtsSelected ? (
+              <VoiceChoice state={state} ttsModelId={ttsModelId} cloud volcengine voices={state.voices} value={voiceId} onChange={setVoiceId} />
+            ) : cloudTtsSelected ? (
+              <VoiceChoice state={state} ttsModelId={ttsModelId} cloud volcengine={false} voices={state.voices} value={voiceId} onChange={setVoiceId} />
+            ) : (
+              <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">默认音色</option>{state.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+            )}
             <TtsModelSelect state={state} value={ttsModelId} onChange={setTtsModelId} />
           </div>
           <SpeedSelect value={audioPlaybackSpeed} onChange={setAudioPlaybackSpeed} />
@@ -2578,7 +2988,7 @@ function StageWorkspace({
             onIntensityChange={setTtsStyleIntensity}
             onPromptChange={setTtsStylePrompt}
           />
-          <VoiceSample asset={selectedVoice} />
+          {!cloudTtsSelected && <VoiceSample asset={selectedVoice} />}
           <div className="step-actions">
             <ActionButton label="生成口播音频" busy={busy} disabled={!inputText.trim()} onClick={generateVoice} />
             <button className="ghost-button" disabled={savingSourceAudio || !project.sourceAnalysis?.links?.some((link) => link.audioUri)} onClick={() => importAudioVersion()}>
@@ -2610,7 +3020,15 @@ function StageWorkspace({
               {savingVideoSetup ? "保存中" : "保存设置"}
             </button>
           </div>
+          <AvatarModelSelect state={state} value={avatarModelId} onChange={setAvatarModelId} />
           <AvatarSample asset={selectedAsset} />
+          <div className="smart-scene-card neutral">
+            <div>
+              <strong>嘴型同步</strong>
+              <small>{skipLipSync ? "本次生成会跳过口型模型，直接合成原素材画面和口播音频。" : "本次生成会调用口型模型，让数字人嘴型跟随口播音频。"}</small>
+            </div>
+            <Toggle checked={skipLipSync} onChange={setSkipLipSync} label={skipLipSync ? "已跳过" : "跳过"} />
+          </div>
           <label>
             <span>背景音乐</span>
             <select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}>
@@ -2626,19 +3044,28 @@ function StageWorkspace({
           <div className="smart-scene-card">
             <div>
               <strong>智能布景</strong>
-              <small>{smartSceneEnabled ? "开启后会生成主讲解画面，并把数字人放到右下角。" : "关闭时使用普通数字人口播视频。"}</small>
+              <small>{smartSceneEnabled ? (smartSceneLayoutMode === "transparent_overlay" ? "智能布景会以半透明图层覆盖在数字人视频上。" : "智能布景作为主画面，数字人显示在右下角。") : "关闭时使用普通数字人口播视频。"}</small>
             </div>
             <Toggle checked={smartSceneEnabled} onChange={setSmartSceneEnabled} label={smartSceneEnabled ? "已开启" : "开启"} />
           </div>
           {smartSceneEnabled && (
-            <label>
-              <span>布景要求</span>
-              <textarea
-                value={smartScenePrompt}
-                onChange={(event) => setSmartScenePrompt(event.target.value)}
-                placeholder="例如：商品讲解风格，主画面突出卖点卡片和使用场景，右下角留出讲解员位置"
-              />
-            </label>
+            <>
+              <label>
+                <span>布景模式</span>
+                <select value={smartSceneLayoutMode} onChange={(event) => setSmartSceneLayoutMode(event.target.value as SmartSceneLayoutMode)}>
+                  <option value="pip">右下角悬浮</option>
+                  <option value="transparent_overlay">半透明覆盖</option>
+                </select>
+              </label>
+              <label>
+                <span>布景要求</span>
+                <textarea
+                  value={smartScenePrompt}
+                  onChange={(event) => setSmartScenePrompt(event.target.value)}
+                  placeholder={smartSceneLayoutMode === "transparent_overlay" ? "例如：半透明卖点卡和流程图悬浮在画面上，不遮挡人物面部" : "例如：商品讲解风格，主画面突出卖点卡片和使用场景"}
+                />
+              </label>
+            </>
           )}
           <Toggle checked={generateSubtitles} onChange={setGenerateSubtitles} label="生成字幕" />
           <div className="preset-row">
@@ -2741,6 +3168,15 @@ function AvatarSample({ asset }: { asset?: Asset }) {
   );
 }
 
+function AvatarVideoPreview({ asset }: { asset?: Asset }) {
+  if (!asset) return null;
+  return (
+    <div className="avatar-video-preview">
+      <video controls muted preload="metadata" src={asset.uri} />
+    </div>
+  );
+}
+
 function FlowOverview({
   project,
   currentStage,
@@ -2802,14 +3238,15 @@ function ResourceStrip({ resource, queueItems }: { resource?: ResourceSnapshot; 
   );
 }
 
-function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; action: AppAction }) {
+function StageTaskPanel({ queueItems, busy, action, onRetryTask }: { queueItems: QueueItem[]; busy: string; action: AppAction; onRetryTask?: (item: QueueItem) => Promise<unknown> }) {
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedIds, setCollapsedIds] = useState<string[]>([]);
-  const retryTask = (item: QueueItem) => action("重试执行任务", () => request(`/api/queue/${item.id}/retry`, { method: "POST" }));
+  const retryTask = (item: QueueItem) => onRetryTask?.(item) || action("重试执行任务", () => request(`/api/queue/${item.id}/retry`, { method: "POST" }));
   const cancelTask = (item: QueueItem) => action("取消执行任务", () => request(`/api/queue/${item.id}/cancel`, { method: "POST" }));
   const clearableIds = queueItems.filter((item) => ["completed", "cancelled"].includes(item.status)).map((item) => item.id);
   const collapsedSet = new Set(collapsedIds);
   const activeCount = queueItems.filter(isActiveQueue).length;
+  const retrying = ["重试执行任务", "重试自动生成", "生成口播音频"].includes(busy);
   const toggleTask = (id: string) => {
     setCollapsedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
@@ -2863,7 +3300,7 @@ function StageTaskPanel({ queueItems, action }: { queueItems: QueueItem[]; actio
               </div>
               <div className={cx("stage-task-actions", itemCollapsed && "compact")}>
                 <button className="text-button" onClick={() => toggleTask(item.id)}>{itemCollapsed ? "展开" : "收起"}</button>
-                {["failed", "cancelled"].includes(item.status) && <button className="text-button" onClick={() => retryTask(item)}>重试</button>}
+                {["failed", "cancelled"].includes(item.status) && <button className="text-button" disabled={retrying} onClick={() => retryTask(item)}>{retrying ? <Loader2 className="spin" size={14} /> : null}{retrying ? "重试中" : "重试"}</button>}
                 {item.status === "queued" && <button className="text-button danger-text" onClick={() => cancelTask(item)}>取消</button>}
               </div>
             </article>
@@ -3259,8 +3696,8 @@ function AssetLibrary({ state, refresh, action }: { state: State; refresh: () =>
         <button type="button" role="tab" className={cx(activeTab === "music" && "active")} onClick={() => setActiveTab("music")}>背景音素材<span>{musicAssets.length}</span></button>
         <button type="button" role="tab" className={cx(activeTab === "requirements" && "active")} onClick={() => setActiveTab("requirements")}>生成要求模板<span>{templates.length}</span></button>
       </div>
-      {activeTab === "avatar" && <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} refresh={refresh} action={action} />}
-      {activeTab === "music" && <AssetManager title="背景音素材" kind="music" items={musicAssets} refresh={refresh} action={action} />}
+      {activeTab === "avatar" && <AssetManager title="数字人素材" kind="avatar" items={avatarAssets} state={state} refresh={refresh} action={action} />}
+      {activeTab === "music" && <AssetManager title="背景音素材" kind="music" items={musicAssets} state={state} refresh={refresh} action={action} />}
       {activeTab === "requirements" && <RequirementTemplateManager items={templates} action={action} />}
     </section>
   );
@@ -3310,7 +3747,7 @@ function RequirementTemplateManager({ items, action }: { items: RequirementTempl
   return (
     <section className="manager-page">
       <div className="manager-toolbar">
-        <div><p className="eyebrow">提示词资产</p><h2>生成要求模板</h2><small>创建任务、任务步骤和体验中心 AI 润色会共用这里的模板。</small></div>
+        <div><p className="eyebrow">提示词资产</p><h2>生成要求模板</h2><small>创建任务、任务步骤和模型管理 AI 测试会共用这里的模板。</small></div>
       </div>
       <form className="template-editor" onSubmit={submit}>
         <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="模板名称" />
@@ -3343,7 +3780,7 @@ function RequirementTemplateManager({ items, action }: { items: RequirementTempl
   );
 }
 
-function AssetManager({ title, kind, items, refresh, action }: { title: string; kind: "avatar" | "voice" | "music"; items: Asset[]; refresh: () => Promise<void>; action: AppAction }) {
+function AssetManager({ title, kind, items, state, refresh, action }: { title: string; kind: "avatar" | "voice" | "music"; items: Asset[]; state: State; refresh: () => Promise<void>; action: AppAction }) {
   const [query, setQuery] = useState("");
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -3365,6 +3802,8 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
   const fileLabel = kind === "avatar" ? "选择视频" : kind === "music" ? "选择背景音" : "选择参考音频";
   const uploadLabel = kind === "avatar" ? "上传素材" : kind === "music" ? "上传背景音" : "上传参考音色";
   const allChecked = filtered.length > 0 && filtered.every((item) => checkedIds.includes(item.id));
+  const defaultVoiceId = state.settings?.defaultVoiceId || "";
+  const defaultAvatarAssetId = state.settings?.defaultAvatarAssetId || "";
 
   useEffect(() => {
     setCheckedIds((current) => current.filter((id) => items.some((item) => item.id === id)));
@@ -3449,6 +3888,14 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
     cancelEdit();
   }
 
+  async function setDefaultVoice(item: Asset) {
+    await action(kind === "avatar" ? "设置默认素材" : "设置默认音色", () => request("/api/settings/defaults", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(kind === "avatar" ? { defaultAvatarAssetId: item.id } : { defaultVoiceId: item.id })
+    }));
+  }
+
   async function createClip(item: Asset) {
     const start = Number(clipStart);
     const end = Number(clipEnd);
@@ -3491,7 +3938,7 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
       </div>
       <DataTable
         columns={["", nameLabel, kind === "avatar" ? "预览" : "试听", "创建时间", "操作"]}
-        template={kind === "avatar" ? "42px minmax(300px, 1.35fr) minmax(170px, .75fr) 120px 210px" : "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 190px"}
+        template={kind === "avatar" ? "42px minmax(300px, 1.35fr) minmax(170px, .75fr) 120px 270px" : kind === "voice" ? "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 270px" : "42px minmax(220px, 1.2fr) minmax(180px, .9fr) 120px 190px"}
         rows={filtered.map((item) => [
           <input className="table-check" type="checkbox" aria-label={`选择${entityLabel} ${item.name}`} checked={checkedIds.includes(item.id)} onChange={(event) => toggleOne(item.id, event.target.checked)} />,
           editingId === item.id ? (
@@ -3516,11 +3963,23 @@ function AssetManager({ title, kind, items, refresh, action }: { title: string; 
               onCancel={cancelClip}
             />
           ) : (
-            <span className="asset-title"><strong>{item.name}</strong><small>{item.mimeType || item.provider || "local"}</small></span>
+            <span className="asset-title">
+              <strong>
+                {item.name}
+                {((kind === "voice" && item.id === defaultVoiceId) || (kind === "avatar" && item.id === defaultAvatarAssetId)) && <span className="default-pill inline">默认</span>}
+              </strong>
+              <small>{item.mimeType || item.provider || "local"}</small>
+            </span>
           ),
           <MediaPreview item={item} kind={kind === "music" ? "voice" : kind} />,
           formatDate(item.createdAt),
           <span className="table-actions">
+            {kind === "voice" && (item.id === defaultVoiceId
+              ? <span className="default-pill">默认</span>
+              : <button className="text-button" onClick={() => setDefaultVoice(item)}><CheckCircle2 size={14} />设为默认</button>)}
+            {kind === "avatar" && (item.id === defaultAvatarAssetId
+              ? <span className="default-pill">默认</span>
+              : <button className="text-button" onClick={() => setDefaultVoice(item)}><CheckCircle2 size={14} />设为默认</button>)}
             <button className="text-button" onClick={() => startEdit(item)}><Pencil size={14} />编辑</button>
             <button className="text-button" onClick={() => startClip(item)}><Scissors size={14} />剪辑</button>
             <button className="text-button danger-text" onClick={() => deleteItem(item)}><Trash2 size={14} />删除</button>
@@ -3750,22 +4209,94 @@ function QualitySummary({ report }: { report?: Asset["qualityReport"] }) {
 
 function ModelCenter({ state, action }: { state: State; action: AppAction }) {
   const [activeType, setActiveType] = useState<ModelTypeKey>("llm");
+  const [cloudDialog, setCloudDialog] = useState<{ open: boolean; provider?: ApiProviderRecord }>({ open: false });
+  const providers = state.apiProviders.filter((provider) => provider.capabilities?.includes(activeType) && provider.hasKey && provider.status !== "missing");
+  const localModels = state.models.filter((model) => model.type === activeType);
+  const selectedValue = defaultModelIdForType(state, activeType);
   return (
-    <section className="manager-page">
-      <div className="manager-toolbar">
-        <div><p className="eyebrow">体验中心</p><h2>内容能力体验</h2></div>
-      </div>
-      <div className="model-type-tabs" role="tablist" aria-label="体验分类">
+    <section className="manager-page model-management-page">
+      <div className="model-management-tabs" role="tablist" aria-label="模型类型">
         {modelTypeTabs.map((tab) => (
-          <button key={tab.id} role="tab" className={cx(activeType === tab.id && "active")} onClick={() => setActiveType(tab.id)}>
+          <button key={tab.id} role="tab" aria-selected={activeType === tab.id} className={cx(activeType === tab.id && "active")} onClick={() => setActiveType(tab.id)}>
             {tab.label}
           </button>
         ))}
       </div>
+      <div className="model-management-layout">
+        <section className="model-management-main">
+          <div className="model-section-head">
+            <h2>{modelTypeLabels[activeType]}</h2>
+            <button className="primary-button" onClick={() => setCloudDialog({ open: true })}><Plus size={16} />添加云模型</button>
+          </div>
+          <div className="model-source-grid">
+            <div className="model-source-card">
+              <div className="model-source-head"><strong>本地模型</strong></div>
+              <div className="model-list-clean">
+                {localModels.map((model) => {
+                  const selected = selectedValue === model.id;
+                  return (
+                    <article className={cx("model-list-row", selected && "active")} key={model.id}>
+                      <div><strong>{model.name}</strong></div>
+                      <div className="model-list-actions">
+                        <StatusBadge status={model.status} />
+                        {selected ? <span className="default-pill">默认</span> : <button className="ghost-button" onClick={() => action(`选择${modelTypeLabels[activeType]}`, () => request("/api/models/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelId: model.id }) }))}>设为默认</button>}
+                      </div>
+                    </article>
+                  );
+                })}
+                {!localModels.length && <EmptyState text="当前没有本地模型。" />}
+              </div>
+            </div>
+            <div className="model-source-card">
+              <div className="model-source-head"><strong>云模型</strong></div>
+              <div className="model-list-clean">
+                {providers.map((provider) => {
+                  const selected = providerTextModelValue(provider) === selectedValue;
+                  const isVolcengineTtsProvider = activeType === "tts" && (provider.providerId === "volcengine-tts" || provider.id === "volcengine-tts");
+                  return (
+                    <article className={cx("model-list-row", selected && "active")} key={provider.id}>
+                      <div><strong>{providerOptionLabel(provider, activeType)}</strong><small>{isVolcengineTtsProvider ? `音色：${provider.voiceName || provider.model || "未绑定"}` : provider.endpoint}</small></div>
+                      <div className="model-list-actions">
+                        {selected ? <span className="default-pill">默认</span> : <button className="ghost-button" disabled={!provider.hasKey} onClick={() => action(`选择云端${modelTypeLabels[activeType]}`, () => request(`/api/providers/${provider.id}/select`, { method: "POST" }))}>设为默认</button>}
+                        <button className="ghost-button" onClick={() => setCloudDialog({ open: true, provider })}><Pencil size={15} />编辑</button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {!providers.length && <EmptyState text="还没有云模型，点击右上角添加。" />}
+              </div>
+            </div>
+          </div>
+        </section>
 
-      {activeType === "llm" && <LlmTypeTestPanel state={state} action={action} />}
-      {activeType === "tts" && <TtsTypeTestPanel state={state} voices={state.voices} action={action} />}
-      {activeType === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
+        <aside className="model-management-side">
+          <ModelQuickTest type={activeType} state={state} action={action} />
+        </aside>
+      </div>
+      {cloudDialog.open && (
+        <CloudProviderDialog
+          state={state}
+          type={activeType}
+          provider={cloudDialog.provider}
+          selectedValue={selectedValue}
+          action={action}
+          onClose={() => setCloudDialog({ open: false })}
+        />
+      )}
+    </section>
+  );
+}
+
+function ModelQuickTest({ type, state, action }: { type: ModelTypeKey; state: State; action: AppAction }) {
+  return (
+    <section className="model-quick-test">
+      <div className="model-panel-head compact">
+        <h3>快速测试</h3>
+      </div>
+      {type === "llm" && <LlmTypeTestPanel state={state} action={action} />}
+      {type === "asr" && <AsrTypeTestPanel state={state} models={state.models.filter((model) => model.type === "asr")} defaultModelId={defaultModelIdForType(state, "asr")} action={action} />}
+      {type === "tts" && <TtsTypeTestPanel state={state} voices={state.voices} action={action} />}
+      {type === "avatar" && <AvatarTypeTestPanel state={state} action={action} />}
     </section>
   );
 }
@@ -3773,23 +4304,21 @@ function ModelCenter({ state, action }: { state: State; action: AppAction }) {
 function RuntimeSettingsPanel({ state, action }: { state: State; action: AppAction }) {
   const settings = state.settings || {};
   const [pendingKey, setPendingKey] = useState("");
-  const [pendingLabel, setPendingLabel] = useState("");
   const [draft, setDraft] = useState({
-    videoConcurrency: settings.videoConcurrency || 1,
+    taskConcurrency: settings.taskConcurrency || 1,
     avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
   });
   useEffect(() => {
     setDraft({
-      videoConcurrency: settings.videoConcurrency || 1,
+      taskConcurrency: settings.taskConcurrency || 1,
       avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
     });
-  }, [settings.videoConcurrency, settings.avatarSegmentSeconds]);
+  }, [settings.taskConcurrency, settings.avatarSegmentSeconds]);
 
-  async function update(next: Partial<typeof draft>, key = "runtime", label = "保存中") {
+  async function update(next: Partial<typeof draft>, key = "runtime") {
     const payload = { ...draft, ...next };
     setDraft(payload);
     setPendingKey(key);
-    setPendingLabel(label);
     try {
       await action("保存运行配置", () => request("/api/settings/runtime", {
         method: "PATCH",
@@ -3798,19 +4327,37 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
       }));
     } finally {
       setPendingKey("");
-      setPendingLabel("");
     }
   }
 
+  const runningCount = state.queueItems.filter((item) => item.status === "running").length;
+  const queuedCount = state.queueItems.filter((item) => item.status === "queued").length;
+
   return (
-    <section className="runtime-settings">
-      <div>
-        <strong>运行配置</strong>
-        <small>模型按需运行，完成后释放；这里仅配置视频合成参数。</small>
+    <section className="config-section">
+      <div className="config-section-head">
+        <div>
+          <h2>任务执行</h2>
+          <small>控制生成任务的排队方式和数字人长视频分段。</small>
+        </div>
+        <span className="config-status">运行 {runningCount} · 等待 {queuedCount}</span>
       </div>
-      <label><span>视频合成并行度</span><input type="number" min="1" max="4" step="1" value={draft.videoConcurrency} onChange={(event) => update({ videoConcurrency: Number(event.target.value) }, "videoConcurrency")} /></label>
-      <label><span>分段时间长度</span><input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} /></label>
-      {pendingKey && <small>{pendingLabel}</small>}
+
+      <div className="config-grid">
+        <label className="config-field primary">
+          <span>任务并行度</span>
+          <input type="number" min="1" max="2" step="1" value={draft.taskConcurrency} onChange={(event) => update({ taskConcurrency: Number(event.target.value) }, "taskConcurrency")} />
+          <small>默认 1。设置为 1 时任务串行排队；设置为 2 时最多同时执行两个生成任务。</small>
+        </label>
+
+        <label className="config-field">
+          <span>数字人分段长度</span>
+          <input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} />
+          <small>长视频会按这个秒数切段后合成，单位：秒。</small>
+        </label>
+      </div>
+
+      {pendingKey && <small className="config-saving">正在保存...</small>}
     </section>
   );
 }
@@ -3843,10 +4390,14 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
   const [prompt, setPrompt] = useState("把这段内容润色成适合短视频口播的自然中文：今天店里来了很多老顾客，大家都说环境越来越舒服。");
   const [requirements, setRequirements] = useState("");
   const [templateId, setTemplateId] = useState("");
-  const scriptModelId = localTextModelId(state);
+  const [scriptModelId, setScriptModelId] = useState(defaultModelIdForType(state, "llm"));
   const [result, setResult] = useState("");
+  const [resultMeta, setResultMeta] = useState("");
   const [testing, setTesting] = useState(false);
   const templates = getRequirementTemplates(state);
+  useEffect(() => {
+    setScriptModelId((current) => current || defaultModelIdForType(state, "llm"));
+  }, [state.settings?.defaultModelIds?.llm, state.apiProviders, state.models]);
   const applyTemplate = (nextTemplateId: string) => {
     setTemplateId(nextTemplateId);
     const template = templates.find((item) => item.id === nextTemplateId);
@@ -3855,13 +4406,20 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
+    const startedAt = performance.now();
     try {
-      const response = await action("AI润色", () => request<{ text: string }>("/api/text/polish", {
+      const response = await action("AI润色", () => request<{ text: string; modelInfo?: { type?: string; providerName?: string; modelName?: string; model?: string; metrics?: { elapsedMs?: number } } }>("/api/text/polish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ inputText: prompt, requirements, scriptModelId })
       }));
-      if (response?.text) setResult(response.text);
+      if (response?.text) {
+        setResult(response.text);
+        const modelName = response.modelInfo?.providerName || response.modelInfo?.modelName || modelLabelForTypeValue(state, "llm", scriptModelId);
+        const modelId = response.modelInfo?.model || "";
+        const elapsedMs = response.modelInfo?.metrics?.elapsedMs || Math.round(performance.now() - startedAt);
+        setResultMeta(`实际使用：${[modelName, modelId].filter(Boolean).join(" · ")} · ${(elapsedMs / 1000).toFixed(1)} 秒`);
+      }
     } finally {
       setTesting(false);
     }
@@ -3870,11 +4428,12 @@ function LlmTypeTestPanel({ state, action }: { state: State; action: AppAction }
   return (
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>AI润色</h3></div>
+      <TypedModelSelect state={state} type="llm" models={state.models.filter((model) => model.type === "llm")} value={scriptModelId} onChange={setScriptModelId} />
       <label><span>输入内容</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
       <label><span>生成要求模板</span><select value={templateId} onChange={(event) => applyTemplate(event.target.value)}><option value="">不使用</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}</select></label>
       <label><span>生成要求</span><textarea value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="语气、时长、平台风格、受众" /></label>
       <button className="primary-button" disabled={testing || !prompt.trim()}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "润色中" : "开始润色"}</button>
-      {result && <OutputItem title="润色结果" status="done"><p>{result}</p></OutputItem>}
+      {result && <OutputItem title="润色结果" status="done" meta={resultMeta}><p>{result}</p></OutputItem>}
     </form>
   );
 }
@@ -3935,8 +4494,12 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
   const [testing, setTesting] = useState(false);
   const selectedVoice = voices.find((voice) => voice.id === voiceId);
   useEffect(() => {
-    setVoiceId((current) => current || voices[0]?.id || "");
-  }, [voices]);
+    if (isVolcengineTtsModel(state, modelId)) {
+      setVoiceId((current) => current || defaultVolcengineSpeakerId(state, modelId));
+      return;
+    }
+    setVoiceId((current) => current || state.settings?.defaultVoiceId || voices[0]?.id || "");
+  }, [voices, modelId, state.apiProviders, state.settings?.defaultVoiceId]);
   useEffect(() => {
     setModelId((current) => current || defaultModelIdForType(state, "tts"));
   }, [state.settings?.defaultModelIds?.tts, state.models]);
@@ -3973,16 +4536,23 @@ function TtsTypeTestPanel({ state, voices, action }: { state: State; voices: Ass
         onIntensityChange={setTtsStyleIntensity}
         onPromptChange={setTtsStylePrompt}
       />
-      <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-      <VoiceSample asset={selectedVoice} />
+      {isVolcengineTtsModel(state, modelId) ? (
+        <VoiceChoice state={state} ttsModelId={modelId} cloud volcengine voices={voices} value={voiceId} onChange={setVoiceId} />
+      ) : !isProviderModelId(modelId) && (
+        <>
+          <label><span>音色</span><select value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">请选择音色</option>{voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+          <VoiceSample asset={selectedVoice} />
+        </>
+      )}
       <label><span>合成文本</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-      <button className="primary-button" disabled={testing || !text.trim() || !voiceId || !modelId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
+      <button className="primary-button" disabled={testing || !text.trim() || (!isProviderModelId(modelId) && !voiceId) || !modelId}>{testing ? <Loader2 className="spin" size={16} /> : <Play size={16} />}{testing ? "生成中" : "生成试听"}</button>
       {audioUri && <OutputItem title="试听音频" status="done"><audio controls src={audioUri} /></OutputItem>}
     </form>
   );
 }
 
 function AvatarTypeTestPanel({ state, action }: { state: State; action: AppAction }) {
+  const [modelId, setModelId] = useState(defaultModelIdForType(state, "avatar"));
   const [avatarAssetId, setAvatarAssetId] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [audio, setAudio] = useState<File | null>(null);
@@ -3993,12 +4563,16 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   useEffect(() => {
     setAvatarAssetId((current) => current || state.avatarAssets[0]?.id || "");
   }, [state.avatarAssets]);
+  useEffect(() => {
+    setModelId((current) => current || defaultModelIdForType(state, "avatar"));
+  }, [state.settings?.defaultModelIds?.avatar, state.models, state.apiProviders]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTesting(true);
     try {
       const body = new FormData();
+      body.append("modelId", modelId || defaultModelIdForType(state, "avatar"));
       body.append("avatarAssetId", avatarFile ? "" : avatarAssetId);
       body.append("backgroundMusicAssetId", backgroundMusicAssetId);
       if (avatarFile) body.append("avatar", avatarFile);
@@ -4013,6 +4587,7 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   return (
     <form className="model-test-panel" onSubmit={submit}>
       <div><p className="eyebrow">体验</p><h3>视频合成</h3></div>
+      <AvatarModelSelect state={state} value={modelId} onChange={setModelId} />
       <label><span>数字人素材</span><select value={avatarAssetId} onChange={(event) => setAvatarAssetId(event.target.value)}><option value="">使用上传素材</option>{state.avatarAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       {!avatarFile && <AvatarSample asset={selectedAvatarAsset} />}
       <label><span>背景音</span><select value={backgroundMusicAssetId} onChange={(event) => setBackgroundMusicAssetId(event.target.value)}><option value="">不使用背景音</option>{(state.musicAssets || []).map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
@@ -4027,36 +4602,98 @@ function AvatarTypeTestPanel({ state, action }: { state: State; action: AppActio
   );
 }
 
-function CloudProviderManager({ state, type, providers, selectedValue, action }: { state: State; type: Exclude<ModelTypeKey, "avatar">; providers: ApiProviderRecord[]; selectedValue: string; action: AppAction }) {
+function CloudProviderDialog({
+  state,
+  type,
+  provider,
+  selectedValue,
+  action,
+  onClose
+}: {
+  state: State;
+  type: ModelTypeKey;
+  provider?: ApiProviderRecord;
+  selectedValue: string;
+  action: AppAction;
+  onClose: () => void;
+}) {
   const catalog = state.apiProviderCatalog.filter((provider) => provider.capabilities?.includes(type));
-  const initialCatalog = catalog.find((provider) => !provider.id.startsWith("custom")) || catalog[0];
-  const [formOpen, setFormOpen] = useState(false);
+  const initialCatalog = provider ? catalog.find((item) => item.id === provider.providerId) : catalog.find((provider) => !provider.id.startsWith("custom")) || catalog[0];
   const [providerId, setProviderId] = useState(initialCatalog?.id || "");
   const [apiKey, setApiKey] = useState("");
+  const [tencentAppKey, setTencentAppKey] = useState("");
+  const [tencentSecurity, setTencentSecurity] = useState("");
   const [endpoint, setEndpoint] = useState(initialCatalog?.endpoint || "");
   const [modelChoice, setModelChoice] = useState(initialCatalog?.defaultModel || "__custom");
   const [customModel, setCustomModel] = useState("");
+  const [resourceId, setResourceId] = useState(initialCatalog?.resourceId || "");
+  const [publicBaseUrl, setPublicBaseUrl] = useState(initialCatalog?.publicBaseUrl || "");
+  const currentStorage = state.settings?.objectStorage || {
+    provider: "aliyun-oss" as const,
+    enabled: true,
+    bucket: "",
+    region: "oss-cn-chengdu",
+    endpoint: "oss-cn-chengdu.aliyuncs.com",
+    pathPrefix: "digital-human-temp",
+    expiresSeconds: 600
+  };
+  const [storageDraft, setStorageDraft] = useState({
+    enabled: true,
+    accessKeyId: "",
+    accessKeySecret: "",
+    bucket: currentStorage.bucket || "",
+    region: currentStorage.region || "oss-cn-chengdu",
+    endpoint: currentStorage.endpoint || "oss-cn-chengdu.aliyuncs.com",
+    pathPrefix: currentStorage.pathPrefix || "digital-human-temp",
+    expiresSeconds: 600
+  });
+  const [voiceName, setVoiceName] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState("");
 
   const selectedCatalog = catalog.find((provider) => provider.id === providerId) || initialCatalog;
   const modelOptions = selectedCatalog?.models || [];
-  const model = modelChoice === "__custom" ? customModel.trim() : modelChoice;
+  const isVolcengineTts = selectedCatalog?.id === "volcengine-tts";
+  const isTencentAvatar = selectedCatalog?.id === "tencent-avatar";
+  const needsModel = selectedCatalog ? (providerRequiresModel(selectedCatalog) || isVolcengineTts) : true;
+  const model = needsModel ? (modelChoice === "__custom" ? customModel.trim() : modelChoice) : "";
+  const needsResourceId = Boolean(selectedCatalog?.resourceId !== undefined || selectedCatalog?.id === "volcengine-tts");
+  const needsPublicBaseUrl = isTencentAvatar;
+  const editing = provider && provider.providerId === selectedCatalog?.id ? provider : undefined;
+  const objectStorageReady = Boolean((storageDraft.accessKeyId.trim() || currentStorage.hasAccessKeyId) && (storageDraft.accessKeySecret.trim() || currentStorage.hasAccessKeySecret) && storageDraft.bucket.trim() && storageDraft.region.trim());
+  const hasTencentMediaSource = !needsPublicBaseUrl || objectStorageReady;
+  const tencentCredentialReady = !isTencentAvatar || editing?.hasKey || (tencentAppKey.trim() && tencentSecurity.trim());
+  const tencentCredentialPartial = isTencentAvatar && Boolean(tencentAppKey.trim() || tencentSecurity.trim()) && !(tencentAppKey.trim() && tencentSecurity.trim());
 
   useEffect(() => {
-    if (!providerId && initialCatalog) {
-      setProviderId(initialCatalog.id);
-      setEndpoint(initialCatalog.endpoint || "");
-      setModelChoice(initialCatalog.defaultModel || "__custom");
-      setCustomModel("");
-    }
-  }, [providerId, initialCatalog]);
+    if (!initialCatalog) return;
+    if (catalog.some((provider) => provider.id === providerId)) return;
+    loadCatalog(initialCatalog, provider);
+  }, [providerId, initialCatalog, catalog, provider]);
+
+  useEffect(() => {
+    if (!initialCatalog) return;
+    loadCatalog(initialCatalog, provider);
+  }, [provider?.id, initialCatalog?.id]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   function loadCatalog(item: ApiProviderCatalogItem, configured?: ApiProviderRecord) {
     const nextModel = configured?.model || item.defaultModel || "";
     setProviderId(item.id);
     setEndpoint(configured?.endpoint || item.endpoint || "");
     setApiKey("");
+    setTencentAppKey("");
+    setTencentSecurity("");
+    setResourceId(configured?.resourceId || item.resourceId || "");
+    setPublicBaseUrl(configured?.publicBaseUrl || item.publicBaseUrl || "");
+    setVoiceName(configured?.voiceName || "");
     if (item.models?.includes(nextModel)) {
       setModelChoice(nextModel);
       setCustomModel("");
@@ -4064,27 +4701,38 @@ function CloudProviderManager({ state, type, providers, selectedValue, action }:
       setModelChoice("__custom");
       setCustomModel(nextModel);
     }
-    setFormOpen(true);
   }
 
   function changeProvider(nextProviderId: string) {
     const nextCatalog = catalog.find((provider) => provider.id === nextProviderId);
     if (!nextCatalog) return;
-    const configured = providers.find((provider) => provider.providerId === nextCatalog.id);
-    loadCatalog(nextCatalog, configured);
+    loadCatalog(nextCatalog);
   }
 
   async function configure() {
     setSaving(true);
     try {
+      if (isTencentAvatar) {
+        await request("/api/settings/object-storage", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...storageDraft, enabled: true, expiresSeconds: 600 })
+        });
+      }
+      const providerApiKey = isTencentAvatar
+        ? (tencentAppKey.trim() || tencentSecurity.trim() ? JSON.stringify({ appkey: tencentAppKey.trim(), accessToken: tencentSecurity.trim() }) : "")
+        : apiKey;
       const result = await action("保存云模型", () => request("/api/providers/configure", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerId, apiKey, endpoint, model })
+        body: JSON.stringify({ id: editing?.id, providerId, apiKey: providerApiKey, endpoint, model, resourceId, publicBaseUrl, voiceName })
       }));
       if (result) {
-        setFormOpen(false);
         setApiKey("");
+        setTencentAppKey("");
+        setTencentSecurity("");
+        setStorageDraft((current) => ({ ...current, accessKeyId: "", accessKeySecret: "" }));
+        onClose();
       }
     } finally {
       setSaving(false);
@@ -4096,65 +4744,74 @@ function CloudProviderManager({ state, type, providers, selectedValue, action }:
     setDeletingId(provider.id);
     try {
       const result = await action("删除云模型", () => request(`/api/providers/${provider.id}`, { method: "DELETE" }));
-      if (result && providerId === provider.providerId) {
-        setFormOpen(false);
-      }
+      if (result) onClose();
     } finally {
       setDeletingId("");
     }
   }
 
   return (
-    <section className="model-panel">
-      <div className="model-panel-head">
-        <div><p className="eyebrow">Cloud</p><h3>云端{modelTypeLabels[type]}模型</h3></div>
-        <button className="primary-button" onClick={() => initialCatalog && loadCatalog(initialCatalog)}><Plus size={16} />新增云模型</button>
-      </div>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="cloud-model-modal" role="dialog" aria-modal="true" aria-label={provider ? "编辑云模型" : "添加云模型"}>
+        <div className="modal-head">
+          <h2>{provider ? "编辑云模型" : "添加云模型"}</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button>
+        </div>
 
-      {formOpen && selectedCatalog && (
+      {selectedCatalog ? (
         <div className="provider-form">
-          <div className="provider-form-grid">
-            <label><span>Provider</span><select value={providerId} onChange={(event) => changeProvider(event.target.value)}>
-              {catalog.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-            </select></label>
-            <label><span>模型 ID</span><select value={modelChoice} onChange={(event) => setModelChoice(event.target.value)}>
+          <div className="provider-form-grid model-config-grid">
+            {provider ? (
+              <label><span>云服务商</span><input readOnly value={selectedCatalog.name} /></label>
+            ) : (
+              <div className="provider-picker provider-wide-field">
+                <span>云服务商</span>
+                <div className="provider-picker-list" role="listbox" aria-label="云服务商">
+                  {catalog.map((item) => (
+                    <button type="button" key={item.id} className={cx(item.id === providerId && "active")} onClick={() => changeProvider(item.id)}>
+                      {item.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isVolcengineTts && <label><span>音色名称</span><input value={voiceName} onChange={(event) => setVoiceName(event.target.value)} placeholder="例如 极客魔导师" /></label>}
+            {needsModel && <label><span>{isVolcengineTts ? "Speaker ID" : "模型 ID"}</span><select value={modelChoice} onChange={(event) => setModelChoice(event.target.value)}>
               {modelOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-              <option value="__custom">自定义模型 ID</option>
-            </select></label>
-            {modelChoice === "__custom" && <label><span>自定义模型 ID</span><input value={customModel} onChange={(event) => setCustomModel(event.target.value)} placeholder="例如 qwen-plus / deepseek-chat" /></label>}
+              <option value="__custom">{isVolcengineTts ? "自定义 Speaker ID" : "自定义模型 ID"}</option>
+            </select></label>}
+            {needsModel && modelChoice === "__custom" && <label><span>{isVolcengineTts ? "自定义 Speaker ID" : "自定义模型 ID"}</span><input value={customModel} onChange={(event) => setCustomModel(event.target.value)} placeholder={isVolcengineTts ? "例如 S_xxx" : "例如 qwen-plus / deepseek-chat"} /></label>}
             <label><span>Endpoint</span><input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://.../v1/chat/completions" /></label>
-            <label><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={selectedCatalog.envKey} /></label>
+            {needsResourceId && <label><span>Resource ID</span><input value={resourceId} onChange={(event) => setResourceId(event.target.value)} placeholder="例如 seed-icl-2.0" /></label>}
+            {needsPublicBaseUrl && (
+              <>
+                <label><span>AppKey</span><input value={tencentAppKey} onChange={(event) => setTencentAppKey(event.target.value)} placeholder={editing?.maskedAppKey || "请输入 AppKey"} /></label>
+                <label><span>Security / AccessToken</span><input type="password" value={tencentSecurity} onChange={(event) => setTencentSecurity(event.target.value)} placeholder={editing?.maskedAccessToken || "请输入 Security 或 AccessToken"} /></label>
+                <label className="provider-wide-field"><span>音视频中转</span><small>腾讯云数字人接口需要公网可下载的音频和视频 URL，平台会先上传到 OSS，生成完成后立即删除临时对象。</small></label>
+                <label><span>OSS 服务商</span><input readOnly value="阿里云 OSS" /></label>
+                <label><span>AccessKeyId</span><input value={storageDraft.accessKeyId} onChange={(event) => setStorageDraft((current) => ({ ...current, accessKeyId: event.target.value }))} placeholder={currentStorage.maskedAccessKeyId || "LTAI..."} /></label>
+                <label><span>AccessKeySecret</span><input type="password" value={storageDraft.accessKeySecret} onChange={(event) => setStorageDraft((current) => ({ ...current, accessKeySecret: event.target.value }))} placeholder={currentStorage.maskedAccessKeySecret || "AccessKeySecret"} /></label>
+                <label><span>Bucket</span><input value={storageDraft.bucket} onChange={(event) => setStorageDraft((current) => ({ ...current, bucket: event.target.value }))} placeholder="例如 mgdyzxxdr" /></label>
+                <label><span>Region</span><input value={storageDraft.region} onChange={(event) => setStorageDraft((current) => ({ ...current, region: event.target.value }))} placeholder="例如 oss-cn-chengdu" /></label>
+                <label><span>Endpoint</span><input value={storageDraft.endpoint} onChange={(event) => setStorageDraft((current) => ({ ...current, endpoint: event.target.value }))} placeholder="例如 oss-cn-chengdu.aliyuncs.com" /></label>
+                <label><span>路径前缀</span><input value={storageDraft.pathPrefix} onChange={(event) => setStorageDraft((current) => ({ ...current, pathPrefix: event.target.value }))} placeholder="digital-human-temp" /></label>
+              </>
+            )}
+            {!isTencentAvatar && <label className="provider-wide-field"><span>API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={editing?.maskedKey || selectedCatalog.envKey} /></label>}
           </div>
           <div className="provider-form-actions">
-            <button className="ghost-button" onClick={() => setFormOpen(false)}><X size={15} />取消</button>
-            <button className="primary-button" disabled={saving || !endpoint.trim() || !model} onClick={configure}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />}{saving ? "保存中" : "保存"}</button>
+            {editing && <button className="ghost-button danger" disabled={deletingId === editing.id} onClick={() => deleteProvider(editing)}>{deletingId === editing.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}删除</button>}
+            {editing && <button className="ghost-button" disabled={providerTextModelValue(editing) === selectedValue || !editing.hasKey} onClick={() => action(`选择云端${modelTypeLabels[type]}模型`, () => request(`/api/providers/${editing.id}/select`, { method: "POST" }))}>设为默认</button>}
+            <button className="primary-button" disabled={saving || !endpoint.trim() || (needsModel && !model) || (isVolcengineTts && !voiceName.trim()) || (needsResourceId && !resourceId.trim()) || !hasTencentMediaSource || !tencentCredentialReady || tencentCredentialPartial} onClick={configure}>{saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />}{saving ? "保存中" : "保存"}</button>
           </div>
         </div>
+      ) : (
+        <EmptyState text="当前类型没有可配置的云服务商。" />
       )}
-
-      <div className="inventory-list compact">
-        {providers.map((provider) => {
-          const selected = providerTextModelValue(provider) === selectedValue;
-          const catalogItem = catalog.find((item) => item.id === provider.providerId);
-          return (
-            <article className="inventory-row model-choice-row" key={provider.id}>
-              <div>
-                <strong>{provider.name}</strong>
-                <small>{provider.model || "未设置模型 ID"}</small>
-              </div>
-              <div className="provider-actions">
-                <StatusBadge status={provider.status} />
-                {selected && <span className="default-pill">默认</span>}
-                <button className="ghost-button" onClick={() => catalogItem && loadCatalog(catalogItem, provider)}><Pencil size={15} />编辑</button>
-                <button className="ghost-button" disabled={selected || !provider.hasKey} onClick={() => action(`选择云端${modelTypeLabels[type]}模型`, () => request(`/api/providers/${provider.id}/select`, { method: "POST" }))}>设为默认</button>
-                <button className="ghost-button danger" disabled={deletingId === provider.id} onClick={() => deleteProvider(provider)}>{deletingId === provider.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}删除</button>
-              </div>
-            </article>
-          );
-        })}
-        {providers.length === 0 && <EmptyState text={`还没有云端${modelTypeLabels[type]}模型。点击“新增云模型”配置 Provider。`} />}
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }
 

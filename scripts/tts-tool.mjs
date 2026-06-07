@@ -9,7 +9,6 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 const synthesizers = {
-  qwen3: join(__dirname, "qwen-tts-synthesize.py"),
   voxcpm2: join(__dirname, "voxcpm2-tts-synthesize.py")
 };
 
@@ -40,7 +39,7 @@ function unique(values) {
 }
 
 function candidateRuntime(overrides = {}) {
-  const engine = normalizeEngine(overrides.engine || process.env.DH_TTS_ENGINE || "voxcpm2");
+  const engine = "voxcpm2";
   const pythonCandidates = unique([
     overrides.python,
     process.env.DH_TTS_PYTHON,
@@ -49,20 +48,12 @@ function candidateRuntime(overrides = {}) {
     process.platform === "win32" ? join(rootDir, ".venv-tts", "Scripts", "python.exe") : "",
     join(rootDir, ".venv-tts", "bin", "python")
   ]);
-  const modelCandidates = engine === "voxcpm2"
-    ? unique([
-        overrides.model,
-        process.env.DH_VOXCPM2_MODEL_PATH,
-        join(rootDir, "models", "tts", "voxcpm2"),
-        join(rootDir, "storage", "models", "tts", "voxcpm2")
-      ])
-    : unique([
-        overrides.model,
-        process.env.DH_QWEN_TTS_MODEL_PATH,
-        process.env.DH_TTS_MODEL_PATH,
-        join(rootDir, "models", "tts", "qwen3-tts-12hz-1.7b-base"),
-        join(rootDir, "storage", "models", "tts", "qwen3-tts-12hz-1.7b-base")
-      ]);
+  const modelCandidates = unique([
+    overrides.model,
+    process.env.DH_VOXCPM2_MODEL_PATH,
+    join(rootDir, "models", "tts", "voxcpm2"),
+    join(rootDir, "storage", "models", "tts", "voxcpm2")
+  ]);
   const python = pythonCandidates.find((item) => existsSync(item)) || "";
   const model = modelCandidates.find((item) => existsSync(item)) || "";
   const synthesizerPath = synthesizers[engine] || synthesizers.voxcpm2;
@@ -70,7 +61,7 @@ function candidateRuntime(overrides = {}) {
   const missing = [
     script ? "" : "TTS synthesizer script",
     python ? "" : "TTS Python runtime",
-    model ? "" : `${engine === "voxcpm2" ? "VoxCPM2" : "Qwen3-TTS"} model weights`
+    model ? "" : "VoxCPM2 model weights"
   ].filter(Boolean);
   return {
     ok: missing.length === 0,
@@ -85,13 +76,6 @@ function candidateRuntime(overrides = {}) {
       model: modelCandidates
     }
   };
-}
-
-function normalizeEngine(value = "") {
-  const normalized = String(value || "").toLowerCase();
-  if (normalized.includes("qwen")) return "qwen3";
-  if (normalized.includes("voxcpm")) return "voxcpm2";
-  return normalized === "qwen3" ? "qwen3" : "voxcpm2";
 }
 
 function parseJson(stdout = "") {
@@ -164,31 +148,25 @@ async function synthesize(args) {
     "--model",
     runtime.model,
     "--text",
-    runtime.engine === "voxcpm2" ? `${stylePrefix(args)}${args.text}` : args.text,
+    `${stylePrefix(args)}${args.text}`,
     "--ref-audio",
     args["ref-audio"],
     "--output",
     args.output
   ];
-  const modelArgs = runtime.engine === "voxcpm2"
-    ? [
-        "--device",
-        args.device || process.env.DH_VOXCPM2_DEVICE || defaults.deviceMap,
-        "--inference-timesteps",
-        String(args["inference-timesteps"] || process.env.DH_VOXCPM2_INFERENCE_TIMESTEPS || 10),
-        "--cfg-value",
-        String(args["cfg-value"] || process.env.DH_VOXCPM2_CFG_VALUE || 2.0)
-      ]
-    : [
-        "--ref-text",
-        args["ref-text"] || "",
-        "--language",
-        args.language || defaults.language,
-        "--device-map",
-        args["device-map"] || defaults.deviceMap,
-        "--dtype",
-        args.dtype || defaults.dtype
-      ];
+  const modelArgs = [
+    "--device",
+    args.device || process.env.DH_VOXCPM2_DEVICE || defaults.deviceMap,
+    "--inference-timesteps",
+    String(args["inference-timesteps"] || process.env.DH_VOXCPM2_INFERENCE_TIMESTEPS || 10),
+    "--cfg-value",
+    String(args["cfg-value"] || process.env.DH_VOXCPM2_CFG_VALUE || 2.0),
+    "--seed",
+    String(args.seed || process.env.DH_VOXCPM2_SEED || 20260606)
+  ];
+  if (args["prompt-audio"] && args["prompt-text"]) {
+    modelArgs.push("--prompt-audio", args["prompt-audio"], "--prompt-text", args["prompt-text"]);
+  }
   const { stdout } = await execFileAsync(runtime.python, [...commonArgs, ...modelArgs], {
     timeout: Number(args.timeout || process.env.DH_TTS_TIMEOUT_MS || 1200000),
     maxBuffer: 1024 * 1024 * 16,
