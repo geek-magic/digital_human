@@ -66,6 +66,21 @@ function cleanDbForPackage() {
   db.settings.defaultModelIds.tts = "model-voxcpm2";
   db.settings.defaultModelIds.avatar = "model-musetalk-v15";
   db.settings.defaultModelIds.asr = "model-qwen3-asr-1-7b";
+  db.settings.defaultAvatarAssetId = "";
+  db.settings.defaultVoiceId = "";
+  db.settings.defaultVolcengineSpeakerId = "";
+  db.settings.objectStorage = {
+    provider: "aliyun-oss",
+    enabled: false,
+    accessKeyId: "",
+    accessKeySecret: "",
+    bucket: "",
+    region: "",
+    endpoint: "",
+    pathPrefix: "digital-human-temp",
+    expiresSeconds: 600
+  };
+  db.settings.ttsSegmentMaxChars = 180;
   return db;
 }
 

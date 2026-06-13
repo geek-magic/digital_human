@@ -2,15 +2,13 @@ import express from "express";
 import multer from "multer";
 import OSS from "ali-oss";
 import COS from "cos-nodejs-sdk-v5";
-import { createHmac, randomUUID } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync, rmSync, renameSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 
-const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 const storageDir = join(rootDir, "storage");
@@ -25,18 +23,110 @@ const ASR_TOOL_PATH = process.env.DH_ASR_TOOL_PATH || join(rootDir, "scripts", "
 const TTS_TOOL_PATH = process.env.DH_TTS_TOOL_PATH || join(rootDir, "scripts", "tts-tool.mjs");
 const MUSETALK_ADAPTER_PATH = join(rootDir, "scripts", "musetalk-adapter.mjs");
 const MODEL_INSTALLER_PATH = join(rootDir, "scripts", "install-models.mjs");
-const PYTHON_BIN = process.env.DH_PYTHON || (process.platform === "win32" ? "python" : "python3");
-const YT_DLP_BIN = process.env.YT_DLP_BIN || (process.platform === "win32"
-  ? join(rootDir, "runtime", "tools", "Scripts", "yt-dlp.exe")
-  : join(rootDir, "runtime", "tools", "bin", "yt-dlp"));
+const PYTHON_BIN = process.env.DH_PYTHON || "python3";
+const YT_DLP_BIN = process.env.YT_DLP_BIN || join(rootDir, "runtime", "tools", "bin", "yt-dlp");
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "ffprobe";
 const SMART_SCENE_WIDTH = 720;
 const SMART_SCENE_HEIGHT = 1280;
-const SMART_SCENE_FPS = 24;
+const SMART_SCENE_FPS = 15;
 const SMART_SCENE_PIP_WIDTH = 220;
 const SMART_SCENE_PIP_HEIGHT = 310;
 const SMART_SCENE_MODEL = process.env.DH_SMART_SCENE_MODEL || "";
+const FFMPEG_H264_ENCODER = process.env.FFMPEG_H264_ENCODER || "h264_videotoolbox";
+
+const activeChildProcesses = new Map();
+let shuttingDown = false;
+let httpServer = null;
+
+function registerChildProcess(child, detail = {}) {
+  if (!child?.pid) return child;
+  const entry = {
+    child,
+    command: detail.command || "",
+    startedAt: now()
+  };
+  activeChildProcesses.set(child.pid, entry);
+  const cleanup = () => activeChildProcesses.delete(child.pid);
+  child.once("exit", cleanup);
+  child.once("close", cleanup);
+  return child;
+}
+
+function killChildProcess(child, signal = "SIGTERM") {
+  if (!child?.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Process already exited.
+    }
+  }
+}
+
+function execFileAsync(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const execOptions = {
+      ...options,
+      detached: options.detached ?? process.platform !== "win32"
+    };
+    const child = execFile(command, args, execOptions, (error, stdout, stderr) => {
+      if (error?.killed || error?.signal) killChildProcess(child, "SIGKILL");
+      if (child?.pid) activeChildProcesses.delete(child.pid);
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+    registerChildProcess(child, { command });
+  });
+}
+
+async function closeWithTimeout(closeFn, timeoutMs = 1500) {
+  await Promise.race([
+    Promise.resolve().then(closeFn).catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+async function closePlaywrightBrowser(browser) {
+  if (!browser) return;
+  const browserProcess = typeof browser.process === "function" ? browser.process() : null;
+  await closeWithTimeout(() => browser.close(), 1500);
+  if (browserProcess && !browserProcess.killed) killChildProcess(browserProcess, "SIGKILL");
+}
+
+async function closePublishContexts() {
+  const contexts = Array.from(activePublishContexts?.entries?.() || []);
+  activePublishContexts?.clear?.();
+  for (const [, context] of contexts) {
+    const browser = typeof context.browser === "function" ? context.browser() : null;
+    const browserProcess = browser && typeof browser.process === "function" ? browser.process() : null;
+    await closeWithTimeout(() => context.close(), 1500);
+    if (browserProcess && !browserProcess.killed) killChildProcess(browserProcess, "SIGKILL");
+  }
+}
+
+async function shutdownServer(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, cleaning up ${activeChildProcesses.size} child process(es).`);
+  await closePublishContexts();
+  await closeWithTimeout(() => new Promise((resolve) => httpServer?.close?.(resolve)), 1200);
+  const children = Array.from(activeChildProcesses.values()).map((entry) => entry.child);
+  for (const child of children) killChildProcess(child, "SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  for (const child of Array.from(activeChildProcesses.values()).map((entry) => entry.child)) {
+    killChildProcess(child, "SIGKILL");
+  }
+  process.exit(0);
+}
 
 const defaultVideoSettings = {
   engine: "musetalk",
@@ -46,7 +136,7 @@ const defaultVideoSettings = {
   extraMargin: 0,
   facePad: 0.12,
   lowerPad: 0.03,
-  batchSize: 1,
+  batchSize: 8,
   leftCheekWidth: 90,
   rightCheekWidth: 90
 };
@@ -434,6 +524,7 @@ const defaultDb = {
     keepAvatarModelWarm: false,
     taskConcurrency: 1,
     avatarSegmentSeconds: 30,
+    ttsSegmentMaxChars: 180,
     defaultModelIds: {
       llm: defaultLocalModelId("llm"),
       asr: "model-qwen3-asr-1-7b",
@@ -526,6 +617,7 @@ function normalizeDb(db) {
   db.settings.taskConcurrency = clampNumber(db.settings.taskConcurrency, 1, 2, 1, true);
   delete db.settings.videoConcurrency;
   db.settings.avatarSegmentSeconds = clampNumber(db.settings.avatarSegmentSeconds, 10, 120, 30, true);
+  db.settings.ttsSegmentMaxChars = clampNumber(db.settings.ttsSegmentMaxChars, 60, 500, 180, true);
   db.settings.defaultAvatarAssetId ||= "";
   db.settings.defaultVoiceId ||= "";
   db.settings.defaultVolcengineSpeakerId ||= process.env.VOLCENGINE_DEFAULT_SPEAKER_ID || "";
@@ -986,7 +1078,7 @@ function normalizeVideoSettings(settings = {}) {
     extraMargin: clampNumber(settings.extraMargin, 0, 40, defaultVideoSettings.extraMargin, true),
     facePad: clampNumber(settings.facePad, 0.04, 0.24, defaultVideoSettings.facePad),
     lowerPad: clampNumber(settings.lowerPad, 0, 0.12, defaultVideoSettings.lowerPad),
-    batchSize: clampNumber(settings.batchSize, 1, 4, defaultVideoSettings.batchSize, true),
+    batchSize: clampNumber(settings.batchSize, 1, 8, defaultVideoSettings.batchSize, true),
     leftCheekWidth: clampNumber(settings.leftCheekWidth, 40, 140, defaultVideoSettings.leftCheekWidth, true),
     rightCheekWidth: clampNumber(settings.rightCheekWidth, 40, 140, defaultVideoSettings.rightCheekWidth, true)
   };
@@ -1025,6 +1117,84 @@ function statusTextForQueue(status = "") {
 
 function publicPath(path) {
   return `/storage/${relative(storageDir, path).split("/").join("/")}`;
+}
+
+const uploadCategories = {
+  avatar: "avatar-videos",
+  voice: "reference-audio",
+  music: "background-music",
+  source: "source-media",
+  test: "test-media",
+  projectAudio: "project-audio",
+  legacy: "legacy-unclassified",
+  misc: "misc"
+};
+
+function uploadCategoryDir(kind = "misc") {
+  const dir = join(uploadDir, uploadCategories[kind] || uploadCategories.misc);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function sanitizeMaterialName(value = "", fallback = "media") {
+  return String(value || fallback)
+    .replace(/\.[a-zA-Z0-9]{1,8}$/u, "")
+    .replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90) || fallback;
+}
+
+function uniqueFilePath(dir, baseName, extension = "") {
+  mkdirSync(dir, { recursive: true });
+  const normalizedExt = extension ? (extension.startsWith(".") ? extension : `.${extension}`) : "";
+  const safeBase = sanitizeMaterialName(baseName);
+  let candidate = join(dir, `${safeBase}${normalizedExt}`);
+  if (!existsSync(candidate)) return candidate;
+  for (let index = 2; index < 1000; index += 1) {
+    candidate = join(dir, `${safeBase}-${index}${normalizedExt}`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  return join(dir, `${safeBase}-${randomUUID().slice(0, 8)}${normalizedExt}`);
+}
+
+function uploadKindFromRequest(req, file = {}) {
+  const path = req.path || req.originalUrl || "";
+  if (path.includes("/api/assets/avatar-videos")) return "avatar";
+  if (path.includes("/api/assets/music")) return "music";
+  if (path.includes("/api/voices/reference-samples")) return "voice";
+  if (path.includes("/api/projects/") && path.includes("/audio-versions/import")) return "projectAudio";
+  if (path.includes("/api/model-tests/avatar")) return file.fieldname === "avatar" ? "avatar" : "test";
+  if (path.includes("/api/model-tests/tts")) return "test";
+  if (path.includes("/api/model-tests/asr")) return "test";
+  return "misc";
+}
+
+function materializeUploadFile(sourcePath, kind, displayName, extension = "", options = {}) {
+  if (!sourcePath || !existsSync(sourcePath)) return sourcePath;
+  const ext = extension || extname(sourcePath);
+  const dir = uploadCategoryDir(kind);
+  const normalizedExt = ext ? (ext.startsWith(".") ? ext : `.${ext}`) : "";
+  const desiredPath = join(dir, `${sanitizeMaterialName(displayName || basename(sourcePath))}${normalizedExt}`);
+  if (desiredPath === sourcePath) return sourcePath;
+  const targetPath = existsSync(desiredPath) ? uniqueFilePath(dir, displayName || basename(sourcePath), ext) : desiredPath;
+  if (targetPath === sourcePath) return sourcePath;
+  if (options.moveSource && isInsideDir(uploadDir, sourcePath)) {
+    renameSync(sourcePath, targetPath);
+  } else {
+    copyFileSync(sourcePath, targetPath);
+  }
+  return targetPath;
+}
+
+function replaceDbStringValues(value, replacements) {
+  if (typeof value === "string") return replacements.get(value) || value;
+  if (Array.isArray(value)) return value.map((item) => replaceDbStringValues(item, replacements));
+  if (value && typeof value === "object") {
+    for (const key of Object.keys(value)) {
+      value[key] = replaceDbStringValues(value[key], replacements);
+    }
+  }
+  return value;
 }
 
 function isInsideDir(parent, target) {
@@ -1068,7 +1238,7 @@ function cleanupRenderIntermediateArtifacts(outDir, keepPaths = []) {
 
 function commandExists(command) {
   try {
-    execFileSync(process.platform === "win32" ? "where" : "which", [command], { stdio: "ignore" });
+    execFileSync("which", [command], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -1078,6 +1248,31 @@ function commandExists(command) {
 function executableExists(command) {
   if (!command) return false;
   return isAbsolute(command) ? existsSync(command) : commandExists(command);
+}
+
+function h264VideoArgs({ bitrate = "6500k", crf = "18" } = {}) {
+  if (FFMPEG_H264_ENCODER === "h264_videotoolbox") {
+    return [
+      "-c:v",
+      "h264_videotoolbox",
+      "-b:v",
+      bitrate,
+      "-maxrate",
+      bitrate,
+      "-pix_fmt",
+      "yuv420p"
+    ];
+  }
+  return [
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    crf,
+    "-pix_fmt",
+    "yuv420p"
+  ];
 }
 
 function resolvePathRef(pathRef) {
@@ -1887,8 +2082,57 @@ function recoverQueueOnBoot() {
       });
     }
   }
+  for (const project of db.projects || []) {
+    if (project.progress?.status !== "running" && project.status !== "running") continue;
+    const activeItem = (db.queueItems || []).find((item) => item.projectId === project.id && ["queued", "running"].includes(item.status));
+    if (activeItem) continue;
+    project.status = project.deletedAt ? "deleted" : "failed";
+    project.activeQueueId = "";
+    project.lastError = project.lastError || "服务重启后，未找到对应的运行队列，已修正任务状态。";
+    setProjectProgress(project, {
+      percent: project.progress?.percent || 0,
+      label: project.lastError,
+      stage: project.progress?.stage || project.currentStage || "input",
+      status: project.status,
+      queueId: ""
+    });
+    changed = true;
+  }
   if (changed) writeDb(db);
   scheduleQueue();
+}
+
+function migrateUploadLibraryOnBoot() {
+  const db = readDb();
+  let changed = false;
+  const replacements = new Map();
+  const collections = [
+    { key: "avatarAssets", kind: "avatar" },
+    { key: "voices", kind: "voice" },
+    { key: "musicAssets", kind: "music" }
+  ];
+  for (const { key, kind } of collections) {
+    for (const item of db[key] || []) {
+      if (item.deletedAt || !item.path || !existsSync(item.path) || !isInsideDir(uploadDir, item.path)) continue;
+      const nextPath = materializeUploadFile(item.path, kind, item.name || basename(item.path), extname(item.path), { moveSource: true });
+      if (nextPath === item.path) continue;
+      item.path = nextPath;
+      item.uri = publicPath(nextPath);
+      item.updatedAt = now();
+      changed = true;
+    }
+  }
+  for (const entry of readdirSync(uploadDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const sourcePath = join(uploadDir, entry.name);
+    const targetPath = materializeUploadFile(sourcePath, "legacy", basename(entry.name, extname(entry.name)), extname(entry.name), { moveSource: true });
+    if (targetPath === sourcePath) continue;
+    replacements.set(sourcePath, targetPath);
+    replacements.set(publicPath(sourcePath), publicPath(targetPath));
+    changed = true;
+  }
+  if (replacements.size) replaceDbStringValues(db, replacements);
+  if (changed) writeDb(db);
 }
 
 function extractLinks(text = "") {
@@ -2402,12 +2646,7 @@ async function resolveDouyinDetail(link, shareText, options = {}) {
     }
     return { metadata, videoId, finalUrl, pageTitle, shareMetadata, apiUrl: api, cookies };
   } finally {
-    const browserProcess = typeof browser.process === "function" ? browser.process() : null;
-    await Promise.race([
-      browser.close().catch(() => {}),
-      new Promise((resolve) => setTimeout(resolve, 1200))
-    ]);
-    if (browserProcess && !browserProcess.killed) browserProcess.kill("SIGKILL");
+    await closePlaywrightBrowser(browser);
   }
 }
 
@@ -2953,7 +3192,12 @@ function scriptTextFromModelText(text = "") {
 }
 
 function cleanPolishedText(text = "", fallback = "") {
-  const cleaned = stripModelJsonFence(text)
+  const raw = stripModelJsonFence(text);
+  const parsed = parseJsonCandidate(raw);
+  const structuredText = parsed && typeof parsed === "object"
+    ? String(parsed.text || parsed.content || parsed.result || parsed.polishedText || parsed.output || "").trim()
+    : "";
+  const cleaned = (structuredText || raw)
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/^(润色结果|最终结果|输出|正文|final output|result)\s*[:：]\s*/i, "")
     .trim();
@@ -2966,7 +3210,7 @@ function cleanPolishedText(text = "", fallback = "") {
   const result = (lines.length ? lines.join("\n") : cleaned)
     .replace(/^[“”"']+|[“”"']+$/g, "")
     .trim();
-  return result || String(fallback || "").trim();
+  return result;
 }
 
 function stripTopicTags(text = "") {
@@ -3121,6 +3365,29 @@ async function callLocalLlm(messages, options = {}) {
   return result;
 }
 
+function llmContentToText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object") return "";
+      return item.text || item.content || item.value || "";
+    }).filter(Boolean).join("\n");
+  }
+  if (value && typeof value === "object") return value.text || value.content || value.value || "";
+  return "";
+}
+
+function promiseWithTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function callCloudLlm(provider, messages, options = {}) {
   const startedAt = Date.now();
   const apiKey = provider.apiKey || process.env[provider.envKey];
@@ -3129,14 +3396,18 @@ async function callCloudLlm(provider, messages, options = {}) {
   if (!provider.model) throw new Error(`${provider.name} 未配置模型名。`);
   const body = {
     model: provider.model,
-    messages,
-    temperature: options.temperature ?? 0.55
+    messages
   };
+  const isDeepSeek = provider.providerId === "deepseek" || provider.id === "deepseek" || provider.id === "provider-deepseek";
+  if (!(isDeepSeek && options.thinking)) {
+    body.temperature = options.temperature ?? 0.55;
+  }
   if (options.maxTokens !== undefined && options.maxTokens !== null) {
     body.max_tokens = options.maxTokens;
   }
-  if (options.thinking !== undefined && (provider.providerId === "deepseek" || provider.id === "deepseek" || provider.id === "provider-deepseek")) {
+  if (options.thinking !== undefined && isDeepSeek) {
     body.thinking = { type: options.thinking ? "enabled" : "disabled" };
+    if (options.thinking) body.reasoning_effort = options.reasoningEffort || "high";
   }
   const timeout = options.timeout || 120000;
   let response;
@@ -3162,8 +3433,8 @@ async function callCloudLlm(provider, messages, options = {}) {
   if (!response.ok) throw new Error(`${provider.name} 调用失败：HTTP ${response.status} ${raw.slice(0, 240)}`);
   const data = JSON.parse(raw || "{}");
   const choice = data.choices?.[0] || {};
-  const text = choice.message?.content
-    || choice.message?.reasoning_content
+  const text = llmContentToText(choice.message?.content)
+    || llmContentToText(choice.message?.reasoning_content)
     || choice.text
     || data.output_text
     || data.text
@@ -3757,7 +4028,9 @@ async function polishTextWithTextModel(db, input = {}) {
     result = await callLocalLlm(messages, { ...input, modelPath: detection.resolvedPath });
     modelInfo = { type: "local", modelId: model.id, modelName: model.name, runtime: model.runtime };
   }
-  const polishedText = cleanPolishedText(result.text || "", input.inputText || "");
+  const rawText = String(result.text || "").trim();
+  if (!rawText) throw new Error("文本模型未返回可用的润色内容，请检查模型配置或重试。");
+  const polishedText = cleanPolishedText(rawText, input.inputText || "");
   if (!polishedText.trim()) throw new Error("文本模型未返回可用的润色内容，请检查模型配置或重试。");
   return {
     text: polishedText,
@@ -4187,7 +4460,16 @@ async function createExternalAvatarVideo(input, outPath) {
     try {
       const result = await execFileAsync(attempt.command, attempt.args, {
         timeout: 1200000,
-        maxBuffer: 1024 * 1024 * 16
+        maxBuffer: 1024 * 1024 * 16,
+        env: {
+          ...process.env,
+          MUSETALK_DEVICE: process.env.MUSETALK_DEVICE || "mps",
+          MUSETALK_BATCH_SIZE: process.env.MUSETALK_BATCH_SIZE || "8",
+          FFMPEG_H264_ENCODER: process.env.FFMPEG_H264_ENCODER || "h264_videotoolbox",
+          PYTORCH_ENABLE_MPS_FALLBACK: process.env.PYTORCH_ENABLE_MPS_FALLBACK || "1",
+          PYTORCH_MPS_HIGH_WATERMARK_RATIO: process.env.PYTORCH_MPS_HIGH_WATERMARK_RATIO || "1.0",
+          PYTORCH_MPS_LOW_WATERMARK_RATIO: process.env.PYTORCH_MPS_LOW_WATERMARK_RATIO || "0.7"
+        }
       });
       if (existsSync(outPath)) {
         const frameRepairRestored = Array.from(String(result?.stdout || "").matchAll(/已将\s+(\d+)\s+帧无人脸画面回填为原素材帧/g))
@@ -4262,12 +4544,7 @@ async function concatVideoSegments(segmentPaths, outPath) {
       "[v]",
       "-map",
       "[a]",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "20",
+      ...h264VideoArgs({ bitrate: "6500k", crf: "20" }),
       "-c:a",
       "aac",
       "-movflags",
@@ -4279,7 +4556,10 @@ async function concatVideoSegments(segmentPaths, outPath) {
 
 async function createSegmentedAvatarVideo(input, outPath, options = {}) {
   const duration = Math.max(1, Number(input.duration || 1));
-  const segmentSeconds = clampNumber(options.segmentSeconds, 10, 120, avatarSegmentSeconds(), true);
+  const requestedSegmentSeconds = clampNumber(options.segmentSeconds, 10, 120, avatarSegmentSeconds(), true);
+  const segmentSeconds = input.videoSettings?.engine === "musetalk" && process.env.MUSETALK_FAST_SINGLE_SEGMENT !== "0"
+    ? Math.max(requestedSegmentSeconds, 120)
+    : requestedSegmentSeconds;
   if (duration <= segmentSeconds) {
     return createExternalAvatarVideo(input, outPath);
   }
@@ -4324,12 +4604,7 @@ async function createNoLipSyncAvatarVideo(input, outPath) {
     "-an",
     "-vf",
     "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "18",
+    ...h264VideoArgs({ bitrate: "6500k", crf: "18" }),
     "-movflags",
     "+faststart",
     outPath
@@ -4613,12 +4888,7 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
         "-t",
         String(duration),
         "-shortest",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
+        ...h264VideoArgs({ bitrate: "5000k", crf: "23" }),
         "-c:a",
         "aac",
         outPath
@@ -4642,8 +4912,7 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
       "-vf",
       vf,
       "-shortest",
-      "-c:v",
-      "libx264",
+      ...h264VideoArgs({ bitrate: "5000k", crf: "20" }),
       "-c:a",
       "aac",
       outPath
@@ -4660,10 +4929,7 @@ async function createPreviewVideo(outPath, avatarPath, audioPath, duration, subt
     "-shortest",
     "-vf",
     vf,
-    "-c:v",
-    "libx264",
-    "-pix_fmt",
-    "yuv420p",
+    ...h264VideoArgs({ bitrate: "5000k", crf: "20" }),
     "-c:a",
     "aac",
     outPath
@@ -4763,14 +5029,7 @@ async function packageAvatarRenderVideo({
   );
   if (shouldBurnSubtitles) {
     args.push(
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "20",
-      "-pix_fmt",
-      "yuv420p"
+      ...h264VideoArgs({ bitrate: "6500k", crf: "20" })
     );
   } else {
     args.push("-c:v", "copy");
@@ -4841,8 +5100,11 @@ function extractJsonObject(text = "") {
     }
     const first = trimmed.indexOf("{");
     const last = trimmed.lastIndexOf("}");
-    if (first >= 0 && last > first) return JSON.parse(trimmed.slice(first, last + 1));
-    throw new Error("智能布景 Agent 未返回可解析 JSON。");
+    if (first >= 0 && last > first) {
+      const parsed = parseJsonCandidate(trimmed.slice(first, last + 1));
+      if (parsed) return parsed;
+    }
+    throw new Error("AI 视觉增强 Agent 未返回可解析 JSON。");
   }
 }
 
@@ -4857,7 +5119,7 @@ function safeSmartSceneFiles(payload = {}) {
     cleaned.push({ path, content });
   }
   if (!cleaned.some((file) => file.path === "index.html")) {
-    throw new Error("智能布景 Agent 没有生成 index.html。");
+    throw new Error("AI 视觉增强 Agent 没有生成 index.html。");
   }
   return cleaned;
 }
@@ -4873,6 +5135,20 @@ function smartSceneFilesFromText(text = "") {
   return [{ path: "index.html", content }];
 }
 
+function assertSmartSceneKeywordHighlight(files = []) {
+  const html = files.map((file) => file.content || "").join("\n");
+  const disallowed = [
+    [/<img[\s>]/i, "不能使用图片元素"],
+    [/<svg[\s>]/i, "不能使用 SVG 图形"],
+    [/<canvas[\s>]/i, "不能使用 canvas 图形"],
+    [/background-image\s*:/i, "不能使用背景图"],
+    [/\b(video|audio)\s*[\/>]/i, "不能使用音视频元素"],
+    [/(柱状图|折线图|饼图|图表|流程图|进度条|百分比|时间码|页码)/i, "不能生成图表、流程或进度信息"]
+  ];
+  const hit = disallowed.find(([pattern]) => pattern.test(html));
+  if (hit) throw new Error(`AI 视觉增强只允许关键词高亮：${hit[1]}。`);
+}
+
 function escapeHtml(value = "") {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -4884,19 +5160,231 @@ function escapeHtml(value = "") {
 
 function parseSmartSceneAgentText(text = "") {
   const htmlFiles = smartSceneFilesFromText(text);
-  if (htmlFiles) return { files: htmlFiles, notes: "Agent 返回纯 HTML，平台已包装为 index.html。" };
+  if (htmlFiles) {
+    assertSmartSceneKeywordHighlight(htmlFiles);
+    return { files: htmlFiles, notes: "Agent 返回纯 HTML，平台已包装为 index.html。" };
+  }
   const payload = extractJsonObject(text);
+  const files = safeSmartSceneFiles(payload);
+  assertSmartSceneKeywordHighlight(files);
   return {
-    files: safeSmartSceneFiles(payload),
+    files,
     notes: payload.notes || ""
   };
 }
 
-function fallbackTransparentSmartScene(project, options = {}) {
-  const title = escapeHtml(project.artifacts?.script?.title || project.title || "智能讲解");
-  const script = String(project.artifacts?.script?.script || project.inputText || "");
-  const bullets = splitTtsText(script, { maxChars: 28 }).slice(0, 4).map((item) => escapeHtml(item.replace(/[。！？!?；;，,、：:]+$/g, "")));
-  while (bullets.length < 3) bullets.push(["半透明信息图层", "核心卖点提示", "流程化讲解"][bullets.length]);
+function smartSceneSystemPrompt() {
+  return [
+    "你是一个短视频关键词高亮层生成器，只负责从输入内容中提取少量关键词并生成透明感高亮动效。",
+    "你只输出完整 index.html 源码，不要输出 Markdown，不要解释，不要 JSON。",
+    "视频规格为 720x1280 竖屏，使用 HTML/CSS/JavaScript 实现动态视频工程。",
+    "HTML、CSS、JavaScript 必须写在同一个 index.html 中。",
+    "必须实现 window.setFrameTime(t)，t 单位为秒；渲染器会逐帧调用这个函数生成最终视频。",
+    "所有画面状态、动画、切换和高亮变化，都必须由 setFrameTime(t) 驱动。",
+    "只生成关键词高亮层，不生成完整画面，不生成 PPT，不生成图片，不生成图表，不生成卡片，不生成流程图，不生成背景场景。",
+    "背景必须是纯黑色或透明感极弱的黑色，方便后续抠掉背景；不要使用整屏遮罩、整屏渐变、整屏模糊、整屏半透明面板。",
+    "只在画面中心附近出现 1-3 个关键词，关键词来自输入内容本身；每个关键词最多 8 个中文，不要展示完整句子。",
+    "关键词视觉要有科技感：细描边、微光、扫描线、粒子点、短暂放大、呼吸高亮、颜色切换。动效围绕文字本身，不扩展成整屏视觉。",
+    "关键词应随内容推进切换，但不要机械展示每一句话；宁可少展示，也不要乱展示。",
+    "严禁使用 img、video、canvas 外部图片、background-image、图表、柱状图、折线图、饼图、流程节点、对比卡片、照片和插画。",
+    "严禁出现主题、结论、要点、阶段、页码、时间码、进度条、百分比、讲稿式正文或字幕式长句。",
+    "不要在画面里展示时间码、页码、步骤编号、百分比进度、进度条或类似播放器/流程进度的 UI。",
+    "视觉风格要像真实短视频里的后期关键词高亮：轻、准、半透明、少字，不抢数字人主体。",
+    "不要让文字互相遮挡，不要让重要内容超出 720x1280 画面。",
+    "不要使用 fetch，不要使用 import，不要使用 eval，不要访问 localStorage/sessionStorage，不要依赖用户交互，不要生成音频，不要使用 video 标签。",
+    "最终回答必须从 <!DOCTYPE html> 或 <html> 开始，以 </html> 结束。"
+  ].join("\n");
+}
+
+function smartScenePlannerSystemPrompt() {
+  return [
+    "你是一个短视频关键词高亮策划器，只负责从输入内容中提取少量关键词。",
+    "只输出 JSON，不要 Markdown，不要解释。",
+    "JSON 结构：{\"theme\":\"\",\"tone\":\"\",\"visualStyle\":\"keyword-highlight\",\"beats\":[{\"start\":0,\"end\":3,\"purpose\":\"\",\"headline\":\"\",\"visualType\":\"keyword\",\"visual\":\"\",\"elements\":[\"\"],\"motion\":\"\"}],\"qualityChecklist\":[\"\"]}",
+    "beats 的时间必须覆盖完整视频时长，数量由内容复杂度决定。",
+    "不要机械等分时间；根据语义推进安排每个 beat 的起止时间。",
+    "每个 beat 只输出关键词，不输出句子；elements 最多 3 个且每个控制在 8 个中文以内。",
+    "visualType 永远使用 keyword；不要规划图片、图表、流程、对比卡、数据图、背景或大标题。"
+  ].join("\n");
+}
+
+function smartScenePlannerUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0 }) {
+  const script = project.artifacts?.script?.script || project.inputText || "";
+  const requirements = [
+    project.requirements || "",
+    smartScenePrompt || "",
+    previewDuration > 0 ? `这是 ${previewDuration} 秒预览版，但代码要能适配完整视频时长。` : ""
+  ].filter(Boolean).join("\n");
+  return [
+    `视频时长：${Math.max(1, Math.round(duration))} 秒`,
+    `输入内容：${script}`,
+    `用户补充要求：${requirements || "无"}`,
+    "请只规划关键词高亮层，不规划完整视频画面。",
+    "只提取当前语义阶段最值得强调的 1-3 个关键词，不展示完整口播稿。",
+    "不要规划图片、图表、流程、卡片、场景、背景或大标题。",
+    "不要展示时间码、页码、百分比进度或进度条。",
+    "请输出可直接给 HyperFrames 代码生成器使用的 JSON 方案。"
+  ].join("\n");
+}
+
+function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0, storyboard = null, generationError = "" }) {
+  const script = project.artifacts?.script?.script || project.inputText || "";
+  const requirements = [
+    project.requirements || "",
+    smartScenePrompt || "",
+    previewDuration > 0 ? `这是 ${previewDuration} 秒预览版，但代码要能适配完整视频时长。` : ""
+  ].filter(Boolean).join("\n");
+  return [
+    `视频时长：${Math.max(1, Math.round(duration))} 秒`,
+    `输入内容：${script}`,
+    `用户生成要求：${requirements || "无"}`,
+    storyboard ? `视觉方案 JSON：${JSON.stringify(storyboard)}` : "",
+    "",
+    "请根据输入内容和视觉方案生成一个 720x1280 竖屏关键词高亮层。",
+    "只显示少量关键词高亮，不生成完整画面、不生成图片、不生成图表、不生成卡片、不生成流程图。",
+    "不要把输入内容原样大段展示；不要把口播稿切成多页字幕；不要出现大号主标题或 PPT 式标题区。",
+    "背景必须接近纯黑，主体只在中心区域显示半透明科技感关键词，方便后续合成时抠掉背景。",
+    "不要展示时间码、页码、百分比进度或进度条。",
+    generationError ? `上一次输出无法解析或运行，错误：${generationError}。这次必须只输出完整 HTML 源码，不要输出 JSON、对象字面量、注释说明或 Markdown。` : "",
+    "请直接输出完整 index.html 源码。"
+  ].filter(Boolean).join("\n");
+}
+
+function smartSceneKeyPhrases(text = "", maxItems = 3) {
+  const cleaned = stripLinks(text)
+    .replace(/[“”"「」]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+  const parts = cleaned
+    .split(/[。！？!?；;，,、：:\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const phrases = [];
+  for (const part of parts) {
+    const compact = compactChinese(part.replace(/^(所以|因为|但是|然后|其实|比如说|也就是说)/, ""), 10);
+    if (compact && !phrases.includes(compact)) phrases.push(compact);
+    if (phrases.length >= maxItems) break;
+  }
+  if (!phrases.length && cleaned) phrases.push(compactChinese(cleaned, 10));
+  return phrases.slice(0, maxItems);
+}
+
+function inferSmartSceneVisualType(text = "", index = 0, total = 1) {
+  const value = String(text || "");
+  if (index === total - 1 && /总结|结论|最后|下次|记住|所以/.test(value)) return "summary";
+  if (/\d|价格|金额|倍|%|％|分钟|小时|天|年|次数|比例|数据/.test(value)) return "data";
+  if (/为什么|原因|因为|导致|原理|本质|机制|散射|穿过|形成|变化/.test(value)) return "diagram";
+  if (/第一|第二|第三|首先|然后|接着|最后|步骤|流程|方法/.test(value)) return "process";
+  if (/不是|而是|对比|区别|相比|更|误区|反而/.test(value)) return "compare";
+  if (/天空|太阳|大气|空气|花|草|菜|餐|产品|门店|人物|场景|城市|办公|旅行|家/.test(value)) return "image";
+  return index === 0 ? "keyword" : "diagram";
+}
+
+function smartSceneBeatHeadline(text = "", index = 0, total = 1) {
+  const phrases = smartSceneKeyPhrases(text, 2);
+  if (phrases[0]) return compactChinese(phrases[0], index === 0 || index === total - 1 ? 12 : 10);
+  if (index === 0) return "核心问题";
+  if (index === total - 1) return "关键结论";
+  return "重点拆解";
+}
+
+function visualImageForText(text = "", index = 0) {
+  const value = String(text || "");
+  const pool = [
+    {
+      pattern: /天空|太阳|蓝光|大气|空气|散射|光|颜色/,
+      urls: [
+        "https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1504384308090-c894fdcc538d?auto=format&fit=crop&w=900&q=80"
+      ]
+    },
+    {
+      pattern: /花|草|院|自然|空气|田园|农家|小院|休闲|放松|烟火|生活/,
+      urls: [
+        "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1490750967868-88aa4486c946?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1471193945509-9ad0617afabf?auto=format&fit=crop&w=900&q=80"
+      ]
+    },
+    {
+      pattern: /吃|菜|家宴|餐|火锅|饭|美食|味道/,
+      urls: [
+        "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=900&q=80"
+      ]
+    },
+    {
+      pattern: /法律|知识|冷知识|学习|概念|方法|误区|结论/,
+      urls: [
+        "https://images.unsplash.com/photo-1450101499163-c8848c66ca85?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80"
+      ]
+    },
+    {
+      pattern: /产品|服务|商业|客户|方案|价值|卖点|品牌/,
+      urls: [
+        "https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=900&q=80",
+        "https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=900&q=80"
+      ]
+    }
+  ];
+  const match = pool.find((item) => item.pattern.test(value)) || {
+    urls: [
+      "https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=900&q=80",
+      "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=80",
+      "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=900&q=80"
+    ]
+  };
+  return match.urls[index % match.urls.length];
+}
+
+function fallbackHyperFramesAgent(project, options = {}, storyboard = null, reason = "") {
+  const duration = Math.max(1, Number(options.duration || 1));
+  const source = String(project.artifacts?.script?.script || project.inputText || "").trim();
+  const fallbackTexts = splitTtsText(source, { maxChars: 80 }).slice(0, 8);
+  const totalFallback = Math.max(1, fallbackTexts.length);
+  const rawBeats = Array.isArray(storyboard?.beats) && storyboard.beats.length
+    ? storyboard.beats
+    : fallbackTexts.map((text, index) => {
+      const start = Math.round((duration / totalFallback) * index * 10) / 10;
+      const end = Math.round((duration / totalFallback) * (index + 1) * 10) / 10;
+      const visualType = inferSmartSceneVisualType(text, index, totalFallback);
+      const elements = smartSceneKeyPhrases(text, 3);
+      return {
+        start,
+        end,
+        headline: smartSceneBeatHeadline(text, index, totalFallback),
+        visualType: "keyword",
+        visual: elements.join(" / "),
+        elements,
+        motion: "关键词呼吸高亮"
+      };
+    });
+  const beats = rawBeats.map((beat, index) => ({
+    start: Math.max(0, Number(beat.start ?? 0)),
+    end: Math.min(duration, Math.max(Number(beat.end ?? duration), Number(beat.start ?? 0) + 0.8)),
+    eyebrow: "",
+    visualType: "keyword",
+    headline: compactChinese(beat.headline || smartSceneBeatHeadline(`${beat.purpose || ""}${beat.visual || ""}`, index, rawBeats.length) || "核心信息", 12),
+    body: compactChinese(beat.purpose || beat.visual || "", 18),
+    elements: (Array.isArray(beat.elements) ? beat.elements : [])
+      .map((item) => compactChinese(item, 10))
+      .filter(Boolean)
+      .slice(0, 3),
+    motion: compactChinese(beat.motion || "动态演示", 18)
+  })).filter((beat) => beat.end > beat.start);
+  if (!beats.length) {
+    beats.push({
+      start: 0,
+      end: duration,
+      eyebrow: "",
+      visualType: "keyword",
+      headline: smartSceneBeatHeadline(source || "核心信息", 0, 1),
+      body: "",
+      elements: smartSceneKeyPhrases(source || "内容重点", 3),
+      motion: "动态演示"
+    });
+  }
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -4904,96 +5392,66 @@ function fallbackTransparentSmartScene(project, options = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <style>
   * { box-sizing: border-box; }
-  html, body { margin: 0; width: 720px; height: 1280px; overflow: hidden; background: #07111f; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #fff; }
-  .stage { position: relative; width: 720px; height: 1280px; overflow: hidden; background:
-    radial-gradient(circle at 78% 18%, rgba(45, 212, 191, .22), transparent 28%),
-    radial-gradient(circle at 16% 72%, rgba(96, 165, 250, .20), transparent 34%),
-    linear-gradient(180deg, rgba(8, 18, 34, .72), rgba(8, 16, 30, .38)); }
-  .grid { position: absolute; inset: 0; opacity: .18; background-image: linear-gradient(rgba(255,255,255,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.10) 1px, transparent 1px); background-size: 42px 42px; transform: translateY(var(--grid-y, 0px)); }
-  .hud { position: absolute; left: 42px; right: 42px; top: 64px; display: flex; justify-content: space-between; align-items: center; opacity: .96; }
-  .badge { padding: 10px 16px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(10, 20, 36, .46); backdrop-filter: blur(14px); font-size: 22px; font-weight: 800; color: rgba(255,255,255,.90); }
-  .title { position: absolute; left: 44px; right: 44px; top: 130px; padding: 22px 24px; border: 1px solid rgba(125, 211, 252, .34); border-radius: 22px; background: rgba(8, 20, 38, .45); box-shadow: 0 18px 70px rgba(14, 165, 233, .18); backdrop-filter: blur(18px); }
-  .title small { display: block; color: rgba(186, 230, 253, .92); font-size: 20px; font-weight: 800; letter-spacing: .08em; }
-  .title strong { display: block; margin-top: 8px; font-size: 42px; line-height: 1.15; letter-spacing: 0; }
-  .cards { position: absolute; left: 44px; right: 44px; bottom: 106px; display: grid; gap: 16px; }
-  .card { min-height: 92px; display: grid; grid-template-columns: 52px 1fr; gap: 14px; align-items: center; padding: 18px 20px; border: 1px solid rgba(255,255,255,.26); border-radius: 20px; background: rgba(15, 23, 42, .38); backdrop-filter: blur(18px); box-shadow: 0 16px 46px rgba(2, 8, 23, .18); transform: translateX(var(--x, 0px)); opacity: var(--opacity, 1); }
-  .num { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: rgba(45, 212, 191, .28); color: #ccfbf1; font-size: 22px; font-weight: 900; }
-  .card span { font-size: 27px; line-height: 1.26; font-weight: 850; color: rgba(255,255,255,.94); }
-  .line { position: absolute; left: 72px; right: 72px; top: 472px; height: 2px; background: linear-gradient(90deg, transparent, rgba(125,211,252,.76), transparent); opacity: var(--line, .3); }
-  .pulse { position: absolute; width: 160px; height: 160px; border: 2px solid rgba(45, 212, 191, .38); border-radius: 999px; right: 54px; top: 350px; transform: scale(var(--pulse, 1)); opacity: .52; }
+  html, body { margin: 0; width: 720px; height: 1280px; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color: #f8fafc; background: #000; }
+  .stage { position: relative; width: 720px; height: 1280px; overflow: hidden; background: #000; }
+  .halo { position: absolute; left: 50%; top: 50%; width: 420px; height: 160px; border-radius: 999px; border: 1px solid rgba(103,232,249,.28); transform: translate(-50%, -50%) scale(var(--halo-scale, 1)); opacity: var(--halo-o, .5); box-shadow: 0 0 44px rgba(34,211,238,.22), inset 0 0 28px rgba(34,211,238,.12); }
+  .scan { position: absolute; left: 130px; right: 130px; top: calc(50% - 76px); height: 2px; background: linear-gradient(90deg, transparent, rgba(103,232,249,.90), transparent); transform: translateY(var(--scan-y, 0px)); opacity: .72; }
+  .chips { position: absolute; left: 70px; right: 70px; top: 50%; transform: translateY(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; align-items: center; }
+  .chip { min-height: 52px; max-width: 330px; padding: 11px 18px; border-radius: 999px; border: 1px solid rgba(103,232,249,.44); background: rgba(8,18,28,.28); display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: center; transform: translateY(var(--chip-y,0)) scale(var(--chip-scale,1)); opacity: var(--chip-o,1); box-shadow: 0 0 22px rgba(34,211,238,.22), inset 0 0 18px rgba(255,255,255,.06); backdrop-filter: blur(4px); }
+  .mark { width: 18px; height: 18px; border-radius: 999px; background: rgba(45,212,191,.68); box-shadow: 0 0 18px rgba(45,212,191,.72); }
+  .chip span { font-size: 26px; line-height: 1.12; font-weight: 900; color: rgba(236,254,255,.94); text-shadow: 0 0 14px rgba(34,211,238,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }
 </style>
 </head>
 <body>
-  <div class="stage">
-    <div class="grid"></div>
-    <div class="hud"><div class="badge">AI LAYOUT</div><div class="badge">TRANSPARENT</div></div>
-    <div class="title"><small>半透明智能布局</small><strong>${title}</strong></div>
-    <div class="line"></div>
-    <div class="pulse"></div>
-    <div class="cards">
-      ${bullets.slice(0, 4).map((item, index) => `<div class="card" id="card${index}"><div class="num">0${index + 1}</div><span>${item}</span></div>`).join("")}
-    </div>
-  </div>
+<div class="stage">
+  <div class="halo"></div>
+  <div class="scan"></div>
+  <div class="chips" id="chips"></div>
+</div>
 <script>
-  window.setFrameTime = function(t) {
-    const root = document.documentElement;
-    root.style.setProperty('--grid-y', ((t * 18) % 42).toFixed(2) + 'px');
-    root.style.setProperty('--line', (0.35 + Math.sin(t * 1.8) * 0.25).toFixed(3));
-    root.style.setProperty('--pulse', (1 + Math.sin(t * 2.1) * 0.08).toFixed(3));
-    document.querySelectorAll('.card').forEach((card, i) => {
-      const wave = Math.sin(t * 1.35 + i * .9);
-      card.style.setProperty('--x', (wave * 10).toFixed(2) + 'px');
-      card.style.setProperty('--opacity', (0.82 + Math.max(0, wave) * 0.18).toFixed(3));
-    });
-  };
+const beats = ${JSON.stringify(beats)};
+const clamp = (v,min,max) => Math.max(min, Math.min(max, v));
+function activeIndex(t) {
+  let idx = beats.findIndex((beat, i) => t >= beat.start && (i === beats.length - 1 || t < beats[i + 1].start));
+  return idx < 0 ? beats.length - 1 : idx;
+}
+window.setFrameTime = function(t) {
+  const root = document.documentElement;
+  const idx = activeIndex(t);
+  const beat = beats[idx] || beats[0];
+  const local = Math.max(0, t - beat.start);
+  const span = Math.max(.8, beat.end - beat.start);
+  const enter = clamp(local / .55, 0, 1);
+  const chips = document.getElementById('chips');
+  chips.replaceChildren();
+  const labels = (beat.elements && beat.elements.length ? beat.elements : [beat.headline || beat.motion]).slice(0,3);
+  labels.forEach((item, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.style.setProperty('--chip-y', ((1-enter) * (18 + i * 8) + Math.sin(t * 1.8 + i) * 2).toFixed(1) + 'px');
+    chip.style.setProperty('--chip-scale', (.94 + enter * .06 + Math.sin(t * 2.2 + i) * .012).toFixed(3));
+    chip.style.setProperty('--chip-o', (.25 + enter * .75).toFixed(2));
+    const mark = document.createElement('div');
+    mark.className = 'mark';
+    const span = document.createElement('span');
+    span.textContent = item;
+    chip.append(mark, span);
+    chips.append(chip);
+  });
+  root.style.setProperty('--halo-scale', (.92 + enter * .08 + Math.sin(t * 1.6) * .025).toFixed(3));
+  root.style.setProperty('--halo-o', (.22 + enter * .42).toFixed(3));
+  root.style.setProperty('--scan-y', ((Math.sin(t * 2.4) * 58)).toFixed(2) + 'px');
+};
+window.setFrameTime(0);
 </script>
 </body>
 </html>`;
   return {
     files: [{ path: "index.html", content: html }],
-    notes: "半透明覆盖模式使用平台内置信息图层生成器。",
-    modelInfo: { provider: "built-in-transparent-layout", model: "deterministic-overlay" }
+    notes: reason ? `HyperFrames Agent 调用不可用，已使用内部动态图文工程兜底：${reason}` : "已使用内部 HyperFrames 动态图文工程。",
+    modelInfo: { provider: "built-in-hyperframes-fallback", model: "semantic-beats", reason },
+    storyboard
   };
-}
-
-function smartSceneSystemPrompt() {
-  return [
-    "你是一个智能布景视频工程智能体，负责为数字人口播视频生成主画面布景代码。",
-    "你只输出完整 index.html 源码，不要输出 Markdown，不要解释，不要 JSON。",
-    "你要生成一个 720x1280 竖屏 HTML/CSS/JS 视频工程，适合逐帧渲染成 MP4。",
-    "只生成一个自包含 index.html，CSS 和 JS 都内联在 HTML 中。",
-    "必须包含 window.setFrameTime(t) 函数，t 为秒；渲染器会从 0 秒逐帧调用到视频结束。",
-    "右下角必须预留 260x350 的数字人画中画安全区，重要文字、按钮、卖点卡、字幕占位和核心元素都不要放进右下角。",
-    "字幕会由平台在最外层统一烧录，不要把口播字幕写进右下角数字人画面。",
-    "画面应服务商品讲解、知识讲解或方案讲解：可以使用产品扫描、卖点拆解、流程箭头、数据仪表盘、对比卡片、短视频成片预览、进度条、光效和分镜转场。",
-    "不要生成纯静态海报；每 3-5 秒需要有明显画面变化。",
-    "不要引用外网资源，不要使用 fetch，不要使用 import，不要使用 eval，不要访问 localStorage/sessionStorage。",
-    "最终回答必须从 <!DOCTYPE html> 或 <html> 开始，以 </html> 结束。"
-  ].join("\n");
-}
-
-function smartSceneUserPrompt({ project, duration, smartScenePrompt = "", previewDuration = 0, smartSceneLayoutMode = "pip" }) {
-  const script = project.artifacts?.script?.script || project.inputText || "";
-  const title = project.artifacts?.script?.title || project.title || "智能布景视频";
-  const transparentMode = smartSceneLayoutMode === "transparent_overlay";
-  const requirements = [
-    project.requirements || "",
-    smartScenePrompt || "",
-    previewDuration > 0 ? `这是 ${previewDuration} 秒预览版，但代码要能适配完整视频时长。` : ""
-  ].filter(Boolean).join("\n");
-  return [
-    `视频标题：${title}`,
-    `视频时长：${Math.max(1, Math.round(duration))} 秒`,
-    `口播文案：${script}`,
-    `用户生成要求：${requirements || "无"}`,
-    `智能布景模式：${transparentMode ? "半透明覆盖在数字人视频上" : "主画面 + 右下角数字人画中画"}`,
-    "",
-    transparentMode
-      ? "请生成适合覆盖在数字人视频上方的半透明信息图层工程。不要做大面积实色背景；使用半透明卡片、线框、发光标注、流程箭头、卖点标签和轻量动效，尽量避开人物脸部所在的中上区域。"
-      : "请生成一个商业质感的主画面布景工程。画面要有明确分镜、动效、标题卡、卖点卡片、场景化示意和进度动效。",
-    "如果用户没有指定具体商品，就根据标题和口播内容推断一个最贴合的讲解对象，不要使用与口播无关的主题。",
-    "请直接输出完整 index.html 源码，不要 JSON，不要 Markdown。"
-  ].join("\n");
 }
 
 function smartSceneProvider(db) {
@@ -5002,45 +5460,101 @@ function smartSceneProvider(db) {
   return SMART_SCENE_MODEL ? { ...provider, model: SMART_SCENE_MODEL } : provider;
 }
 
+function parseSmartSceneStoryboard(text = "", duration = 1) {
+  const payload = parseJsonCandidate(stripModelJsonFence(text))
+    || extractJsonCandidates(text).map(parseJsonCandidate).find(Boolean)
+    || {};
+  const beats = Array.isArray(payload.beats) ? payload.beats : [];
+  const safeBeats = beats.map((beat, index) => ({
+    start: clampNumber(beat.start, 0, Math.max(1, duration), index === 0 ? 0 : undefined),
+    end: clampNumber(beat.end, 0, Math.max(1, duration), undefined),
+    purpose: String(beat.purpose || "").trim(),
+    headline: String(beat.headline || "").trim(),
+    visualType: String(beat.visualType || "").trim(),
+    visual: String(beat.visual || "").trim(),
+    elements: Array.isArray(beat.elements) ? beat.elements.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 6) : [],
+    motion: String(beat.motion || "").trim()
+  })).filter((beat) => beat.end > beat.start && (beat.headline || beat.visual || beat.elements.length));
+  if (!safeBeats.length) return null;
+  return {
+    theme: String(payload.theme || "").trim(),
+    tone: String(payload.tone || "").trim(),
+    visualStyle: String(payload.visualStyle || "").trim(),
+    beats: safeBeats.slice(0, 12),
+    qualityChecklist: Array.isArray(payload.qualityChecklist)
+      ? payload.qualityChecklist.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8)
+      : []
+  };
+}
+
+async function planSmartSceneStoryboard(db, project, options = {}) {
+  const provider = smartSceneProvider(db);
+  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用 AI 视觉增强。");
+  const messages = [
+    { role: "system", content: smartScenePlannerSystemPrompt() },
+    { role: "user", content: smartScenePlannerUserPrompt({ ...options, project }) }
+  ];
+  const result = await promiseWithTimeout(
+    callCloudLlm(provider, messages, { temperature: 0.28, timeout: 90000, maxTokens: 2600, thinking: true, reasoningEffort: "max" }),
+    95000,
+    "HyperFrames 视觉方案规划超时。"
+  );
+  return {
+    storyboard: parseSmartSceneStoryboard(result.text, options.duration) || null,
+    modelInfo: result.metrics || {}
+  };
+}
+
 async function callSmartSceneAgent(db, project, options = {}) {
   const provider = smartSceneProvider(db);
-  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
+  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用 AI 视觉增强。");
   const messages = [
     { role: "system", content: smartSceneSystemPrompt() },
     { role: "user", content: smartSceneUserPrompt({ ...options, project }) }
   ];
-  const result = await callCloudLlm(provider, messages, { temperature: 0.35, timeout: 240000, maxTokens: 12000 });
+  const result = await promiseWithTimeout(
+    callCloudLlm(provider, messages, { temperature: 0.35, timeout: 120000, maxTokens: 7000, thinking: true, reasoningEffort: "max" }),
+    125000,
+    "HyperFrames Agent 生成超时。"
+  );
   const payload = parseSmartSceneAgentText(result.text);
   return {
     files: payload.files,
     notes: payload.notes || "",
-    modelInfo: result.metrics || {}
+    modelInfo: result.metrics || {},
+    storyboard: options.storyboard || null
   };
 }
 
 async function reviseSmartSceneAgent(db, previous, errorMessage, options = {}) {
   const provider = smartSceneProvider(db);
-  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用智能布景。");
+  if (!provider) throw new Error("请先配置 DeepSeek 云端文本模型，再使用 AI 视觉增强。");
   const previousFiles = previous.files.map((file) => `--- ${file.path} ---\n${file.content}`).join("\n\n");
   const messages = [
     { role: "system", content: smartSceneSystemPrompt() },
-    { role: "user", content: smartSceneUserPrompt({ ...options, project: options.project }) },
+    { role: "user", content: smartSceneUserPrompt({ ...options, project: options.project, storyboard: options.storyboard || previous.storyboard || null }) },
     {
       role: "user",
       content: [
-        "你上一次生成的代码运行失败，请根据错误修复后重新输出完整 index.html 源码。",
-        `错误信息：${errorMessage}`,
+        "上一次生成的视频工程没有通过检查，请修复后重新输出完整 index.html 源码。",
+        `检查结果：${errorMessage}`,
+        "修复重点：保证 setFrameTime(t) 有真实画面变化；减少大段文字；避免元素重叠和出界；让画面更像可独立观看的动态图文视频。",
         "上一次代码：",
         previousFiles
       ].join("\n")
     }
   ];
-  const result = await callCloudLlm(provider, messages, { temperature: 0.25, timeout: 240000, maxTokens: 12000 });
+  const result = await promiseWithTimeout(
+    callCloudLlm(provider, messages, { temperature: 0.25, timeout: 100000, maxTokens: 7000, thinking: true, reasoningEffort: "max" }),
+    105000,
+    "HyperFrames Agent 修复超时。"
+  );
   const payload = parseSmartSceneAgentText(result.text);
   return {
     files: payload.files,
     notes: payload.notes || "",
-    modelInfo: result.metrics || {}
+    modelInfo: result.metrics || {},
+    storyboard: options.storyboard || previous.storyboard || null
   };
 }
 
@@ -5051,11 +5565,130 @@ function writeSmartSceneFiles(workspaceDir, files) {
   }
 }
 
+function smartSceneSampleTimes(duration = 1) {
+  const total = Math.max(1, Number(duration) || 1);
+  return Array.from(new Set([0.2, total * 0.18, total * 0.38, total * 0.62, total * 0.82, Math.max(0.2, total - 0.3)]
+    .map((item) => Math.max(0, Math.min(total, Math.round(item * 10) / 10)))))
+    .sort((a, b) => a - b);
+}
+
+function imageHash(buffer) {
+  return createHash("sha1").update(buffer).digest("hex");
+}
+
+function overlapRatio(a, b) {
+  const x = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const y = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  const intersection = x * y;
+  const minArea = Math.max(1, Math.min(a.width * a.height, b.width * b.height));
+  return intersection / minArea;
+}
+
+function summarizeSmartSceneIssues(inspections = [], duration = 1) {
+  const issues = [];
+  const hashes = new Set(inspections.map((item) => item.hash).filter(Boolean));
+  const visibleTextCounts = inspections.map((item) => item.visibleTextCount || 0);
+  const bodyTextLengths = inspections.map((item) => item.bodyTextLength || 0);
+  if (!inspections.length) issues.push("没有成功抽取任何预览帧。");
+  if (hashes.size <= 1 && inspections.length >= 3) issues.push("多个时间点截图几乎没有变化，需要显著增强时间驱动的动态变化。");
+  if (Math.max(...visibleTextCounts, 0) < 2) issues.push("画面可读文字过少，信息表达不完整。");
+  if (Math.max(...bodyTextLengths, 0) > 260) issues.push("画面文本量过大，像在铺原文，需要压缩成关键词、标签、卡片和图表。");
+  const overflow = inspections.find((item) => item.overflowCount > 0);
+  if (overflow) issues.push(`第 ${overflow.time}s 附近有文字或元素超出画布。`);
+  const overlap = inspections.find((item) => item.overlapCount > 1);
+  if (overlap) issues.push(`第 ${overlap.time}s 附近有明显文字重叠。`);
+  const blank = inspections.find((item) => item.nonWhiteTextCount < 1 && item.visibleTextCount < 1);
+  if (blank) issues.push(`第 ${blank.time}s 附近画面疑似空白。`);
+  if (duration > 8 && hashes.size < Math.min(3, inspections.length)) issues.push("视频时长较长但画面变化不足，需要按内容推进生成更多状态变化。");
+  return issues;
+}
+
+async function inspectSmartSceneHtml({ htmlPath, framesDir, duration, width = SMART_SCENE_WIDTH, height = SMART_SCENE_HEIGHT }) {
+  const { chromium } = await import("playwright");
+  rmSync(framesDir, { recursive: true, force: true });
+  mkdirSync(framesDir, { recursive: true });
+  const browser = await chromium.launch({ headless: true, args: ["--enable-gpu", "--use-angle=metal"] });
+  const inspections = [];
+  try {
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    await page.goto(`file://${htmlPath}`, { waitUntil: "load" });
+    const hasTimeline = await page.evaluate(() => typeof window.setFrameTime === "function");
+    if (!hasTimeline) throw new Error("index.html 必须暴露 window.setFrameTime(t)。");
+    for (const time of smartSceneSampleTimes(duration)) {
+      await page.evaluate((value) => window.setFrameTime(value), time);
+      await page.waitForTimeout(60);
+      const path = join(framesDir, `${String(Math.round(time * 10)).padStart(4, "0")}.png`);
+      const buffer = await page.screenshot({ path, type: "png" });
+      const dom = await page.evaluate(() => {
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const visible = [];
+        const nodes = Array.from(document.body.querySelectorAll("*"));
+        for (const node of nodes) {
+          const directText = Array.from(node.childNodes)
+            .filter((child) => child.nodeType === Node.TEXT_NODE)
+            .map((child) => child.textContent || "")
+            .join(" ");
+          const text = directText.replace(/\s+/g, " ").trim();
+          if (!text) continue;
+          const style = window.getComputedStyle(node);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) < 0.05) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4) continue;
+          if (rect.bottom < 0 || rect.right < 0 || rect.left > viewportWidth || rect.top > viewportHeight) continue;
+          visible.push({
+            text: text.slice(0, 160),
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height,
+            fontSize: Number.parseFloat(style.fontSize || "0"),
+            color: style.color
+          });
+        }
+        return {
+          bodyText: (document.body.innerText || "").replace(/\s+/g, " ").trim(),
+          visible,
+          viewportWidth,
+          viewportHeight
+        };
+      });
+      const textBoxes = dom.visible.filter((item) => item.fontSize >= 12 && item.text.length <= 180);
+      let overlapCount = 0;
+      for (let i = 0; i < textBoxes.length; i += 1) {
+        for (let j = i + 1; j < textBoxes.length; j += 1) {
+          if (overlapRatio(textBoxes[i], textBoxes[j]) > 0.18) overlapCount += 1;
+        }
+      }
+      inspections.push({
+        time,
+        path,
+        hash: imageHash(buffer),
+        bodyTextLength: Array.from(dom.bodyText || "").length,
+        visibleTextCount: textBoxes.length,
+        nonWhiteTextCount: textBoxes.filter((item) => item.color && !/rgba?\(255,\s*255,\s*255/i.test(item.color)).length,
+        overflowCount: textBoxes.filter((item) => item.left < -2 || item.top < -2 || item.right > width + 2 || item.bottom > height + 2).length,
+        overlapCount
+      });
+    }
+  } finally {
+    await closePlaywrightBrowser(browser);
+  }
+  const issues = summarizeSmartSceneIssues(inspections, duration);
+  return {
+    ok: issues.length === 0,
+    issues,
+    inspections
+  };
+}
+
 async function renderSmartSceneHtml({ htmlPath, outPath, framesDir, duration, fps = SMART_SCENE_FPS, width = SMART_SCENE_WIDTH, height = SMART_SCENE_HEIGHT }) {
   const { chromium } = await import("playwright");
   rmSync(framesDir, { recursive: true, force: true });
   mkdirSync(framesDir, { recursive: true });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, args: ["--enable-gpu", "--use-angle=metal"] });
   try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
     page.on("pageerror", (error) => {
@@ -5070,7 +5703,7 @@ async function renderSmartSceneHtml({ htmlPath, outPath, framesDir, duration, fp
       await page.screenshot({ path: join(framesDir, `${String(frame + 1).padStart(5, "0")}.png`), type: "png" });
     }
   } finally {
-    await browser.close();
+    await closePlaywrightBrowser(browser);
   }
   await execFileAsync(FFMPEG_BIN, [
     "-y",
@@ -5078,17 +5711,12 @@ async function renderSmartSceneHtml({ htmlPath, outPath, framesDir, duration, fp
     String(fps),
     "-i",
     join(framesDir, "%05d.png"),
-    "-c:v",
-    "libx264",
-    "-pix_fmt",
-    "yuv420p",
-    "-crf",
-    "18",
+    ...h264VideoArgs({ bitrate: "4500k", crf: "18" }),
     "-movflags",
     "+faststart",
     outPath
   ], { timeout: 1200000, maxBuffer: 1024 * 1024 * 16 });
-  if (!existsSync(outPath)) throw new Error("智能布景主画面渲染失败。");
+  if (!existsSync(outPath)) throw new Error("AI 视觉增强画面渲染失败。");
   return outPath;
 }
 
@@ -5099,47 +5727,124 @@ async function createSmartSceneMainVideo(db, project, options = {}) {
   const framesDir = join(outDir, "smart-scene", "frames");
   const mainVideoPath = join(outDir, "smart-scene-main.mp4");
   mkdirSync(workspaceDir, { recursive: true });
-  let agent = options.smartSceneLayoutMode === "transparent_overlay"
-    ? fallbackTransparentSmartScene(project, options)
-    : await callSmartSceneAgent(db, project, options);
-  writeSmartSceneFiles(workspaceDir, agent.files);
-  writeFileSync(join(outDir, "smart-scene", "agent-response.json"), JSON.stringify(agent, null, 2));
+  if (process.env.DH_SMART_SCENE_FORCE_LOCAL === "1") {
+    const agent = fallbackHyperFramesAgent(project, options, null, "当前环境强制使用本地 HyperFrames 生成器。");
+    writeSmartSceneFiles(workspaceDir, agent.files);
+    writeFileSync(join(outDir, "smart-scene", "agent-response-local.json"), JSON.stringify(agent, null, 2));
+    const htmlPath = join(workspaceDir, "index.html");
+    const inspection = await inspectSmartSceneHtml({
+      htmlPath,
+      framesDir: join(previewDir, "local"),
+      duration: options.duration
+    }).catch((error) => ({
+      ok: false,
+      issues: [error instanceof Error ? error.message : String(error)]
+    }));
+    writeFileSync(join(outDir, "smart-scene", "quality-local.json"), JSON.stringify(inspection, null, 2));
+    await renderSmartSceneHtml({
+      htmlPath,
+      outPath: mainVideoPath,
+      framesDir,
+      duration: options.duration,
+      fps: SMART_SCENE_FPS
+    });
+    return {
+      ok: true,
+      path: mainVideoPath,
+      workspaceDir,
+      agentNotes: [
+        agent.notes || "",
+        inspection.issues?.length ? `质量检查提示：${inspection.issues.join("；")}` : ""
+      ].filter(Boolean).join("\n"),
+      modelInfo: agent.modelInfo || {}
+    };
+  }
+  const plan = await planSmartSceneStoryboard(db, project, options).catch((error) => ({
+    storyboard: null,
+    modelInfo: { planningError: error instanceof Error ? error.message : String(error) }
+  }));
   const htmlPath = join(workspaceDir, "index.html");
+  let agent = null;
   let lastError = "";
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
+      if (!agent) {
+        agent = await callSmartSceneAgent(db, project, { ...options, storyboard: plan.storyboard, generationError: lastError });
+        agent.modelInfo = { planning: plan.modelInfo || {}, generation: agent.modelInfo || {} };
+        writeSmartSceneFiles(workspaceDir, agent.files);
+        writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt}.json`), JSON.stringify(agent, null, 2));
+      }
+      const inspection = await inspectSmartSceneHtml({
+        htmlPath,
+        framesDir: join(previewDir, `attempt-${attempt}`),
+        duration: options.duration
+      });
+      writeFileSync(join(outDir, "smart-scene", `quality-attempt-${attempt}.json`), JSON.stringify(inspection, null, 2));
+      if (!inspection.ok && attempt < 3) {
+        lastError = inspection.issues.join("；");
+        agent = await reviseSmartSceneAgent(db, agent, lastError, { ...options, project, storyboard: plan.storyboard });
+        agent.modelInfo = { planning: plan.modelInfo || {}, revision: agent.modelInfo || {}, qualityIssues: inspection.issues };
+        writeSmartSceneFiles(workspaceDir, agent.files);
+        writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt + 1}.json`), JSON.stringify(agent, null, 2));
+        continue;
+      }
       await renderSmartSceneHtml({
         htmlPath,
-        outPath: attempt === 3 ? mainVideoPath : join(outDir, "smart-scene", `preview-attempt-${attempt}.mp4`),
-        framesDir: attempt === 3 ? framesDir : join(previewDir, `attempt-${attempt}`),
-        duration: attempt === 3 ? options.duration : Math.min(3, options.duration),
+        outPath: mainVideoPath,
+        framesDir,
+        duration: options.duration,
         fps: SMART_SCENE_FPS
       });
-      if (attempt < 3) {
-        await renderSmartSceneHtml({
-          htmlPath,
-          outPath: mainVideoPath,
-          framesDir,
-          duration: options.duration,
-          fps: SMART_SCENE_FPS
-        });
-      }
       return {
         ok: true,
         path: mainVideoPath,
         workspaceDir,
-        agentNotes: agent.notes || "",
+        agentNotes: [
+          agent.notes || "",
+          inspection.issues?.length ? `质量检查仍有提示：${inspection.issues.join("；")}` : ""
+        ].filter(Boolean).join("\n"),
         modelInfo: agent.modelInfo || {}
       };
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       if (attempt >= 3) break;
-      agent = await reviseSmartSceneAgent(db, agent, lastError, { ...options, project });
-      writeSmartSceneFiles(workspaceDir, agent.files);
-      writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt + 1}.json`), JSON.stringify(agent, null, 2));
+      if (agent) {
+        agent = await reviseSmartSceneAgent(db, agent, lastError, { ...options, project, storyboard: plan.storyboard });
+        agent.modelInfo = { planning: plan.modelInfo || {}, revision: agent.modelInfo || {}, renderError: lastError };
+        writeSmartSceneFiles(workspaceDir, agent.files);
+        writeFileSync(join(outDir, "smart-scene", `agent-response-attempt-${attempt + 1}.json`), JSON.stringify(agent, null, 2));
+      }
     }
   }
-  throw new Error(`智能布景 Agent 渲染失败：${lastError}`);
+  agent = fallbackHyperFramesAgent(project, options, plan.storyboard, lastError || "模型生成未通过检查。");
+  writeSmartSceneFiles(workspaceDir, agent.files);
+  writeFileSync(join(outDir, "smart-scene", "agent-response-fallback.json"), JSON.stringify(agent, null, 2));
+  const inspection = await inspectSmartSceneHtml({
+    htmlPath,
+    framesDir: join(previewDir, "fallback"),
+    duration: options.duration
+  }).catch((error) => ({
+    ok: false,
+    issues: [error instanceof Error ? error.message : String(error)]
+  }));
+  writeFileSync(join(outDir, "smart-scene", "quality-fallback.json"), JSON.stringify(inspection, null, 2));
+  await renderSmartSceneHtml({
+    htmlPath,
+    outPath: mainVideoPath,
+    framesDir,
+    duration: options.duration,
+    fps: SMART_SCENE_FPS
+  });
+  return {
+    ok: true,
+    path: mainVideoPath,
+    workspaceDir,
+    agentNotes: [
+      agent.notes || "",
+      inspection.issues?.length ? `质量检查提示：${inspection.issues.join("；")}` : ""
+    ].filter(Boolean).join("\n"),
+    modelInfo: agent.modelInfo || {}
+  };
 }
 
 function smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex, layoutMode = "pip") {
@@ -5149,7 +5854,7 @@ function smartSceneCompositeFilter(captionOverlays, firstOverlayInputIndex, layo
   let graph = transparent
     ? [
         `[1:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,eq=contrast=1.03:saturation=1.02[avatarbase]`,
-        `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=rgba,colorchannelmixer=aa=0.48[sceneoverlay]`,
+        `[0:v]scale=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT}:force_original_aspect_ratio=increase,crop=${SMART_SCENE_WIDTH}:${SMART_SCENE_HEIGHT},setsar=1,format=rgba,chromakey=0x000000:0.10:0.05,colorchannelmixer=aa=0.92[sceneoverlay]`,
         `[avatarbase][sceneoverlay]overlay=0:0,format=yuv420p[v0]`
       ].join(";")
     : [
@@ -5209,14 +5914,7 @@ async function packageSmartSceneVideo({
     "-t",
     String(duration),
     "-shortest",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "18",
-    "-pix_fmt",
-    "yuv420p",
+    ...h264VideoArgs({ bitrate: "6500k", crf: "18" }),
     "-c:a",
     "aac",
     "-movflags",
@@ -5232,10 +5930,11 @@ async function zipDirectory(sourceDir, zipPath) {
 }
 
 const diskStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const safeBase = basename(file.originalname, extname(file.originalname)).replace(/[^\w\u4e00-\u9fa5.-]+/g, "-");
-    cb(null, `${Date.now()}-${safeBase}${extname(file.originalname)}`);
+  destination: (req, file, cb) => cb(null, uploadCategoryDir(uploadKindFromRequest(req, file))),
+  filename: (req, file, cb) => {
+    const dir = uploadCategoryDir(uploadKindFromRequest(req, file));
+    const targetPath = uniqueFilePath(dir, basename(file.originalname, extname(file.originalname)), extname(file.originalname));
+    cb(null, basename(targetPath));
   }
 });
 const upload = multer({ storage: diskStorage });
@@ -5362,6 +6061,7 @@ app.patch("/api/settings/runtime", async (req, res, next) => {
   db.settings.keepAvatarModelWarm = false;
   if (body.taskConcurrency !== undefined) db.settings.taskConcurrency = clampNumber(body.taskConcurrency, 1, 2, db.settings.taskConcurrency || 1, true);
   if (body.avatarSegmentSeconds !== undefined) db.settings.avatarSegmentSeconds = clampNumber(body.avatarSegmentSeconds, 10, 120, db.settings.avatarSegmentSeconds || 30, true);
+  if (body.ttsSegmentMaxChars !== undefined) db.settings.ttsSegmentMaxChars = clampNumber(body.ttsSegmentMaxChars, 60, 500, db.settings.ttsSegmentMaxChars || 180, true);
   writeDb(db);
   scheduleQueue();
   res.json({ ok: true, settings: db.settings, runtimeModels: runtimeWorkerStatus() });
@@ -5584,17 +6284,19 @@ async function analyzeAvatarQuality(filePath, mimeType = "") {
 
 app.post("/api/assets/avatar-videos", upload.single("file"), async (req, res, next) => {
   try {
-  const db = readDb();
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "Missing file" });
-  const qualityReport = await analyzeAvatarQuality(file.path, file.mimetype);
-  const asset = {
-    id: `avatar-${randomUUID()}`,
-    name: req.body.name || basename(file.originalname),
-    tags: String(req.body.tags || "").split(",").map((item) => item.trim()).filter(Boolean),
-    path: file.path,
-    uri: publicPath(file.path),
-    mimeType: file.mimetype,
+	  const db = readDb();
+	  const file = req.file;
+	  if (!file) return res.status(400).json({ error: "Missing file" });
+	  const name = String(req.body.name || basename(file.originalname, extname(file.originalname))).trim();
+	  const finalPath = materializeUploadFile(file.path, "avatar", name, extname(file.originalname), { moveSource: true });
+	  const qualityReport = await analyzeAvatarQuality(finalPath, file.mimetype);
+	  const asset = {
+	    id: `avatar-${randomUUID()}`,
+	    name,
+	    tags: String(req.body.tags || "").split(",").map((item) => item.trim()).filter(Boolean),
+	    path: finalPath,
+	    uri: publicPath(finalPath),
+	    mimeType: file.mimetype,
     authStatus: req.body.authStatus || "self_authorized",
     qualityReport,
     createdAt: now()
@@ -5644,7 +6346,7 @@ app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
     const end = clampNumber(req.body.end, start + 0.5, media.duration || start + 1, Math.min(media.duration || start + 5, start + 5));
     if (end <= start) return res.status(400).json({ error: "结束时间必须大于开始时间。" });
     const name = String(req.body.name || `${asset.name}-片段`).trim();
-    const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${name.replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")}.mp4`);
+	    const targetPath = uniqueFilePath(uploadCategoryDir("avatar"), name, ".mp4");
     await execFileAsync(FFMPEG_BIN, [
       "-y",
       "-ss",
@@ -5657,12 +6359,7 @@ app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
       "0:v:0",
       "-map",
       "0:a?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "20",
+      ...h264VideoArgs({ bitrate: "6500k", crf: "20" }),
       "-c:a",
       "aac",
       "-movflags",
@@ -5693,13 +6390,16 @@ app.post("/api/assets/avatar-videos/:id/clip", async (req, res, next) => {
 
 app.post("/api/assets/music", upload.single("file"), async (req, res, next) => {
   try {
-    const db = readDb();
-    const file = req.file;
-    if (!file) return res.status(400).json({ error: "Missing file" });
-    const asset = await createMusicFromPath(db, file.path, {
-      name: req.body.name || basename(file.originalname),
-      mimeType: file.mimetype
-    });
+	    const db = readDb();
+	    const file = req.file;
+	    if (!file) return res.status(400).json({ error: "Missing file" });
+	    const name = String(req.body.name || basename(file.originalname, extname(file.originalname))).trim();
+	    const asset = await createMusicFromPath(db, file.path, {
+	      name,
+	      mimeType: file.mimetype,
+	      uploadKind: "music",
+	      moveSource: true
+	    });
     writeDb(db);
     res.json(asset);
   } catch (err) {
@@ -5747,15 +6447,17 @@ app.delete("/api/assets/music/:id", (req, res) => {
 });
 
 app.post("/api/voices/reference-samples", upload.single("file"), (req, res) => {
-  const db = readDb();
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "Missing file" });
-  const voice = {
-    id: `voice-${randomUUID()}`,
-    name: req.body.name || basename(file.originalname),
-    provider: req.body.provider || "local",
-    path: file.path,
-    uri: publicPath(file.path),
+	  const db = readDb();
+	  const file = req.file;
+	  if (!file) return res.status(400).json({ error: "Missing file" });
+	  const name = String(req.body.name || basename(file.originalname, extname(file.originalname))).trim();
+	  const finalPath = materializeUploadFile(file.path, "voice", name, extname(file.originalname), { moveSource: true });
+	  const voice = {
+	    id: `voice-${randomUUID()}`,
+	    name,
+	    provider: req.body.provider || "local",
+	    path: finalPath,
+	    uri: publicPath(finalPath),
     mimeType: file.mimetype,
     authScope: req.body.authScope || "self_authorized",
     cloneStatus: "ready_for_adapter",
@@ -5863,10 +6565,11 @@ app.post("/api/models/:id/install", (req, res, next) => {
     model.healthMessage = "正在安装固定模型包，完成后请重新检测环境。";
     model.lastCheckedAt = now();
     writeDb(db);
-    execFile(process.execPath, [MODEL_INSTALLER_PATH], {
+    const installer = execFile(process.execPath, [MODEL_INSTALLER_PATH], {
       cwd: rootDir,
       timeout: 1000 * 60 * 120,
-      maxBuffer: 1024 * 1024 * 16
+      maxBuffer: 1024 * 1024 * 16,
+      detached: process.platform !== "win32"
     }, (error) => {
       const nextDb = readDb();
       const nextModel = nextDb.models.find((item) => item.id === req.params.id);
@@ -5880,6 +6583,7 @@ app.post("/api/models/:id/install", (req, res, next) => {
       nextModel.lastCheckedAt = now();
       writeDb(nextDb);
     });
+    registerChildProcess(installer, { command: process.execPath });
     res.json({
       ok: true,
       status: model.status,
@@ -6395,19 +7099,20 @@ function setExtractionFailed(id, key, error, patch = {}) {
   });
 }
 
-function uploadCopyPath(sourcePath, fallbackName, extension = "") {
+function uploadCopyPath(sourcePath, fallbackName, extension = "", options = {}) {
   if (!sourcePath || !existsSync(sourcePath)) {
     const err = new Error("解析产物文件不存在。");
     err.status = 404;
     throw err;
   }
   const sourceExt = extname(sourcePath) || extension;
-  const safeBase = basename(fallbackName || basename(sourcePath), extname(fallbackName || basename(sourcePath)))
-    .replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")
-    .slice(0, 80) || "media";
-  const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${sourceExt}`);
-  copyFileSync(sourcePath, targetPath);
-  return targetPath;
+  return materializeUploadFile(
+    sourcePath,
+    options.uploadKind || "source",
+    fallbackName || basename(sourcePath),
+    sourceExt,
+    { moveSource: Boolean(options.moveSource) }
+  );
 }
 
 function shouldClipMedia(options = {}) {
@@ -6415,7 +7120,7 @@ function shouldClipMedia(options = {}) {
 }
 
 async function clipMediaToUpload(sourcePath, fallbackName, options = {}) {
-  if (!shouldClipMedia(options)) return uploadCopyPath(sourcePath, fallbackName, options.extension || "");
+  if (!shouldClipMedia(options)) return uploadCopyPath(sourcePath, fallbackName, options.extension || "", options);
   if (!sourcePath || !existsSync(sourcePath)) {
     const err = new Error("解析产物文件不存在。");
     err.status = 404;
@@ -6436,22 +7141,19 @@ async function clipMediaToUpload(sourcePath, fallbackName, options = {}) {
     throw err;
   }
   const extension = options.extension || extname(sourcePath) || (options.mediaType === "audio" ? ".wav" : ".mp4");
-  const safeBase = basename(fallbackName || basename(sourcePath), extname(fallbackName || basename(sourcePath)))
-    .replace(/[^\w\u4e00-\u9fa5.-]+/g, "-")
-    .slice(0, 80) || "media";
-  const targetPath = join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${extension}`);
+  const targetPath = uniqueFilePath(uploadCategoryDir(options.uploadKind || "source"), fallbackName || basename(sourcePath), extension);
   const args = ["-y", "-ss", String(start), "-i", sourcePath, "-t", String(end - start)];
   if (options.mediaType === "audio") {
     args.push("-vn", "-acodec", extension === ".mp3" ? "libmp3lame" : "pcm_s16le", targetPath);
   } else {
-    args.push("-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", targetPath);
+    args.push("-map", "0:v:0", "-map", "0:a?", ...h264VideoArgs({ bitrate: "6500k", crf: "20" }), "-c:a", "aac", "-movflags", "+faststart", targetPath);
   }
   await execFileAsync(FFMPEG_BIN, args, { timeout: 120000, maxBuffer: 1024 * 1024 * 8 });
   return { targetPath, clipRange: { start, end, duration: end - start } };
 }
 
 async function createAvatarAssetFromPath(db, sourcePath, options = {}) {
-  const prepared = await clipMediaToUpload(sourcePath, options.name || "数字人素材", { ...options, mediaType: "video", extension: ".mp4" });
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "数字人素材", { ...options, mediaType: "video", extension: ".mp4", uploadKind: "avatar" });
   const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
   const qualityReport = await analyzeAvatarQuality(targetPath, "video/mp4");
   const asset = {
@@ -6475,7 +7177,7 @@ async function createAvatarAssetFromPath(db, sourcePath, options = {}) {
 async function createVoiceFromPath(db, sourcePath, options = {}) {
   const ext = extname(sourcePath).toLowerCase() || ".wav";
   const outputExt = shouldClipMedia(options) ? ".wav" : ext;
-  const prepared = await clipMediaToUpload(sourcePath, options.name || "参考音色", { ...options, mediaType: "audio", extension: outputExt });
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "参考音色", { ...options, mediaType: "audio", extension: outputExt, uploadKind: "voice" });
   const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
   const voice = {
     id: `voice-${randomUUID()}`,
@@ -6498,7 +7200,7 @@ async function createVoiceFromPath(db, sourcePath, options = {}) {
 async function createMusicFromPath(db, sourcePath, options = {}) {
   const ext = extname(sourcePath).toLowerCase() || ".mp3";
   const outputExt = shouldClipMedia(options) ? ".mp3" : ext;
-  const prepared = await clipMediaToUpload(sourcePath, options.name || "背景音乐", { ...options, mediaType: "audio", extension: outputExt });
+  const prepared = await clipMediaToUpload(sourcePath, options.name || "背景音乐", { ...options, mediaType: "audio", extension: outputExt, uploadKind: options.uploadKind || "music" });
   const targetPath = typeof prepared === "string" ? prepared : prepared.targetPath;
   const duration = await probeMediaDuration(targetPath);
   const asset = {
@@ -7456,7 +8158,7 @@ async function synthesizeProject(projectId, options = {}) {
     let ttsResult;
     try {
       ttsResult = await synthesizeSegmentedTtsAudio(scriptText, modelAudioPath, {
-        maxChars: options.payload?.ttsSegmentMaxChars,
+        maxChars: options.payload?.ttsSegmentMaxChars ?? db.settings.ttsSegmentMaxChars,
         onSegment: (index, total) => {
           const segmentLabel = total > 1 ? `正在生成口播音频 ${index + 1}/${total}。` : ttsProgressLabel;
           updateQueueProgress(options.queueId, {
@@ -7693,15 +8395,15 @@ async function renderProject(projectId, options = {}) {
     const generateSubtitles = Boolean(options.generateSubtitles ?? project.generateSubtitles);
     project.generateSubtitles = generateSubtitles;
     project.status = "running";
-    setStage(project, "video", "running", skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。");
+    setStage(project, "video", "running", skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成 AI 视觉增强视频。" : "正在生成数字人视频。");
     setProjectProgress(project, {
       percent: options.queueId ? 68 : 0,
-      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成智能布景视频。" : "正在生成数字人视频。",
+      label: options.variantLabel ? `正在生成 ${options.variantLabel}。` : skipLipSync ? "正在合成无嘴型同步视频。" : smartSceneEnabled ? "正在生成 AI 视觉增强视频。" : "正在生成数字人视频。",
       stage: "video",
       status: "running",
       queueId: options.queueId || ""
     });
-    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : skipLipSync ? "开始合成无嘴型同步视频。" : smartSceneEnabled ? "开始生成智能布景视频。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration, smartSceneEnabled, smartSceneLayoutMode, skipLipSync });
+    pushJob(db, project.id, "render_video", "running", previewDuration > 0 ? "开始生成3秒预览。" : skipLipSync ? "开始合成无嘴型同步视频。" : smartSceneEnabled ? "开始生成 AI 视觉增强视频。" : "开始生成数字人视频。", { videoSettings: project.videoSettings, duration, smartSceneEnabled, smartSceneLayoutMode, skipLipSync });
     writeDb(db);
     updateQueueProgress(options.queueId, { percent: 70, label: generateSubtitles ? "正在生成字幕文件。" : "正在准备视频素材。", stage: "video", stageStatus: "running" });
     const videoPath = join(outDir, "digital-human.mp4");
@@ -7758,7 +8460,7 @@ async function renderProject(projectId, options = {}) {
     if (smartSceneEnabled) {
       updateQueueProgress(options.queueId, {
         percent: 84,
-        label: smartSceneLayoutMode === "transparent_overlay" ? "正在渲染半透明智能布景。" : "DeepSeek Agent 正在编写智能布景工程。",
+        label: "HyperFrames Agent 正在规划并生成动态视频工程。",
         stage: "video"
       });
       smartSceneMain = await createSmartSceneMainVideo(db, project, {
@@ -7775,7 +8477,7 @@ async function renderProject(projectId, options = {}) {
           pipHeight: SMART_SCENE_PIP_HEIGHT
         }).catch(() => [])
         : [];
-      updateQueueProgress(options.queueId, { percent: 90, label: generateSubtitles ? "正在合成智能布景、数字人、口播音频和外层字幕。" : "正在合成智能布景、数字人和口播音频。", stage: "video" });
+      updateQueueProgress(options.queueId, { percent: 90, label: generateSubtitles ? "正在合成 AI 视觉增强、数字人、口播音频和外层字幕。" : "正在合成 AI 视觉增强、数字人和口播音频。", stage: "video" });
       packaged = await packageSmartSceneVideo({
         outPath: videoPath,
         mainScenePath: smartSceneMain.path,
@@ -7819,7 +8521,7 @@ async function renderProject(projectId, options = {}) {
       uri: publicPath(videoPath),
       path: videoPath,
       duration,
-      adapter: smartSceneEnabled ? "deepseek-smart-scene-agent" : skipLipSync ? "no-lip-sync-avatar-adapter" : `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
+      adapter: smartSceneEnabled ? "hyperframes-video-agent" : skipLipSync ? "no-lip-sync-avatar-adapter" : `${avatarRender.engine || project.videoSettings.engine}-avatar-adapter`,
       smartSceneEnabled,
       smartScenePrompt,
       smartSceneLayoutMode,
@@ -7827,9 +8529,9 @@ async function renderProject(projectId, options = {}) {
       subtitlesEmbedded,
       visibleCaptions,
       qualityReport: {
-        status: smartSceneEnabled ? "rendered_by_deepseek_smart_scene_agent" : skipLipSync ? "rendered_without_lip_sync" : `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
+        status: smartSceneEnabled ? "rendered_by_hyperframes_video_agent" : skipLipSync ? "rendered_without_lip_sync" : `rendered_by_${avatarRender.engine || project.videoSettings.engine}`,
         notes: [
-          smartSceneEnabled ? (smartSceneLayoutMode === "transparent_overlay" ? "已启用智能布景：主画面工程以半透明图层覆盖在数字人视频上。" : "已启用智能布景：DeepSeek Agent 编写主画面工程，平台渲染后叠加数字人画中画。") : "",
+          smartSceneEnabled ? "已启用 HyperFrames 视频生成 Agent：平台已完成动态画面渲染与最终合成。" : "",
           skipLipSync ? "已跳过嘴型同步：未调用口型模型，直接使用原数字人素材画面合成口播音频。" : `已临时启动 ${avatarRender.engine || project.videoSettings.engine} Adapter 渲染口型。`,
           !skipLipSync && avatarRender.frameRepairRestored ? `无人脸帧已回填原素材：${avatarRender.frameRepairRestored} 帧。` : "",
           smartSceneMain?.agentNotes ? `Agent 说明：${smartSceneMain.agentNotes}` : "",
@@ -8756,8 +9458,18 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: err.message || "Internal server error" });
 });
 
+migrateUploadLibraryOnBoot();
 recoverQueueOnBoot();
 
-app.listen(PORT, () => {
+httpServer = app.listen(PORT, () => {
   console.log(`Digital human API listening on http://127.0.0.1:${PORT}`);
 });
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => {
+    shutdownServer(signal).catch((error) => {
+      console.error("Shutdown cleanup failed:", error);
+      process.exit(1);
+    });
+  });
+}

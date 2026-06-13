@@ -487,6 +487,7 @@ type State = {
     keepAvatarModelWarm?: boolean;
     taskConcurrency?: number;
     avatarSegmentSeconds?: number;
+    ttsSegmentMaxChars?: number;
     objectStorage?: ObjectStorageConfig;
   };
 };
@@ -554,7 +555,7 @@ const defaultVideoSettings: VideoSettings = {
   extraMargin: 0,
   facePad: 0.12,
   lowerPad: 0.03,
-  batchSize: 1,
+  batchSize: 8,
   leftCheekWidth: 90,
   rightCheekWidth: 90
 };
@@ -605,15 +606,33 @@ const defaultRequirementTemplates: RequirementTemplate[] = [
 function getRequirementTemplates(state: State) {
   return state.requirementTemplates?.length ? state.requirementTemplates : defaultRequirementTemplates;
 }
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+type AppRequestInit = RequestInit & {
+  timeoutMs?: number;
+  timeoutMessage?: string;
+};
+
+async function request<T>(url: string, options?: AppRequestInit): Promise<T> {
+  const { timeoutMs = 0, timeoutMessage, signal, ...fetchOptions } = options || {};
+  const controller = timeoutMs > 0 && !signal ? new AbortController() : null;
+  const timer = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : 0;
   let response: Response;
   try {
-    response = await fetch(url, options);
+    response = await fetch(url, {
+      ...fetchOptions,
+      signal: signal || controller?.signal
+    });
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(timeoutMessage || "请求超时，请稍后重试。");
+    }
     const rawMessage = error instanceof Error ? error.message : "";
     throw new Error(rawMessage === "Failed to fetch"
       ? "无法连接本地服务。请确认页面地址和服务地址一致，并刷新页面后重试；如果是手机访问，不要使用 localhost。"
       : rawMessage || "网络请求失败。");
+  } finally {
+    if (timer) window.clearTimeout(timer);
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: "请求失败" }));
@@ -632,6 +651,17 @@ function isQueuedResponse(value: unknown): value is { queued: true; queueItem: Q
 
 function isSubmittedResponse(value: unknown): value is { submitted: true; queueItem: QueueItem } {
   return Boolean(value && typeof value === "object" && "submitted" in value && (value as { submitted?: unknown }).submitted === true);
+}
+
+function successToastMessage(label: string, result: unknown) {
+  if (isQueuedResponse(result)) return `${label}已提交队列`;
+  if (isSubmittedResponse(result)) return `${label}已开始执行`;
+  const messages: Record<string, string> = {
+    AI润色: "润色完成",
+    AI生成标题: "标题已生成",
+    创建任务: "任务已创建"
+  };
+  return messages[label] || `${label}已完成`;
 }
 
 function formatDate(value: string) {
@@ -760,6 +790,24 @@ function getCurrentStage(project: Project): StageKey {
   return pendingStage || "publish";
 }
 
+function taskListCurrentDisplay(project: Project, queueItems: QueueItem[]) {
+  const activeQueue = queueItems
+    .filter((item) => item.projectId === project.id && isActiveQueue(item))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())[0];
+  if (activeQueue) {
+    const stage = isStageKey(activeQueue.progress?.stage) ? activeQueue.progress.stage : getCurrentStage(project);
+    return {
+      label: project.stageState?.[stage]?.label || stageCopy[stage].title,
+      status: activeQueue.status === "queued" ? "等待中" : statusText(activeQueue.status)
+    };
+  }
+  const stage = getCurrentStage(project);
+  return {
+    label: project.stageState?.[stage]?.label || stageCopy[stage].title,
+    status: statusText(project.stageState?.[stage]?.status || project.status)
+  };
+}
+
 function getVisibleStage(project: Project): StageKey {
   const current = getCurrentStage(project);
   return current === "input" || current === "script" ? "voice" : current;
@@ -784,7 +832,7 @@ function progressValue(project: Project) {
 function statusText(status = "") {
   const dictionary: Record<string, string> = {
     created: "已创建",
-    pending: "待执行",
+    pending: "等待中",
     queued: "排队中",
     running: "执行中",
     done: "完成",
@@ -816,7 +864,7 @@ function statusText(status = "") {
     ok: "正常",
     missing: "缺失"
   };
-  return dictionary[status] || status || "待执行";
+  return dictionary[status] || status || "等待中";
 }
 
 function videoSettingsSummary(settings?: VideoSettings) {
@@ -839,7 +887,10 @@ export function App() {
 
   async function refresh(showSpinner = false) {
     if (showSpinner) setLoading(true);
-    const data = await request<State>("/api/state");
+    const data = await request<State>("/api/state", {
+      timeoutMs: 15000,
+      timeoutMessage: "刷新任务状态超时，请稍后重试。"
+    });
     setState(data);
     setSelectedProjectId((current) => current || data.projects[0]?.id || "");
     setLoading(false);
@@ -883,12 +934,11 @@ export function App() {
     setBusy(label);
     try {
       const result = await runner();
-      await refresh();
-      showToast(isQueuedResponse(result)
-        ? `${label}已提交队列`
-        : isSubmittedResponse(result)
-          ? `${label}已开始执行`
-          : `${label}已完成`, "success");
+      const refreshError = await refresh().then(() => null).catch((error) => error);
+      showToast(successToastMessage(label, result), "success");
+      if (refreshError) {
+        showToast(refreshError instanceof Error ? refreshError.message : "刷新状态失败，请手动刷新页面。", "error");
+      }
       return result;
     } catch (error) {
       await refresh().catch(() => undefined);
@@ -1096,6 +1146,7 @@ function TaskListPage(props: {
         </div>
         <div className="task-list">
           {props.state.projects.map((project) => {
+            const currentDisplay = taskListCurrentDisplay(project, props.state.queueItems);
             const deleteProject = () => {
               if (!window.confirm(`删除任务「${project.title}」？`)) return;
               if (props.selectedProjectId === project.id) props.setSelectedProjectId("");
@@ -1113,7 +1164,7 @@ function TaskListPage(props: {
                 <button className="task-select" onClick={() => props.setSelectedProjectId(project.id)}>
                   <div>
                     <strong>{project.title}</strong>
-                    <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{project.stageState?.[getCurrentStage(project)]?.label || getCurrentStage(project)} · {statusText(project.stageState?.[getCurrentStage(project)]?.status || project.status)}</small>
+                    <small>{formatDate(project.createdAt)} · 总耗时 {formatDurationMs(taskDurationMs(project))} · 当前：{currentDisplay.label} · {currentDisplay.status}</small>
                   </div>
                   <StageDots project={project} />
                 </button>
@@ -1551,7 +1602,9 @@ function TaskComposer({
           smartSceneLayoutMode: mode === "auto" ? smartSceneLayoutMode : "pip",
           skipLipSync: mode === "auto" ? skipLipSync : false,
           platforms: Object.keys(platformLabels)
-        })
+        }),
+        timeoutMs: 30000,
+        timeoutMessage: "创建任务超时，请刷新任务列表确认是否已创建；如果已经创建，不要重复提交。"
       });
     });
     if (!project) return;
@@ -1691,20 +1744,20 @@ function TaskComposer({
               <div className="video-option-grid">
                 <VideoOptionCard icon={<Mic2 size={18} />} title="嘴型同步" description="让数字人口型与语音匹配" checked={!skipLipSync} onChange={(enabled) => setSkipLipSync(!enabled)} />
                 <VideoOptionCard icon={<ClipboardList size={18} />} title="生成字幕" description="自动识别并添加字幕" checked={generateSubtitles} onChange={setGenerateSubtitles} />
-                <VideoOptionCard icon={<Video size={18} />} title="智能布景" description="根据内容自动匹配背景" checked={smartSceneEnabled} onChange={setSmartSceneEnabled} />
+                <VideoOptionCard icon={<Video size={18} />} title="AI 视觉增强" description="根据内容生成动态卡片、图表和重点画面" checked={smartSceneEnabled} onChange={setSmartSceneEnabled} />
               </div>
             </div>
             {smartSceneEnabled && (
               <>
                 <label className="composer-field">
-                  <span>布景模式</span>
+                  <span>视觉模式</span>
                   <select value={smartSceneLayoutMode} onChange={(event) => setSmartSceneLayoutMode(event.target.value as SmartSceneLayoutMode)}>
                     <option value="pip">右下角悬浮</option>
                     <option value="transparent_overlay">半透明覆盖</option>
                   </select>
                 </label>
                 <label className="composer-field optional-wide">
-                  <span>布景要求</span>
+                  <span>视觉要求</span>
                   <textarea value={smartScenePrompt} onChange={(event) => setSmartScenePrompt(event.target.value)} placeholder={smartSceneLayoutMode === "transparent_overlay" ? "例如：半透明卖点卡和流程图悬浮在画面上，不遮挡人物面部" : "例如：商品讲解风格，主画面突出卖点卡片和使用场景"} />
                 </label>
               </>
@@ -3043,22 +3096,22 @@ function StageWorkspace({
           )}
           <div className="smart-scene-card">
             <div>
-              <strong>智能布景</strong>
-              <small>{smartSceneEnabled ? (smartSceneLayoutMode === "transparent_overlay" ? "智能布景会以半透明图层覆盖在数字人视频上。" : "智能布景作为主画面，数字人显示在右下角。") : "关闭时使用普通数字人口播视频。"}</small>
+              <strong>AI 视觉增强</strong>
+              <small>{smartSceneEnabled ? (smartSceneLayoutMode === "transparent_overlay" ? "动态视觉层会以半透明方式覆盖在数字人视频上。" : "动态视觉画面作为主画面，数字人显示在右下角。") : "关闭时使用普通数字人口播视频。"}</small>
             </div>
             <Toggle checked={smartSceneEnabled} onChange={setSmartSceneEnabled} label={smartSceneEnabled ? "已开启" : "开启"} />
           </div>
           {smartSceneEnabled && (
             <>
               <label>
-                <span>布景模式</span>
+                <span>视觉模式</span>
                 <select value={smartSceneLayoutMode} onChange={(event) => setSmartSceneLayoutMode(event.target.value as SmartSceneLayoutMode)}>
                   <option value="pip">右下角悬浮</option>
                   <option value="transparent_overlay">半透明覆盖</option>
                 </select>
               </label>
               <label>
-                <span>布景要求</span>
+                <span>视觉要求</span>
                 <textarea
                   value={smartScenePrompt}
                   onChange={(event) => setSmartScenePrompt(event.target.value)}
@@ -4306,14 +4359,16 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
   const [pendingKey, setPendingKey] = useState("");
   const [draft, setDraft] = useState({
     taskConcurrency: settings.taskConcurrency || 1,
-    avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
+    avatarSegmentSeconds: settings.avatarSegmentSeconds || 30,
+    ttsSegmentMaxChars: settings.ttsSegmentMaxChars || 180
   });
   useEffect(() => {
     setDraft({
       taskConcurrency: settings.taskConcurrency || 1,
-      avatarSegmentSeconds: settings.avatarSegmentSeconds || 30
+      avatarSegmentSeconds: settings.avatarSegmentSeconds || 30,
+      ttsSegmentMaxChars: settings.ttsSegmentMaxChars || 180
     });
-  }, [settings.taskConcurrency, settings.avatarSegmentSeconds]);
+  }, [settings.taskConcurrency, settings.avatarSegmentSeconds, settings.ttsSegmentMaxChars]);
 
   async function update(next: Partial<typeof draft>, key = "runtime") {
     const payload = { ...draft, ...next };
@@ -4354,6 +4409,12 @@ function RuntimeSettingsPanel({ state, action }: { state: State; action: AppActi
           <span>数字人分段长度</span>
           <input type="number" min="10" max="120" step="5" value={draft.avatarSegmentSeconds} onChange={(event) => update({ avatarSegmentSeconds: Number(event.target.value) }, "avatarSegmentSeconds")} />
           <small>长视频会按这个秒数切段后合成，单位：秒。</small>
+        </label>
+
+        <label className="config-field">
+          <span>TTS 分段字数</span>
+          <input type="number" min="60" max="500" step="10" value={draft.ttsSegmentMaxChars} onChange={(event) => update({ ttsSegmentMaxChars: Number(event.target.value) }, "ttsSegmentMaxChars")} />
+          <small>口播超过该字数才分段；按标点拆出的短段会自动合并，合并后不超过该值。</small>
         </label>
       </div>
 

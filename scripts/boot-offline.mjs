@@ -10,17 +10,19 @@ const storageDir = join(rootDir, "storage");
 const uploadDir = join(storageDir, "uploads");
 const artifactDir = join(storageDir, "artifacts");
 const dbPath = join(storageDir, "db.json");
-const bundledFfmpeg = process.platform === "win32"
-  ? join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg.exe")
-  : join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg");
-const scriptBinDir = process.platform === "win32" ? "Scripts" : "bin";
-const pythonExe = process.platform === "win32" ? "python.exe" : "python";
-const ytDlpExe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+const bundledFfmpeg = join(rootDir, "node_modules", "ffmpeg-static", "ffmpeg");
+const scriptBinDir = "bin";
+const pythonExe = "python";
+const ytDlpExe = "yt-dlp";
 
 function rewriteUploadPath(value = "") {
   if (!value || typeof value !== "string") return value;
-  if (!value.includes("/storage/uploads/") && !value.includes("\\storage\\uploads\\")) return value;
-  return join(uploadDir, basename(value));
+  const normalized = value.replaceAll("\\", "/");
+  const marker = "/storage/uploads/";
+  const markerIndex = normalized.indexOf(marker);
+  if (markerIndex < 0) return value;
+  const relativeUploadPath = normalized.slice(markerIndex + marker.length).split("/").filter(Boolean);
+  return join(uploadDir, ...relativeUploadPath);
 }
 
 function fixDbPaths() {
@@ -31,7 +33,10 @@ function fixDbPaths() {
       for (const key of ["path", "audioPath", "videoPath"]) {
         if (item[key]) item[key] = rewriteUploadPath(item[key]);
       }
-      if (item.uri && item.path) item.uri = `/storage/uploads/${basename(item.path)}`;
+      if (item.uri && item.path) {
+        const rel = item.path.replaceAll("\\", "/").split("/storage/uploads/")[1] || basename(item.path);
+        item.uri = `/storage/uploads/${rel}`;
+      }
     }
   }
   db.projects = [];
@@ -57,6 +62,12 @@ const env = {
   MUSETALK_PYTHON: join(rootDir, "models", "avatar", "MuseTalk", ".venv", scriptBinDir, pythonExe),
   YT_DLP_BIN: join(rootDir, "runtime", "tools", scriptBinDir, ytDlpExe),
   FFMPEG_BIN: existsSync(bundledFfmpeg) ? bundledFfmpeg : (process.env.FFMPEG_BIN || "ffmpeg"),
+  FFMPEG_H264_ENCODER: process.env.FFMPEG_H264_ENCODER || "h264_videotoolbox",
+  MUSETALK_DEVICE: process.env.MUSETALK_DEVICE || "mps",
+  MUSETALK_BATCH_SIZE: process.env.MUSETALK_BATCH_SIZE || "8",
+  PYTORCH_ENABLE_MPS_FALLBACK: process.env.PYTORCH_ENABLE_MPS_FALLBACK || "1",
+  PYTORCH_MPS_HIGH_WATERMARK_RATIO: process.env.PYTORCH_MPS_HIGH_WATERMARK_RATIO || "1.0",
+  PYTORCH_MPS_LOW_WATERMARK_RATIO: process.env.PYTORCH_MPS_LOW_WATERMARK_RATIO || "0.7",
   PORT: process.env.PORT || "8083"
 };
 

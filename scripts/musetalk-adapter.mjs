@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..");
 const museTalkHome = process.env.MUSETALK_HOME || join(rootDir, "models", "avatar", "MuseTalk");
-const localPython = process.platform === "win32"
-  ? join(museTalkHome, ".venv", "Scripts", "python.exe")
-  : join(museTalkHome, ".venv", "bin", "python");
+const localPython = join(museTalkHome, ".venv", "bin", "python");
 const pythonBin = process.env.MUSETALK_PYTHON || (existsSync(localPython) ? localPython : "python3");
 const ffmpegBin = process.env.FFMPEG_BIN || "ffmpeg";
 const ffprobeBin = process.env.FFPROBE_BIN || "ffprobe";
+const ffmpegH264Encoder = process.env.FFMPEG_H264_ENCODER || "h264_videotoolbox";
+const museTalkCacheDir = process.env.MUSETALK_CACHE_DIR || join(rootDir, "storage", "cache", "musetalk");
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf-8"));
@@ -32,6 +33,10 @@ function clampNumber(value, min, max, fallback, integer = false) {
 }
 
 function normalizeSettings(settings = {}) {
+  const requestedBatchSize = process.env.MUSETALK_BATCH_SIZE ?? settings.batchSize;
+  const maxBatchSize = clampNumber(process.env.MUSETALK_MAX_BATCH_SIZE, 1, 16, 8, true);
+  const minBatchSize = clampNumber(process.env.MUSETALK_MIN_BATCH_SIZE, 1, maxBatchSize, Math.min(8, maxBatchSize), true);
+  const normalizedBatchSize = clampNumber(requestedBatchSize, 1, maxBatchSize, Math.min(8, maxBatchSize), true);
   return {
     cropMode: "mediapipe",
     parsingMode: settings.parsingMode === "raw" ? "raw" : "jaw",
@@ -39,7 +44,7 @@ function normalizeSettings(settings = {}) {
     extraMargin: clampNumber(settings.extraMargin, 0, 40, 0, true),
     facePad: clampNumber(settings.facePad, 0.04, 0.24, 0.12),
     lowerPad: clampNumber(settings.lowerPad, 0, 0.12, 0.03),
-    batchSize: clampNumber(settings.batchSize, 1, 4, 1, true),
+    batchSize: Math.max(minBatchSize, normalizedBatchSize),
     leftCheekWidth: clampNumber(settings.leftCheekWidth, 40, 140, 90, true),
     rightCheekWidth: clampNumber(settings.rightCheekWidth, 40, 140, 90, true)
   };
@@ -51,6 +56,31 @@ async function run(command, args, options = {}) {
     maxBuffer: 1024 * 1024 * 32,
     ...options
   });
+}
+
+function h264VideoArgs({ bitrate = "6500k", crf = "18" } = {}) {
+  if (ffmpegH264Encoder === "h264_videotoolbox") {
+    return [
+      "-c:v",
+      "h264_videotoolbox",
+      "-b:v",
+      bitrate,
+      "-maxrate",
+      bitrate,
+      "-pix_fmt",
+      "yuv420p"
+    ];
+  }
+  return [
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    crf,
+    "-pix_fmt",
+    "yuv420p"
+  ];
 }
 
 async function probeVideoInfo(videoPath) {
@@ -77,6 +107,7 @@ async function probeVideoInfo(videoPath) {
 function lowResolutionInputScale(info = {}, settings = {}) {
   const requested = Number(settings.inputScale || process.env.MUSETALK_INPUT_SCALE || 0);
   if (Number.isFinite(requested) && requested > 0) return clampNumber(requested, 1, 2, 1.5);
+  if (process.env.MUSETALK_FAST_MODE !== "0") return 1;
   if (process.env.MUSETALK_AUTO_UPSCALE_LOW_RES === "0") return 1;
   const width = Number(info.width || 0);
   const height = Number(info.height || 0);
@@ -87,9 +118,87 @@ function lowResolutionInputScale(info = {}, settings = {}) {
   return 1;
 }
 
+function targetRenderFps(settings = {}) {
+  const requested = Number(settings.renderFps || process.env.MUSETALK_RENDER_FPS || 25);
+  return clampNumber(requested, 10, 25, 25, true);
+}
+
+function targetScaleFilter(sourceInfo = {}, settings = {}) {
+  const fps = targetRenderFps(settings);
+  if (process.env.MUSETALK_FAST_MODE === "0") {
+    const inputScale = lowResolutionInputScale(sourceInfo, settings);
+    return inputScale > 1
+      ? {
+          fps,
+          inputScale,
+          filter: `fps=${fps},scale=trunc(iw*${inputScale}/2)*2:trunc(ih*${inputScale}/2)*2:flags=lanczos,setsar=1,format=yuv420p`
+        }
+      : {
+          fps,
+          inputScale,
+          filter: `fps=${fps},scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p`
+        };
+  }
+  const maxWidth = clampNumber(process.env.MUSETALK_FAST_MAX_WIDTH || settings.maxWidth, 360, 720, 720, true);
+  const maxHeight = clampNumber(process.env.MUSETALK_FAST_MAX_HEIGHT || settings.maxHeight, 640, 1280, 1280, true);
+  return {
+    fps,
+    inputScale: 1,
+    filter: `fps=${fps},scale='min(${maxWidth},iw)':'min(${maxHeight},ih)':force_original_aspect_ratio=decrease:flags=fast_bilinear,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p`
+  };
+}
+
 function tailText(value = "", max = 6000) {
   const text = String(value || "");
   return text.length > max ? text.slice(-max) : text;
+}
+
+function fileSignature(path) {
+  const stat = statSync(path);
+  return {
+    path: resolve(path),
+    size: stat.size,
+    mtimeMs: Math.round(stat.mtimeMs)
+  };
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha1(value) {
+  return createHash("sha1").update(String(value)).digest("hex");
+}
+
+function preparedVideoCachePaths(sourceVideo, options) {
+  const key = sha1(stableJson({
+    source: fileSignature(sourceVideo),
+    duration: Number(options.duration || 0),
+    videoStart: Number(options.videoStart || 0),
+    filter: options.scaleFilter,
+    renderTarget: options.renderTarget,
+    settings: {
+      cropMode: options.settings?.cropMode,
+      parsingMode: options.settings?.parsingMode,
+      upperBoundaryRatio: options.settings?.upperBoundaryRatio,
+      extraMargin: options.settings?.extraMargin,
+      facePad: options.settings?.facePad,
+      lowerPad: options.settings?.lowerPad,
+      leftCheekWidth: options.settings?.leftCheekWidth,
+      rightCheekWidth: options.settings?.rightCheekWidth
+    }
+  })).slice(0, 20);
+  const dir = join(museTalkCacheDir, "prepared", key);
+  return {
+    key,
+    dir,
+    videoPath: join(dir, "input.mp4"),
+    manifestPath: join(dir, "manifest.json")
+  };
 }
 
 function ensureMuseTalkInferencePatch(inferencePath) {
@@ -182,12 +291,7 @@ async function muxImageSequenceWithAudio(frameDir, audioPath, outputPath, fps = 
     "image2",
     "-i",
     join(frameDir, "%08d.png"),
-    "-vcodec",
-    "libx264",
-    "-vf",
-    "format=yuv420p",
-    "-crf",
-    "16",
+    ...h264VideoArgs({ bitrate: "6500k", crf: "16" }),
     tempVideoPath
   ]);
   await run(ffmpegBin, [
@@ -274,7 +378,7 @@ print(json.dumps(flags))
     cwd: museTalkHome,
     env: {
       ...process.env,
-      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
+      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(":")
     }
   });
   return JSON.parse(String(stdout || "[]"));
@@ -319,38 +423,61 @@ async function prepareInputs(payload, workDir, namePrefix = "musetalk") {
   assertFile(sourceVideo, "数字人原视频");
   assertFile(sourceAudio, "口播音频");
 
-  const preparedVideo = join(workDir, `${namePrefix}-input.mp4`);
   const preparedAudio = join(workDir, `${namePrefix}-audio.wav`);
   const videoSeekArgs = videoStart > 0 ? ["-ss", String(videoStart)] : [];
   const audioSeekArgs = audioStart > 0 ? ["-ss", String(audioStart)] : [];
   const sourceInfo = await probeVideoInfo(sourceVideo).catch(() => ({}));
-  const inputScale = lowResolutionInputScale(sourceInfo, payload.videoSettings || {});
-  const scaleFilter = inputScale > 1
-    ? `fps=25,scale=trunc(iw*${inputScale}/2)*2:trunc(ih*${inputScale}/2)*2:flags=lanczos,setsar=1,format=yuv420p`
-    : "fps=25,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p";
-  if (inputScale > 1) {
-    console.log(`MuseTalk 输入低清优化：${sourceInfo.width || "?"}x${sourceInfo.height || "?"} -> ${inputScale}x Lanczos 预放大。`);
+  const renderTarget = targetScaleFilter(sourceInfo, payload.videoSettings || {});
+  const scaleFilter = renderTarget.filter;
+  const cacheEnabled = process.env.MUSETALK_PREPARED_CACHE !== "0";
+  const cachePaths = cacheEnabled
+    ? preparedVideoCachePaths(sourceVideo, {
+        duration,
+        videoStart,
+        scaleFilter,
+        renderTarget,
+        settings: payload.videoSettings || {}
+      })
+    : null;
+  const preparedVideo = cachePaths?.videoPath || join(workDir, `${namePrefix}-input.mp4`);
+  if (process.env.MUSETALK_FAST_MODE !== "0") {
+    console.log(`MuseTalk 低延迟渲染：fps=${renderTarget.fps}, max=${process.env.MUSETALK_FAST_MAX_WIDTH || 720}x${process.env.MUSETALK_FAST_MAX_HEIGHT || 1280}`);
+  } else if (renderTarget.inputScale > 1) {
+    console.log(`MuseTalk 输入低清优化：${sourceInfo.width || "?"}x${sourceInfo.height || "?"} -> ${renderTarget.inputScale}x Lanczos 预放大。`);
   }
-  await run(ffmpegBin, [
-    "-y",
-    "-stream_loop",
-    "-1",
-    ...videoSeekArgs,
-    "-i",
-    sourceVideo,
-    "-t",
-    String(duration),
-    "-vf",
-    scaleFilter,
-    "-an",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "slow",
-    "-crf",
-    inputScale > 1 ? "14" : "16",
-    preparedVideo
-  ]);
+  if (cachePaths && existsSync(cachePaths.videoPath)) {
+    console.log(`MuseTalk prepared video cache hit: ${cachePaths.key}`);
+  } else {
+    if (cachePaths) mkdirSync(cachePaths.dir, { recursive: true });
+    await run(ffmpegBin, [
+      "-y",
+      "-stream_loop",
+      "-1",
+      ...videoSeekArgs,
+      "-i",
+      sourceVideo,
+      "-t",
+      String(duration),
+      "-vf",
+      scaleFilter,
+      "-an",
+      ...h264VideoArgs({ bitrate: renderTarget.inputScale > 1 ? "9000k" : "4500k", crf: renderTarget.inputScale > 1 ? "14" : "18" }),
+      preparedVideo
+    ]);
+    if (cachePaths) {
+      writeFileSync(cachePaths.manifestPath, `${JSON.stringify({
+        key: cachePaths.key,
+        sourceVideo,
+        sourceInfo,
+        duration,
+        videoStart,
+        renderTarget,
+        scaleFilter,
+        createdAt: new Date().toISOString()
+      }, null, 2)}\n`);
+      console.log(`MuseTalk prepared video cache saved: ${cachePaths.key}`);
+    }
+  }
   await run(ffmpegBin, [
     "-y",
     ...audioSeekArgs,
@@ -454,7 +581,7 @@ print(json.dumps({"frames": len(coords), "validFrames": detected_valid, "skipped
     cwd: museTalkHome,
     env: {
       ...process.env,
-      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
+      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(":")
     }
   });
   const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean);
@@ -476,6 +603,7 @@ export async function render(payloadPath, outPath) {
 
   const payload = readJson(payloadPath);
   const settings = normalizeSettings(payload.videoSettings || {});
+  console.log(`MuseTalk batch size: ${settings.batchSize}`);
   const outputPath = resolve(outPath);
   const workDir = dirname(outputPath);
   mkdirSync(workDir, { recursive: true });
@@ -527,8 +655,9 @@ export async function render(payloadPath, outPath) {
     String(settings.rightCheekWidth),
     "--saved_coord"
   ];
-  if (["auto", "cpu", "mps", "cuda"].includes(process.env.MUSETALK_DEVICE || "")) {
-    args.push("--device", process.env.MUSETALK_DEVICE);
+  const museTalkDevice = process.env.MUSETALK_DEVICE || "mps";
+  if (["auto", "cpu", "mps", "cuda"].includes(museTalkDevice)) {
+    args.push("--device", museTalkDevice);
   }
 
   if (settings.cropMode === "mediapipe") {
@@ -536,7 +665,9 @@ export async function render(payloadPath, outPath) {
     try {
       for (const item of preparedSegments) {
         const coordPath = join(dirname(item.preparedVideo), `${basename(item.preparedVideo, ".mp4")}.pkl`);
-        const coordResult = await createMediapipeCoords(item.preparedVideo, coordPath, settings);
+        const coordResult = existsSync(coordPath)
+          ? { frames: "cached", validFrames: "cached", skippedFrames: 0 }
+          : await createMediapipeCoords(item.preparedVideo, coordPath, settings);
         savedCoordCount += 1;
         console.log(`MediaPipe 坐标生成完成：segment=${savedCoordCount}/${preparedSegments.length}, frames=${coordResult.frames}, validFrames=${coordResult.validFrames}, skippedFrames=${coordResult.skippedFrames || 0}`);
       }
@@ -546,21 +677,30 @@ export async function render(payloadPath, outPath) {
     }
   }
 
-  const inference = await run(pythonBin, args, {
+  const inferenceOptions = {
     cwd: museTalkHome,
     env: {
       ...process.env,
+      FFMPEG_H264_ENCODER: process.env.FFMPEG_H264_ENCODER || ffmpegH264Encoder,
       PYTORCH_ENABLE_MPS_FALLBACK: process.env.PYTORCH_ENABLE_MPS_FALLBACK || "1",
       PYTORCH_MPS_HIGH_WATERMARK_RATIO: process.env.PYTORCH_MPS_HIGH_WATERMARK_RATIO || "1.0",
       PYTORCH_MPS_LOW_WATERMARK_RATIO: process.env.PYTORCH_MPS_LOW_WATERMARK_RATIO || "0.7",
       OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || "2",
       VECLIB_MAXIMUM_THREADS: process.env.VECLIB_MAXIMUM_THREADS || "2",
       OPENBLAS_NUM_THREADS: process.env.OPENBLAS_NUM_THREADS || "2",
-      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":")
+      PYTHONPATH: [museTalkHome, process.env.PYTHONPATH].filter(Boolean).join(":")
     }
-  });
+  };
+  const inference = await run(pythonBin, args, inferenceOptions);
   const deviceLine = String(inference.stdout || "").split(/\r?\n/).find((line) => line.includes("Using device:"));
   if (deviceLine) console.log(`MuseTalk ${deviceLine.trim()}`);
+  const timingLines = String(inference.stdout || "").split(/\r?\n/).filter((item) => item.includes("[MuseTalk timing]"));
+  if (timingLines.length) {
+    writeFileSync(join(workDir, "musetalk-timing.log"), `${timingLines.join("\n")}\n`);
+  }
+  for (const line of timingLines) {
+    console.log(line);
+  }
 
   const generatedPaths = resultNames.map((resultName) => join(resultDir, "v15", resultName));
   for (let index = 0; index < generatedPaths.length; index += 1) {
@@ -578,18 +718,20 @@ export async function render(payloadPath, outPath) {
     }
     if (existsSync(generatedPaths[index])) {
       const coordPath = join(dirname(preparedSegments[index].preparedVideo), `${basename(preparedSegments[index].preparedVideo, ".mp4")}.pkl`);
-      const frameRepair = await restoreInvalidFaceFrames({
-        generatedPath: generatedPaths[index],
-        preparedVideo: preparedSegments[index].preparedVideo,
-        preparedAudio: preparedSegments[index].preparedAudio,
-        coordPath,
-        fps: 25
-      }).catch((error) => {
-        console.warn(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段无人脸帧回填失败：${error instanceof Error ? error.message : String(error)}`);
-        return { restored: 0 };
-      });
-      if (frameRepair.restored) {
-        console.log(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段已将 ${frameRepair.restored} 帧无人脸画面回填为原素材帧。`);
+      if (process.env.MUSETALK_REPAIR_INVALID_FACE_FRAMES === "1") {
+        const frameRepair = await restoreInvalidFaceFrames({
+          generatedPath: generatedPaths[index],
+          preparedVideo: preparedSegments[index].preparedVideo,
+          preparedAudio: preparedSegments[index].preparedAudio,
+          coordPath,
+          fps: 25
+        }).catch((error) => {
+          console.warn(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段无人脸帧回填失败：${error instanceof Error ? error.message : String(error)}`);
+          return { restored: 0 };
+        });
+        if (frameRepair.restored) {
+          console.log(`MuseTalk 第 ${index + 1}/${generatedPaths.length} 段已将 ${frameRepair.restored} 帧无人脸画面回填为原素材帧。`);
+        }
       }
     }
   }
